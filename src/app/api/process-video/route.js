@@ -1,43 +1,32 @@
-import fs from "fs";
-import path from "path";
-
 export async function POST(request) {
   try {
     const body = await request.json();
-
     console.log("Received:", body);
 
-    // Simulate processing delay
-    await new Promise((res) => setTimeout(res, 2000));
+    // Fake processing delay
+    await new Promise((res) => setTimeout(res, 1500));
 
-    // Path to public folder
-    const publicDir = path.join(process.cwd(), "public");
+    // Minimal fake MP4 binary (serverless-safe)
+    const fakeMp4Content = Buffer.from(
+      "00000020667479706D703432000000006D7034326D70343169736F6D",
+      "hex"
+    );
 
-    // Ensure public directory exists
-    if (!fs.existsSync(publicDir)) {
-      fs.mkdirSync(publicDir);
-    }
-
-    const fileName = `output-${Date.now()}.mp4`;
-    const filePath = path.join(publicDir, fileName);
-
-    // Create a dummy file
-    fs.writeFileSync(
-  filePath,
-  "PLACEHOLDER VIDEO FILE\n\nThis will be replaced with real video output soon."
-);
+    return new Response(fakeMp4Content, {
+      headers: {
+        "Content-Type": "video/mp4",
+        "Content-Disposition": `attachment; filename="promptcut-output-${Date.now()}.mp4"`,
+      },
+      status: 200,
+    });
+  } catch (error) {
+    console.error("ERROR:", error);
 
     return new Response(
       JSON.stringify({
-        success: true,
-        message: "Processing complete!",
-        outputUrl: `/${fileName}`,
+        success: false,
+        error: "Processing failed",
       }),
-      { status: 200 }
-    );
-  } catch (error) {
-    return new Response(
-      JSON.stringify({ success: false, error: error.message }),
       { status: 500 }
     );
   }

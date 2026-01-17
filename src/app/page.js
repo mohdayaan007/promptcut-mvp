@@ -26,17 +26,47 @@ export default function Home() {
     setResult(null);
 
     try {
-      const res = await fetch("/api/process-video", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          video1: video1.name,
-          video2: video2.name,
-        }),
-      });
+      const handleGenerate = async () => {
+  if (!video1 || !video2) {
+    alert("Please upload two videos first.");
+    return;
+  }
 
-      const data = await res.json();
+  if (!prompt.trim()) {
+    alert("Describe what you want to do.");
+    return;
+  }
+
+  setIsProcessing(true);
+  setStatus("processing");
+  setResult(null);
+
+  try {
+    const res = await fetch("/api/process-video", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt,
+        video1: video1.name,
+        video2: video2.name,
+      }),
+    });
+
+    if (!res.ok) throw new Error("Failed");
+
+    const blob = await res.blob();
+    const downloadUrl = URL.createObjectURL(blob);
+
+    setResult({ outputUrl: downloadUrl });
+    setStatus("done");
+  } catch (err) {
+    alert("Something went wrong.");
+    setStatus("idle");
+  } finally {
+    setIsProcessing(false);
+  }
+};
+
 
       if (data.success) {
         setResult(data);
