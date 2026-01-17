@@ -21,6 +21,10 @@ export default function Home() {
       return;
     }
 
+    if (window.plausible) {
+      window.plausible("generate_clicked");
+    }
+
     setIsProcessing(true);
     setStatus("processing");
     setResult(null);
@@ -51,11 +55,21 @@ export default function Home() {
 
       setResult({ outputUrl: url, filename: data.filename });
       setStatus("done");
+
+      if (window.plausible) {
+        window.plausible("video_ready");
+      }
     } catch (err) {
       alert("Something went wrong.");
       setStatus("idle");
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  const handleDownload = () => {
+    if (window.plausible) {
+      window.plausible("download_clicked");
     }
   };
 
@@ -157,6 +171,7 @@ export default function Home() {
             <a
               href={result?.outputUrl || "#"}
               download={result?.filename}
+              onClick={handleDownload}
               className={`mt-3 text-center py-2 rounded text-sm ${
                 status === "done"
                   ? "bg-white text-black hover:bg-gray-200"
