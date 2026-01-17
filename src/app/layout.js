@@ -1,4 +1,5 @@
 import { Geist, Geist_Mono } from "next/font/google";
+import Script from "next/script";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -19,16 +20,16 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <head>
-        <script
-          defer
-          data-domain="promptcut-mvp.vercel.app"
-          src="https://plausible.io/js/pa-WEGlcoBh-35CmEUTc2FES.js"
-        ></script>
-      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        {/* Plausible Analytics */}
+        <Script
+          strategy="afterInteractive"
+          data-domain="promptcut-mvp.vercel.app"
+          src="https://plausible.io/js/script.js"
+        />
+
         {children}
       </body>
     </html>
