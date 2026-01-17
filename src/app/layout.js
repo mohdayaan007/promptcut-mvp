@@ -23,11 +23,20 @@ export default function RootLayout({ children }) {
       <head>
         {/* Plausible Analytics */}
         <Script
-          async
-          defer
-          data-domain="promptcut-mvp.vercel.app"
-          src="https://plausible.io/js/plausible.js"
+          strategy="afterInteractive"
+          src="https://plausible.io/js/pa-WEGlcoBh-35CmEUTc2FES.js"
         />
+        <Script id="plausible-init" strategy="afterInteractive">
+          {`
+            window.plausible = window.plausible || function() {
+              (plausible.q = plausible.q || []).push(arguments)
+            };
+            plausible.init = plausible.init || function(i) {
+              plausible.o = i || {};
+            };
+            plausible.init();
+          `}
+        </Script>
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
