@@ -25,18 +25,8 @@ export default function RootLayout({ children }) {
         <Script
           strategy="afterInteractive"
           src="https://plausible.io/js/pa-WEGlcoBh-35CmEUTc2FES.js"
+          data-domain="promptcut-mvp.vercel.app"
         />
-        <Script id="plausible-init" strategy="afterInteractive">
-          {`
-            window.plausible = window.plausible || function() {
-              (plausible.q = plausible.q || []).push(arguments)
-            };
-            plausible.init = plausible.init || function(i) {
-              plausible.o = i || {};
-            };
-            plausible.init();
-          `}
-        </Script>
       </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
