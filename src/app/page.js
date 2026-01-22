@@ -1,82 +1,75 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 export default function Home() {
   const [video1, setVideo1] = useState(null);
   const [video2, setVideo2] = useState(null);
   const [prompt, setPrompt] = useState("");
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [status, setStatus] = useState("idle"); // idle | processing | done
-  const [result, setResult] = useState(null);
+  const [status, setStatus] = useState("idle"); // idle | processing | done | error
+  const [error, setError] = useState(null);
+  const [resultUrl, setResultUrl] = useState(null);
+
+  const fileRef1 = useRef(null);
+  const fileRef2 = useRef(null);
+
+  const resetAll = () => {
+    setVideo1(null);
+    setVideo2(null);
+    setPrompt("");
+    setStatus("idle");
+    setError(null);
+    setResultUrl(null);
+
+    if (fileRef1.current) fileRef1.current.value = "";
+    if (fileRef2.current) fileRef2.current.value = "";
+  };
 
   const handleGenerate = async () => {
     if (!video1 || !video2) {
-      alert("Please upload two videos first.");
+      alert("Please upload two videos.");
       return;
     }
 
     if (!prompt.trim()) {
-      alert("Describe what you want to do.");
+      alert("Please enter a prompt.");
       return;
     }
 
-    if (window.plausible) {
-      window.plausible("generate_clicked");
-    }
-
-    setIsProcessing(true);
     setStatus("processing");
-    setResult(null);
+    setError(null);
+    setResultUrl(null);
 
     try {
+      const formData = new FormData();
+      formData.append("video1", video1);
+      formData.append("video2", video2);
+      formData.append("prompt", prompt);
+
       const res = await fetch("/api/process-video", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          video1: video1.name,
-          video2: video2.name,
-        }),
+        body: formData
       });
 
-      const data = await res.json();
-      if (!data.success) throw new Error("Failed");
-
-      const binary = atob(data.base64);
-      const bytes = new Uint8Array(binary.length);
-
-      for (let i = 0; i < binary.length; i++) {
-        bytes[i] = binary.charCodeAt(i);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Processing failed");
       }
 
-      const blob = new Blob([bytes], { type: "video/mp4" });
+      const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-
-      setResult({ outputUrl: url, filename: data.filename });
+      setResultUrl(url);
       setStatus("done");
-
-      if (window.plausible) {
-        window.plausible("video_ready");
-      }
     } catch (err) {
-      alert("Something went wrong.");
-      setStatus("idle");
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const handleDownload = () => {
-    if (window.plausible) {
-      window.plausible("download_clicked");
+      console.error(err);
+      setError(err.message);
+      setStatus("error");
     }
   };
 
   return (
     <main className="min-h-screen bg-black text-white p-4 sm:p-8">
-      <div className="max-w-6xl mx-auto space-y-6">
-        {/* Header */}
+      <div className="max-w-5xl mx-auto space-y-6">
         <div>
           <h1 className="text-2xl font-bold">PromptCut</h1>
           <p className="text-gray-400 text-sm">
@@ -84,7 +77,6 @@ export default function Home() {
           </p>
         </div>
 
-        {/* How it works */}
         <div className="bg-[#111] rounded-lg p-4 border border-gray-800">
           <h2 className="font-semibold mb-2">How it works</h2>
           <ol className="list-decimal list-inside text-sm text-gray-400 space-y-1">
@@ -95,15 +87,14 @@ export default function Home() {
           </ol>
         </div>
 
-        {/* Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {/* Source videos */}
           <div className="bg-[#111] rounded-lg p-4 border border-gray-800 space-y-3">
             <h2 className="font-semibold">Source Videos</h2>
 
             <div>
               <label className="text-sm text-gray-400">Video 1</label>
               <input
+                ref={fileRef1}
                 type="file"
                 accept="video/*"
                 className="block w-full text-sm mt-1"
@@ -114,6 +105,7 @@ export default function Home() {
             <div>
               <label className="text-sm text-gray-400">Video 2</label>
               <input
+                ref={fileRef2}
                 type="file"
                 accept="video/*"
                 className="block w-full text-sm mt-1"
@@ -122,56 +114,51 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Prompt */}
           <div className="bg-[#111] rounded-lg p-4 border border-gray-800 space-y-3">
             <h2 className="font-semibold">Edit Prompt</h2>
 
             <textarea
               className="w-full h-32 bg-black border border-gray-700 rounded p-2 text-sm resize-none"
-              placeholder="Describe how you want to edit your videos..."
+              placeholder="Example: Add title: My Day in Wayanad at 0:05"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
             />
 
-            <div className="text-xs text-gray-500 space-y-1">
-              <p>Examples:</p>
-              <ul className="list-disc list-inside">
-                <li>Merge both videos and add a title</li>
-                <li>Add a black & white filter</li>
-                <li>Smooth transitions between clips</li>
-              </ul>
-            </div>
-
             <button
               onClick={handleGenerate}
-              disabled={isProcessing}
+              disabled={status === "processing"}
               className="w-full bg-white text-black py-2 rounded font-medium hover:bg-gray-200 disabled:opacity-50"
             >
-              {isProcessing ? "Processing..." : "Generate Video"}
+              {status === "processing" ? "Processing..." : "Generate Video"}
             </button>
+
+            {status !== "idle" && (
+              <button
+                onClick={resetAll}
+                className="w-full text-sm text-gray-400 underline"
+              >
+                Reset
+              </button>
+            )}
           </div>
 
-          {/* Output */}
           <div className="bg-[#111] rounded-lg p-4 border border-gray-800 flex flex-col">
             <h2 className="font-semibold mb-2">Output</h2>
 
             <div className="flex-1 border border-gray-700 rounded p-3 text-sm text-gray-400 flex items-center justify-center text-center min-h-[140px]">
               {status === "idle" && "Your edited video will appear here."}
               {status === "processing" && "⏳ Generating your video…"}
-              {status === "done" && (
-                <div className="space-y-2">
-                  <div className="text-green-400">✅ Your video is ready</div>
-                  <div className="text-xs text-gray-400 break-all">
-                    File: {result?.filename}
-                  </div>
-                </div>
+              {status === "done" && "✅ Your video is ready"}
+              {status === "error" && (
+                <span className="text-red-400">
+                  ❌ {error || "Something went wrong"}
+                </span>
               )}
             </div>
 
             <a
-              href={result?.outputUrl || "#"}
-              download={result?.filename}
-              onClick={handleDownload}
+              href={resultUrl || "#"}
+              download="promptcut.mp4"
               className={`mt-3 text-center py-2 rounded text-sm ${
                 status === "done"
                   ? "bg-white text-black hover:bg-gray-200"
