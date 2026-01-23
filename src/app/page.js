@@ -6,7 +6,7 @@ export default function Home() {
   const [video1, setVideo1] = useState(null);
   const [video2, setVideo2] = useState(null);
   const [prompt, setPrompt] = useState("");
-  const [status, setStatus] = useState("idle"); // idle | processing | done | error
+  const [status, setStatus] = useState("idle");
   const [error, setError] = useState(null);
   const [resultUrl, setResultUrl] = useState(null);
 
@@ -20,19 +20,13 @@ export default function Home() {
     setStatus("idle");
     setError(null);
     setResultUrl(null);
-
     if (fileRef1.current) fileRef1.current.value = "";
     if (fileRef2.current) fileRef2.current.value = "";
   };
 
   const handleGenerate = async () => {
-    if (!video1 || !video2) {
-      alert("Please upload two videos.");
-      return;
-    }
-
-    if (!prompt.trim()) {
-      alert("Please enter a prompt.");
+    if (!video1) {
+      alert("Please upload at least one video.");
       return;
     }
 
@@ -43,8 +37,8 @@ export default function Home() {
     try {
       const formData = new FormData();
       formData.append("video1", video1);
-      formData.append("video2", video2);
-      formData.append("prompt", prompt);
+      if (video2) formData.append("video2", video2);
+      if (prompt.trim()) formData.append("prompt", prompt);
 
       const res = await fetch("/api/process-video", {
         method: "POST",
@@ -80,8 +74,8 @@ export default function Home() {
         <div className="bg-[#111] rounded-lg p-4 border border-gray-800">
           <h2 className="font-semibold mb-2">How it works</h2>
           <ol className="list-decimal list-inside text-sm text-gray-400 space-y-1">
-            <li>Upload two videos</li>
-            <li>Describe what you want</li>
+            <li>Upload one or two videos</li>
+            <li>Describe what you want (optional)</li>
             <li>Click Generate</li>
             <li>Download your edited video</li>
           </ol>
@@ -103,7 +97,7 @@ export default function Home() {
             </div>
 
             <div>
-              <label className="text-sm text-gray-400">Video 2</label>
+              <label className="text-sm text-gray-400">Video 2 (optional)</label>
               <input
                 ref={fileRef2}
                 type="file"
@@ -119,7 +113,7 @@ export default function Home() {
 
             <textarea
               className="w-full h-32 bg-black border border-gray-700 rounded p-2 text-sm resize-none"
-              placeholder="Example: Add title: My Day in Wayanad at 0:05"
+              placeholder="Example: Add title: My Day in Wayanad at 0:05, make it black and white"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
             />

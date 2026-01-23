@@ -12,8 +12,11 @@ export const runtime = "nodejs";
 const MAX_SIZE_MB = 50;
 const MAX_DURATION_SEC = 60;
 
+/* -----------------------------
+   Prompt Parsers
+-------------------------------- */
+
 function parseOverlay(prompt) {
-  // Example: "Add title: My Day at 0:05"
   const match = prompt.match(/add title:\s*(.+?)\s*at\s*(\d+):(\d+)/i);
   if (!match) return null;
 
@@ -23,6 +26,22 @@ function parseOverlay(prompt) {
 
   return { text, start, end };
 }
+
+function detectColorStyle(prompt) {
+  const p = prompt.toLowerCase();
+
+  if (p.match(/warm|golden|sunset|yellow|cozy/)) return "warm";
+  if (p.match(/cool|blue|cold|icy/)) return "cool";
+  if (p.match(/cinematic|film|movie|netflix/)) return "cinematic";
+  if (p.match(/vintage|retro|old|nostalgic/)) return "vintage";
+  if (p.match(/nature|green|forest|earthy/)) return "nature";
+
+  return null;
+}
+
+/* -----------------------------
+   FFmpeg Helpers
+-------------------------------- */
 
 async function getDuration(filePath) {
   const { stdout } = await exec("ffprobe", [
@@ -35,6 +54,27 @@ async function getDuration(filePath) {
   return parseFloat(stdout.trim());
 }
 
+function colorFilter(style) {
+  switch (style) {
+    case "warm":
+      return "eq=contrast=1.05:saturation=1.2:brightness=0.03";
+    case "cool":
+      return "eq=contrast=1.05:saturation=0.9:brightness=-0.02";
+    case "cinematic":
+      return "eq=contrast=1.15:saturation=1.1,curves=smooth";
+    case "vintage":
+      return "eq=saturation=0.7:brightness=0.04";
+    case "nature":
+      return "eq=saturation=1.25:contrast=1.05";
+    default:
+      return null;
+  }
+}
+
+/* -----------------------------
+   API Route
+-------------------------------- */
+
 export async function POST(req) {
   try {
     const formData = await req.formData();
@@ -42,85 +82,92 @@ export async function POST(req) {
     const file2 = formData.get("video2");
     const prompt = formData.get("prompt") || "";
 
-    if (!file1 || !file2) {
-      return Response.json({ error: "Missing files" }, { status: 400 });
+    if (!file1) {
+      return Response.json({ error: "Missing video" }, { status: 400 });
     }
 
-    const sizeMB1 = file1.size / (1024 * 1024);
-    const sizeMB2 = file2.size / (1024 * 1024);
+    const files = [file1, file2].filter(Boolean);
 
-    if (sizeMB1 > MAX_SIZE_MB || sizeMB2 > MAX_SIZE_MB) {
-      return Response.json({ error: "File too large" }, { status: 400 });
+    for (const f of files) {
+      if (f.size / (1024 * 1024) > MAX_SIZE_MB) {
+        return Response.json({ error: "File too large" }, { status: 400 });
+      }
     }
 
     const tmpDir = path.join(os.tmpdir(), `promptcut-${Date.now()}`);
     if (!existsSync(tmpDir)) await mkdir(tmpDir);
 
-    const p1 = path.join(tmpDir, "a.mp4");
-    const p2 = path.join(tmpDir, "b.mp4");
-    const listFile = path.join(tmpDir, "list.txt");
-    const merged = path.join(tmpDir, "merged.mp4");
-    const output = path.join(tmpDir, "output.mp4");
+    const normalized = [];
 
-    await writeFile(p1, Buffer.from(await file1.arrayBuffer()));
-    await writeFile(p2, Buffer.from(await file2.arrayBuffer()));
-    await writeFile(listFile, `file '${p1}'\nfile '${p2}'\n`);
+    for (let i = 0; i < files.length; i++) {
+      const src = path.join(tmpDir, `src${i}.mp4`);
+      const norm = path.join(tmpDir, `n${i}.mp4`);
 
-    const d1 = await getDuration(p1);
-    const d2 = await getDuration(p2);
+      await writeFile(src, Buffer.from(await files[i].arrayBuffer()));
 
-    if (d1 > MAX_DURATION_SEC || d2 > MAX_DURATION_SEC) {
-      return Response.json({ error: "Video too long" }, { status: 400 });
+      const d = await getDuration(src);
+      if (d > MAX_DURATION_SEC) {
+        return Response.json({ error: "Video too long" }, { status: 400 });
+      }
+
+      await exec("ffmpeg", [
+        "-y",
+        "-i", src,
+        "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        norm
+      ]);
+
+      normalized.push(norm);
     }
 
-    // Normalize + merge
-    await exec("ffmpeg", [
-      "-y",
-      "-i", p1,
-      "-vf", "scale=1280:-2,fps=30",
-      "-c:v", "libx264",
-      "-pix_fmt", "yuv420p",
-      "-c:a", "aac",
-      path.join(tmpDir, "n1.mp4")
-    ]);
+    let merged = normalized[0];
 
-    await exec("ffmpeg", [
-      "-y",
-      "-i", p2,
-      "-vf", "scale=1280:-2,fps=30",
-      "-c:v", "libx264",
-      "-pix_fmt", "yuv420p",
-      "-c:a", "aac",
-      path.join(tmpDir, "n2.mp4")
-    ]);
+    if (normalized.length === 2) {
+      const list = path.join(tmpDir, "list.txt");
+      const out = path.join(tmpDir, "merged.mp4");
 
-    await writeFile(
-      listFile,
-      `file '${path.join(tmpDir, "n1.mp4")}'\nfile '${path.join(tmpDir, "n2.mp4")}'\n`
-    );
+      await writeFile(
+        list,
+        normalized.map(f => `file '${f}'`).join("\n")
+      );
 
-    await exec("ffmpeg", [
-      "-y",
-      "-f", "concat",
-      "-safe", "0",
-      "-i", listFile,
-      "-c", "copy",
-      merged
-    ]);
+      await exec("ffmpeg", [
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", list,
+        "-c", "copy",
+        out
+      ]);
+
+      merged = out;
+    }
 
     const overlay = parseOverlay(prompt);
+    const colorStyle = detectColorStyle(prompt);
+    console.log("Detected color style:", colorStyle);
 
-    let filter = "format=gray";
+    let filters = [];
+
+    const color = colorFilter(colorStyle);
+    if (color) filters.push(color);
 
     if (overlay) {
       const safeText = overlay.text.replace(/'/g, "\\'");
-      filter += `,drawtext=text='${safeText}':x=(w-text_w)/2:y=h*0.15:fontsize=h*0.07:fontcolor=white:enable='between(t,${overlay.start},${overlay.end})'`;
+      filters.push(
+        `drawtext=text='${safeText}':x=(w-text_w)/2:y=(h-text_h)/2:fontsize=h*0.07:fontcolor=white:enable='between(t,${overlay.start},${overlay.end})'`
+      );
     }
+
+    const output = path.join(tmpDir, "output.mp4");
 
     await exec("ffmpeg", [
       "-y",
       "-i", merged,
-      "-vf", filter,
+      ...(filters.length ? ["-vf", filters.join(",")] : []),
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       "-movflags", "+faststart",
@@ -141,9 +188,6 @@ export async function POST(req) {
 
   } catch (err) {
     console.error(err);
-    return Response.json(
-      { error: "Processing failed" },
-      { status: 500 }
-    );
+    return Response.json({ error: "Processing failed" }, { status: 500 });
   }
 }
