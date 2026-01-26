@@ -86,15 +86,24 @@ export default function Home() {
             <h2 className="font-semibold">Source Videos</h2>
 
             <div>
-              <label className="text-sm text-gray-400">Video 1</label>
-              <input
-                ref={fileRef1}
-                type="file"
-                accept="video/*"
-                className="block w-full text-sm mt-1"
-                onChange={(e) => setVideo1(e.target.files[0])}
-              />
-            </div>
+  <label className="text-sm text-gray-400">Video 1</label>
+  <input
+    ref={fileRef1}
+    type="file"
+    accept="video/*"
+    className="block w-full text-sm mt-1"
+    onChange={(e) => {
+      setVideo1(e.target.files[0]);
+
+      // 🔒 Clear second video completely
+      setVideo2(null);
+
+      if (fileRef2.current) {
+        fileRef2.current.value = "";
+      }
+    }}
+  />
+</div>
 
             <div>
               <label className="text-sm text-gray-400">Video 2 (optional)</label>
