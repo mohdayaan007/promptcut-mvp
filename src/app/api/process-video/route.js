@@ -37,16 +37,20 @@ function detectColor(prompt) {
   if (p.includes("blue") || p.includes("cool") || p.includes("cold") || p.includes("night"))
     return "blue";
 
-  if (p.includes("green") || p.includes("nature") || p.includes("forest") || p.includes("outdoor"))
-    return "green";
-
-  if (p.includes("golden") || p.includes("yellow") || p.includes("sunny"))
-    return "golden";
-
   if (p.includes("warm") || p.includes("sunset") || p.includes("cozy"))
     return "warm";
 
   return null;
+}
+
+function wantsSubtitles(prompt) {
+  const p = prompt.toLowerCase();
+  return (
+    p.includes("subtitle") ||
+    p.includes("subtitles") ||
+    p.includes("caption") ||
+    p.includes("captions")
+  );
 }
 
 /* -------------------- HELPERS -------------------- */
@@ -61,23 +65,15 @@ async function getDuration(filePath) {
   return parseFloat(stdout.trim());
 }
 
-/**
- * HARD NORMALIZATION
- * - Fixes aspect ratio
- * - Forces CFR
- * - REBUILDS audio timeline (this is the key fix)
- */
 async function normalize(input, output) {
   await exec("ffmpeg", [
     "-y",
     "-i", input,
 
-    // Video: fixed canvas + CFR
     "-vf",
     "scale=1280:720:force_original_aspect_ratio=decrease," +
       "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
 
-    // Audio: HARD re-timing
     "-af",
     "aresample=48000,asetpts=PTS-STARTPTS",
 
@@ -107,10 +103,6 @@ export async function POST(req) {
       return Response.json({ error: "Missing video" }, { status: 400 });
     }
 
-    if (file1.size / (1024 * 1024) > MAX_SIZE_MB) {
-      return Response.json({ error: "Video too large" }, { status: 400 });
-    }
-
     const tmpDir = path.join(os.tmpdir(), `promptcut-${Date.now()}`);
     if (!existsSync(tmpDir)) await mkdir(tmpDir);
 
@@ -120,46 +112,53 @@ export async function POST(req) {
     const n2 = path.join(tmpDir, "n2.mp4");
     const list = path.join(tmpDir, "list.txt");
     const merged = path.join(tmpDir, "merged.mp4");
+    const audio = path.join(tmpDir, "audio.wav");
+    const subs = path.join(tmpDir, "audio.srt");
     const output = path.join(tmpDir, "output.mp4");
 
     await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
-
-    if (await getDuration(v1) > MAX_DURATION_SEC) {
-      return Response.json({ error: "Video too long" }, { status: 400 });
-    }
-
     await normalize(v1, n1);
+
     let baseVideo = n1;
 
     if (file2) {
-      if (file2.size / (1024 * 1024) > MAX_SIZE_MB) {
-        return Response.json({ error: "Video too large" }, { status: 400 });
-      }
-
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
-
-      if (await getDuration(v2) > MAX_DURATION_SEC) {
-        return Response.json({ error: "Video too long" }, { status: 400 });
-      }
-
       await normalize(v2, n2);
 
       await writeFile(list, `file '${n1}'\nfile '${n2}'\n`);
-
-      await exec("ffmpeg", [
-        "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", list,
-        "-c", "copy",
-        merged
-      ]);
-
+      await exec("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", merged]);
       baseVideo = merged;
     }
 
     const overlay = parseOverlay(prompt);
     const color = detectColor(prompt);
+    const subtitles = wantsSubtitles(prompt);
+
+    /* --------- SUBTITLES (WHISPER) --------- */
+
+    if (subtitles) {
+      await exec("ffmpeg", ["-y", "-i", baseVideo, "-vn", "-ac", "1", "-ar", "16000", audio]);
+
+      await exec("python3", [
+  "-m", "whisper",
+  audio,
+
+  // 🔒 ALWAYS TRANSLATE TO ENGLISH
+  "--task", "translate",
+  "--language", "en",
+
+  "--model", "tiny",
+  "--output_format", "srt",
+  "--output_dir", tmpDir
+]);
+
+
+      if (!existsSync(subs)) {
+        throw new Error("Subtitle generation failed");
+      }
+    }
+
+    /* --------- FILTERS --------- */
 
     const filters = [];
 
@@ -169,22 +168,20 @@ export async function POST(req) {
 
     if (color && color !== "bw") {
       const lutPath = path.join(process.cwd(), "luts", `${color}.cube`);
-      if (!existsSync(lutPath)) {
-        throw new Error(`Missing LUT file: ${color}.cube`);
-      }
-
-      // Subtle LUT blending (NOT on-your-face)
       const strength =
         color === "warm" ? 0.22 :
         color === "blue" ? 0.30 :
-        color === "cinematic" ? 0.28 :
-        0.25;
+        color === "cinematic" ? 0.28 : 0.25;
 
       filters.push(
         `[0:v]split=2[base][graded];` +
         `[graded]lut3d=file=${lutPath},format=rgba,colorchannelmixer=aa=${strength}[lut];` +
         `[base][lut]overlay`
       );
+    }
+
+    if (subtitles) {
+      filters.push(`subtitles=${subs}`);
     }
 
     if (overlay) {
@@ -209,9 +206,7 @@ export async function POST(req) {
       output
     ]);
 
-    const buffer = await import("fs").then(fs =>
-      fs.promises.readFile(output)
-    );
+    const buffer = await import("fs").then(fs => fs.promises.readFile(output));
 
     return new Response(buffer, {
       headers: {
