@@ -25,6 +25,16 @@ function parseOverlay(prompt) {
   return { text, start, end };
 }
 
+function parseTrim(prompt) {
+  const match = prompt.match(/trim.*?(\d+):(\d+)\s*to\s*(\d+):(\d+)/i);
+  if (!match) return null;
+
+  const start = parseInt(match[1]) * 60 + parseInt(match[2]);
+  const end = parseInt(match[3]) * 60 + parseInt(match[4]);
+
+  return { start, end };
+}
+
 function detectColor(prompt) {
   const p = prompt.toLowerCase();
 
@@ -44,11 +54,11 @@ function detectColor(prompt) {
 }
 
 function wantsSubtitles(prompt) {
+  if (!prompt) return false;
   const p = prompt.toLowerCase();
   return (
     p.includes("subtitle") ||
     p.includes("subtitles") ||
-    p.includes("caption") ||
     p.includes("captions")
   );
 }
@@ -69,23 +79,18 @@ async function normalize(input, output) {
   await exec("ffmpeg", [
     "-y",
     "-i", input,
-
     "-vf",
     "scale=1280:720:force_original_aspect_ratio=decrease," +
       "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
-
     "-af",
     "aresample=48000,asetpts=PTS-STARTPTS",
-
     "-c:v", "libx264",
     "-pix_fmt", "yuv420p",
     "-profile:v", "high",
     "-level", "4.1",
-
     "-c:a", "aac",
     "-ar", "48000",
     "-ac", "2",
-
     output
   ]);
 }
@@ -110,10 +115,11 @@ export async function POST(req) {
     const v2 = path.join(tmpDir, "v2.mp4");
     const n1 = path.join(tmpDir, "n1.mp4");
     const n2 = path.join(tmpDir, "n2.mp4");
-    const list = path.join(tmpDir, "list.txt");
     const merged = path.join(tmpDir, "merged.mp4");
+    const processed = path.join(tmpDir, "processed.mp4");
+    const trimmed = path.join(tmpDir, "trimmed.mp4");
     const audio = path.join(tmpDir, "audio.wav");
-    const subs = path.join(tmpDir, "audio.srt");
+    const srt = path.join(tmpDir, "audio.srt");
     const output = path.join(tmpDir, "output.mp4");
 
     await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
@@ -125,63 +131,40 @@ export async function POST(req) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
 
-      await writeFile(list, `file '${n1}'\nfile '${n2}'\n`);
-      await exec("ffmpeg", ["-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", merged]);
+      await exec("ffmpeg", [
+        "-y",
+        "-i", n1,
+        "-i", n2,
+        "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
+        "-map", "[v]",
+        "-map", "[a]",
+        merged
+      ]);
+
       baseVideo = merged;
     }
 
     const overlay = parseOverlay(prompt);
+    const trim = parseTrim(prompt);
     const color = detectColor(prompt);
-    const subtitles = wantsSubtitles(prompt);
-
-    /* --------- SUBTITLES (WHISPER) --------- */
-
-    if (subtitles) {
-      await exec("ffmpeg", ["-y", "-i", baseVideo, "-vn", "-ac", "1", "-ar", "16000", audio]);
-
-      await exec("python3", [
-  "-m", "whisper",
-  audio,
-
-  // 🔒 ALWAYS TRANSLATE TO ENGLISH
-  "--task", "translate",
-  "--language", "en",
-
-  "--model", "tiny",
-  "--output_format", "srt",
-  "--output_dir", tmpDir
-]);
-
-
-      if (!existsSync(subs)) {
-        throw new Error("Subtitle generation failed");
-      }
-    }
-
-    /* --------- FILTERS --------- */
 
     const filters = [];
 
-    if (color === "bw") {
-      filters.push("format=gray");
-    }
+    if (color === "bw") filters.push("format=gray");
 
     if (color && color !== "bw") {
       const lutPath = path.join(process.cwd(), "luts", `${color}.cube`);
       const strength =
         color === "warm" ? 0.22 :
         color === "blue" ? 0.30 :
-        color === "cinematic" ? 0.28 : 0.25;
+        color === "cinematic" ? 0.28 :
+        0.25;
 
       filters.push(
         `[0:v]split=2[base][graded];` +
         `[graded]lut3d=file=${lutPath},format=rgba,colorchannelmixer=aa=${strength}[lut];` +
         `[base][lut]overlay`
       );
-    }
-
-    if (subtitles) {
-      filters.push(`subtitles=${subs}`);
     }
 
     if (overlay) {
@@ -201,12 +184,79 @@ export async function POST(req) {
       "-vf", vf,
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
-      "-movflags", "+faststart",
       "-c:a", "aac",
-      output
+      processed
     ]);
 
-    const buffer = await import("fs").then(fs => fs.promises.readFile(output));
+    let finalVideo = processed;
+
+    if (trim) {
+      const duration = await getDuration(processed);
+      const safeStart = Math.max(0, trim.start);
+      const safeEnd = Math.min(trim.end, duration);
+
+      if (safeEnd <= safeStart) {
+        throw new Error("Invalid trim range");
+      }
+
+      await exec("ffmpeg", [
+        "-y",
+        "-ss", safeStart.toString(),
+        "-to", safeEnd.toString(),
+        "-i", processed,
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-af", "aresample=48000,asetpts=PTS-STARTPTS",
+        trimmed
+      ]);
+
+      finalVideo = trimmed;
+    }
+
+    /* -------------------- SUBTITLES (FINAL STEP) -------------------- */
+
+    if (wantsSubtitles(prompt)) {
+      await exec("ffmpeg", [
+        "-y",
+        "-i", finalVideo,
+        "-vn",
+        "-acodec", "pcm_s16le",
+        "-ar", "16000",
+        audio
+      ]);
+
+      await exec("python3", [
+        "-m", "whisper",
+        audio,
+        "--model", "tiny",
+        "--task", "translate",
+        "--language", "en",
+        "--output_format", "srt",
+        "--output_dir", tmpDir
+      ]);
+
+      if (existsSync(srt)) {
+        await exec("ffmpeg", [
+          "-y",
+          "-i", finalVideo,
+          "-vf",
+          `subtitles=${srt}:force_style='FontSize=18,PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,Outline=1'`,
+          "-c:v", "libx264",
+          "-pix_fmt", "yuv420p",
+          "-c:a", "copy",
+          output
+        ]);
+      } else {
+        await exec("ffmpeg", ["-y", "-i", finalVideo, "-c", "copy", output]);
+      }
+    } else {
+      await exec("ffmpeg", ["-y", "-i", finalVideo, "-c", "copy", output]);
+    }
+
+    const buffer = await import("fs").then(fs =>
+      fs.promises.readFile(output)
+    );
 
     return new Response(buffer, {
       headers: {

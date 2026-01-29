@@ -9,36 +9,45 @@ export default function Home() {
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState(null);
   const [resultUrl, setResultUrl] = useState(null);
+  const [messages, setMessages] = useState([]);
 
   const fileRef1 = useRef(null);
   const fileRef2 = useRef(null);
 
-  const resetAll = () => {
-    setVideo1(null);
-    setVideo2(null);
-    setPrompt("");
-    setStatus("idle");
-    setError(null);
-    setResultUrl(null);
-    if (fileRef1.current) fileRef1.current.value = "";
-    if (fileRef2.current) fileRef2.current.value = "";
+  const generateResponseText = (prompt) => {
+    const p = prompt.toLowerCase();
+    const responses = [];
+
+    if (p.includes("cinematic")) responses.push("🎬 Cinematic look applied");
+    if (p.includes("warm")) responses.push("🔥 Warm tone applied");
+    if (p.includes("blue") || p.includes("cool"))
+      responses.push("❄️ Cool blue tone applied");
+    if (p.includes("black and white") || p.includes("bw"))
+      responses.push("🖤 Black & white look applied");
+    if (p.includes("add title")) responses.push("🏷️ Title added");
+
+    const trimMatch = p.match(/from\s*(\d+:\d+)\s*to\s*(\d+:\d+)/);
+    if (trimMatch) {
+      responses.push(`✂️ Exported ${trimMatch[1]} to ${trimMatch[2]}`);
+    }
+
+    return responses.length
+      ? responses.join(" · ")
+      : "✅ Video generated";
   };
 
   const handleGenerate = async () => {
-    if (!video1) {
-      alert("Please upload at least one video.");
-      return;
-    }
+    if (!video1 || !prompt.trim()) return;
 
+    setMessages((prev) => [...prev, { role: "user", text: prompt }]);
     setStatus("processing");
     setError(null);
-    setResultUrl(null);
 
     try {
       const formData = new FormData();
       formData.append("video1", video1);
       if (video2) formData.append("video2", video2);
-      if (prompt.trim()) formData.append("prompt", prompt);
+      formData.append("prompt", prompt);
 
       const res = await fetch("/api/process-video", {
         method: "POST",
@@ -54,16 +63,24 @@ export default function Home() {
       const url = URL.createObjectURL(blob);
       setResultUrl(url);
       setStatus("done");
+
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: generateResponseText(prompt) }
+      ]);
+
+      setPrompt("");
     } catch (err) {
-      console.error(err);
       setError(err.message);
       setStatus("error");
     }
   };
 
   return (
-    <main className="min-h-screen bg-black text-white p-4 sm:p-8">
-      <div className="max-w-5xl mx-auto space-y-6">
+    <main className="min-h-screen bg-black text-white pb-36">
+      <div className="max-w-6xl mx-auto p-6 space-y-6">
+
+        {/* HEADER */}
         <div>
           <h1 className="text-2xl font-bold">PromptCut</h1>
           <p className="text-gray-400 text-sm">
@@ -71,98 +88,73 @@ export default function Home() {
           </p>
         </div>
 
-        <div className="bg-[#111] rounded-lg p-4 border border-gray-800">
-          <h2 className="font-semibold mb-2">How it works</h2>
-          <ol className="list-decimal list-inside text-sm text-gray-400 space-y-1">
-            <li>Upload one or two videos</li>
-            <li>Describe what you want (optional)</li>
-            <li>Click Generate</li>
-            <li>Download your edited video</li>
-          </ol>
-        </div>
+        {/* MAIN GRID */}
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-[#111] rounded-lg p-4 border border-gray-800 space-y-3">
-            <h2 className="font-semibold">Source Videos</h2>
+          {/* SOURCE VIDEOS */}
+          <div className="md:col-span-2 bg-[#111] rounded-xl p-4 border border-gray-800 min-h-[420px] flex flex-col">
+            <h2 className="font-semibold mb-4">Source Videos</h2>
 
-            <div>
-  <label className="text-sm text-gray-400">Video 1</label>
-  <input
-    ref={fileRef1}
-    type="file"
-    accept="video/*"
-    className="block w-full text-sm mt-1"
-    onChange={(e) => {
-      setVideo1(e.target.files[0]);
+            <label className="cursor-pointer block mb-4">
+              <div className="border border-dashed border-gray-600 rounded-md p-4 min-h-[120px] flex items-center justify-center text-center hover:border-gray-400 transition">
+                {!video1 ? "⬆️ Upload first video" : `🎬 ${video1.name}`}
+              </div>
+              <input
+                ref={fileRef1}
+                type="file"
+                accept="video/*"
+                className="hidden"
+                onChange={(e) => {
+                  setVideo1(e.target.files[0]);
+                  setVideo2(null);
+                  if (fileRef2.current) fileRef2.current.value = "";
+                }}
+              />
+            </label>
 
-      // 🔒 Clear second video completely
-      setVideo2(null);
-
-      if (fileRef2.current) {
-        fileRef2.current.value = "";
-      }
-    }}
-  />
-</div>
-
-            <div>
-              <label className="text-sm text-gray-400">Video 2 (optional)</label>
+            <label className="cursor-pointer block">
+              <div className="border border-dashed border-gray-600 rounded-md p-4 min-h-[120px] flex items-center justify-center text-center hover:border-gray-400 transition">
+                {!video2 ? "➕ Add second video (optional)" : `🎬 ${video2.name}`}
+              </div>
               <input
                 ref={fileRef2}
                 type="file"
                 accept="video/*"
-                className="block w-full text-sm mt-1"
+                className="hidden"
                 onChange={(e) => setVideo2(e.target.files[0])}
               />
+            </label>
+
+            <div className="mt-auto pt-4 border-t border-gray-800 text-sm text-gray-400 space-y-1">
+              <p>• Upload one or two videos (Videos merge automatically)</p>
+              <p>• Combine instructions in one prompt</p>
+              <p>• Generate and download</p>
             </div>
           </div>
 
-          <div className="bg-[#111] rounded-lg p-4 border border-gray-800 space-y-3">
-            <h2 className="font-semibold">Edit Prompt</h2>
+          {/* OUTPUT */}
+          <div className="md:col-span-3 bg-[#111] rounded-xl p-4 border border-gray-800 min-h-[420px] flex flex-col">
+            <h2 className="font-semibold mb-3">Output</h2>
 
-            <textarea
-              className="w-full h-32 bg-black border border-gray-700 rounded p-2 text-sm resize-none"
-              placeholder="Example: Add title: My Day in Wayanad at 0:05, make it black and white"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-            />
-
-            <button
-              onClick={handleGenerate}
-              disabled={status === "processing"}
-              className="w-full bg-white text-black py-2 rounded font-medium hover:bg-gray-200 disabled:opacity-50"
-            >
-              {status === "processing" ? "Processing..." : "Generate Video"}
-            </button>
-
-            {status !== "idle" && (
-              <button
-                onClick={resetAll}
-                className="w-full text-sm text-gray-400 underline"
-              >
-                Reset
-              </button>
-            )}
-          </div>
-
-          <div className="bg-[#111] rounded-lg p-4 border border-gray-800 flex flex-col">
-            <h2 className="font-semibold mb-2">Output</h2>
-
-            <div className="flex-1 border border-gray-700 rounded p-3 text-sm text-gray-400 flex items-center justify-center text-center min-h-[140px]">
-              {status === "idle" && "Your edited video will appear here."}
-              {status === "processing" && "⏳ Generating your video…"}
-              {status === "done" && "✅ Your video is ready"}
+            <div className="aspect-video border border-gray-700 rounded-md bg-black flex items-center justify-center">
+              {status === "idle" && "Preview will appear here"}
+              {status === "processing" && "⏳ Processing…"}
+              {status === "done" && resultUrl && (
+                <video
+                  src={resultUrl}
+                  controls
+                  className="w-full h-full object-contain rounded-md"
+                />
+              )}
               {status === "error" && (
-                <span className="text-red-400">
-                  ❌ {error || "Something went wrong"}
-                </span>
+                <span className="text-red-400">❌ {error}</span>
               )}
             </div>
 
             <a
               href={resultUrl || "#"}
               download="promptcut.mp4"
-              className={`mt-3 text-center py-2 rounded text-sm ${
+              className={`mt-4 text-center py-2 rounded-lg text-sm font-medium ${
                 status === "done"
                   ? "bg-white text-black hover:bg-gray-200"
                   : "bg-gray-800 text-gray-500 pointer-events-none"
@@ -170,6 +162,57 @@ export default function Home() {
             >
               Download MP4
             </a>
+          </div>
+        </div>
+
+        {/* CHAT */}
+        <div className="space-y-3">
+          {messages.map((m, i) => (
+            <div
+              key={i}
+              className={`flex ${
+                m.role === "user" ? "justify-end" : "justify-start"
+              }`}
+            >
+              <div
+                className="max-w-[75%] px-4 py-2 rounded-lg text-sm"
+                style={{
+                  backgroundColor:
+                    m.role === "user" ? "#1C1C1C" : "#1C2A3A"
+                }}
+              >
+                {m.text}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* PROMPT BAR */}
+      <div className="fixed bottom-0 left-0 right-0 bg-black border-t border-gray-800">
+        <div className="max-w-4xl mx-auto p-4">
+          <div className="flex items-center bg-[#111] border border-gray-700 rounded-xl px-3 min-h-[52px]">
+            <textarea
+              rows={1}
+              className="flex-1 bg-transparent resize-none text-sm py-2 outline-none placeholder-gray-500"
+              placeholder="Make it cinematic, add subtitles and trim from 0:45 to 1:20"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleGenerate();
+                }
+              }}
+            />
+
+            <button
+  onClick={handleGenerate}
+  disabled={status === "processing"}
+  className="ml-2 px-4 h-[36px] bg-white text-black rounded-md text-sm font-medium hover:bg-gray-200 disabled:opacity-50 flex items-center justify-center"
+>
+              {status === "processing" ? "…" : "Generate"}
+            </button>
           </div>
         </div>
       </div>
