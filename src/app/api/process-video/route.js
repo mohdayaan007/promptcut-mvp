@@ -7,6 +7,10 @@ import { promisify } from "util";
 
 const exec = promisify(execFile);
 
+// 🔑 IMPORTANT: Railway-safe binary paths
+const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
+const FFPROBE = process.env.FFPROBE_PATH || "ffprobe";
+
 export const runtime = "nodejs";
 
 const MAX_SIZE_MB = 50;
@@ -40,13 +44,10 @@ function detectColor(prompt) {
 
   if (p.includes("black and white") || p.includes("bw") || p.includes("monochrome"))
     return "bw";
-
   if (p.includes("cinematic") || p.includes("film") || p.includes("movie"))
     return "cinematic";
-
   if (p.includes("blue") || p.includes("cool") || p.includes("cold") || p.includes("night"))
     return "blue";
-
   if (p.includes("warm") || p.includes("sunset") || p.includes("cozy"))
     return "warm";
 
@@ -56,17 +57,13 @@ function detectColor(prompt) {
 function wantsSubtitles(prompt) {
   if (!prompt) return false;
   const p = prompt.toLowerCase();
-  return (
-    p.includes("subtitle") ||
-    p.includes("subtitles") ||
-    p.includes("captions")
-  );
+  return p.includes("subtitle") || p.includes("subtitles") || p.includes("captions");
 }
 
 /* -------------------- HELPERS -------------------- */
 
 async function getDuration(filePath) {
-  const { stdout } = await exec("ffprobe", [
+  const { stdout } = await exec(FFPROBE, [
     "-v", "error",
     "-show_entries", "format=duration",
     "-of", "default=noprint_wrappers=1:nokey=1",
@@ -76,7 +73,7 @@ async function getDuration(filePath) {
 }
 
 async function normalize(input, output) {
-  await exec("ffmpeg", [
+  await exec(FFMPEG, [
     "-y",
     "-i", input,
     "-vf",
@@ -108,7 +105,7 @@ export async function POST(req) {
       return Response.json({ error: "Missing video" }, { status: 400 });
     }
 
-    const tmpDir = path.join(os.tmpdir(), `promptcut-${Date.now()}`);
+    const tmpDir = path.join(os.tmpdir(), `cliponaut-${Date.now()}`);
     if (!existsSync(tmpDir)) await mkdir(tmpDir);
 
     const v1 = path.join(tmpDir, "v1.mp4");
@@ -131,7 +128,7 @@ export async function POST(req) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
 
-      await exec("ffmpeg", [
+      await exec(FFMPEG, [
         "-y",
         "-i", n1,
         "-i", n2,
@@ -178,7 +175,7 @@ export async function POST(req) {
 
     const vf = filters.length ? filters.join(",") : "null";
 
-    await exec("ffmpeg", [
+    await exec(FFMPEG, [
       "-y",
       "-i", baseVideo,
       "-vf", vf,
@@ -195,11 +192,9 @@ export async function POST(req) {
       const safeStart = Math.max(0, trim.start);
       const safeEnd = Math.min(trim.end, duration);
 
-      if (safeEnd <= safeStart) {
-        throw new Error("Invalid trim range");
-      }
+      if (safeEnd <= safeStart) throw new Error("Invalid trim range");
 
-      await exec("ffmpeg", [
+      await exec(FFMPEG, [
         "-y",
         "-ss", safeStart.toString(),
         "-to", safeEnd.toString(),
@@ -214,10 +209,8 @@ export async function POST(req) {
       finalVideo = trimmed;
     }
 
-    /* -------------------- SUBTITLES (FINAL STEP) -------------------- */
-
     if (wantsSubtitles(prompt)) {
-      await exec("ffmpeg", [
+      await exec(FFMPEG, [
         "-y",
         "-i", finalVideo,
         "-vn",
@@ -237,7 +230,7 @@ export async function POST(req) {
       ]);
 
       if (existsSync(srt)) {
-        await exec("ffmpeg", [
+        await exec(FFMPEG, [
           "-y",
           "-i", finalVideo,
           "-vf",
@@ -248,10 +241,10 @@ export async function POST(req) {
           output
         ]);
       } else {
-        await exec("ffmpeg", ["-y", "-i", finalVideo, "-c", "copy", output]);
+        await exec(FFMPEG, ["-y", "-i", finalVideo, "-c", "copy", output]);
       }
     } else {
-      await exec("ffmpeg", ["-y", "-i", finalVideo, "-c", "copy", output]);
+      await exec(FFMPEG, ["-y", "-i", finalVideo, "-c", "copy", output]);
     }
 
     const buffer = await import("fs").then(fs =>
@@ -261,7 +254,7 @@ export async function POST(req) {
     return new Response(buffer, {
       headers: {
         "Content-Type": "video/mp4",
-        "Content-Disposition": "attachment; filename=promptcut.mp4"
+        "Content-Disposition": "attachment; filename=cliponaut.mp4"
       }
     });
 
