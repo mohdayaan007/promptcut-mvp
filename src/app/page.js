@@ -81,11 +81,18 @@ export default function Home() {
       <div className="max-w-6xl mx-auto p-6 space-y-6">
 
         {/* HEADER */}
-        <div>
-          <h1 className="text-2xl font-bold">PromptCut</h1>
-          <p className="text-gray-400 text-sm">
-            Edit videos using natural language
-          </p>
+        <div className="flex items-center gap-3">
+          <img
+            src="/cliponaut.svg"
+            alt="Cliponaut logo"
+            className="w-8 h-8 rounded-md"
+          />
+          <div>
+            <h1 className="text-2xl font-bold">Cliponaut</h1>
+            <p className="text-gray-400 text-sm">
+              AI-powered video editing with simple prompts
+            </p>
+          </div>
         </div>
 
         {/* MAIN GRID */}
@@ -153,7 +160,7 @@ export default function Home() {
 
             <a
               href={resultUrl || "#"}
-              download="promptcut.mp4"
+              download="cliponaut.mp4"
               className={`mt-4 text-center py-2 rounded-lg text-sm font-medium ${
                 status === "done"
                   ? "bg-white text-black hover:bg-gray-200"
@@ -207,10 +214,10 @@ export default function Home() {
             />
 
             <button
-  onClick={handleGenerate}
-  disabled={status === "processing"}
-  className="ml-2 px-4 h-[36px] bg-white text-black rounded-md text-sm font-medium hover:bg-gray-200 disabled:opacity-50 flex items-center justify-center"
->
+              onClick={handleGenerate}
+              disabled={status === "processing"}
+              className="ml-2 px-4 h-[36px] bg-white text-black rounded-md text-sm font-medium hover:bg-gray-200 disabled:opacity-50 flex items-center justify-center"
+            >
               {status === "processing" ? "…" : "Generate"}
             </button>
           </div>
