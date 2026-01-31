@@ -96,7 +96,7 @@ export async function POST(req) {
     const processed = path.join(tmp, "processed.mp4");
     const trimmed = path.join(tmp, "trimmed.mp4");
     const audio = path.join(tmp, "audio.wav");
-    const srt = path.join(tmp, "audio.srt");
+    const srt = path.join(tmp, "audio.wav.srt");
     const output = path.join(tmp, "output.mp4");
 
     /* ---------- NORMALIZE ---------- */
