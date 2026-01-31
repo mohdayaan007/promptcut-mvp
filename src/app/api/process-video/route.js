@@ -7,20 +7,20 @@ import { promisify } from "util";
 
 const exec = promisify(execFile);
 
-/**
- * 🔑 CRITICAL FIX
- * Resolve ffmpeg / ffprobe absolute paths at runtime
- * This works reliably on Railway + Nixpacks
- */
-const FFMPEG = execSync("which ffmpeg").toString().trim();
-const FFPROBE = execSync("which ffprobe").toString().trim();
-
 export const runtime = "nodejs";
 
 /* -------------------- HELPERS -------------------- */
 
-async function normalize(input, output) {
-  await exec(FFMPEG, [
+function resolveFFmpeg() {
+  try {
+    return execSync("which ffmpeg").toString().trim();
+  } catch {
+    throw new Error("ffmpeg not found at runtime");
+  }
+}
+
+async function normalize(input, output, ffmpegPath) {
+  await exec(ffmpegPath, [
     "-y",
     "-i", input,
     "-vf",
@@ -37,6 +37,9 @@ async function normalize(input, output) {
 
 export async function POST(req) {
   try {
+    // 🔑 Resolve ffmpeg ONLY at runtime
+    const FFMPEG = resolveFFmpeg();
+
     const formData = await req.formData();
     const file = formData.get("video1");
 
@@ -51,7 +54,7 @@ export async function POST(req) {
     const output = path.join(tmpDir, "output.mp4");
 
     await writeFile(input, Buffer.from(await file.arrayBuffer()));
-    await normalize(input, output);
+    await normalize(input, output, FFMPEG);
 
     const buffer = await import("fs").then(fs =>
       fs.promises.readFile(output)
@@ -65,7 +68,10 @@ export async function POST(req) {
     });
 
   } catch (err) {
-    console.error("FFMPEG ERROR:", err);
-    return Response.json({ error: err.message }, { status: 500 });
+    console.error("VIDEO ERROR:", err);
+    return Response.json(
+      { error: err.message || "Video processing failed" },
+      { status: 500 }
+    );
   }
 }
