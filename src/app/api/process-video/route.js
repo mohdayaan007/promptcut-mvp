@@ -5,69 +5,15 @@ import os from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
-// ✅ BUNDLED FFMPEG (Railway-safe)
-import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
-
 const exec = promisify(execFile);
-const FFMPEG = ffmpegInstaller.path;
 
-// ffprobe lives next to ffmpeg in this package
-const FFPROBE = FFMPEG.replace(/ffmpeg$/, "ffprobe");
+// Railway + Nixpacks system binaries
+const FFMPEG = "ffmpeg";
+const FFPROBE = "ffprobe";
 
 export const runtime = "nodejs";
 
-const MAX_DURATION_SEC = 60;
-
-/* -------------------- PARSERS -------------------- */
-
-function parseOverlay(prompt) {
-  const match = prompt.match(/add title:\s*(.+?)\s*at\s*(\d+):(\d+)/i);
-  if (!match) return null;
-
-  const text = match[1].trim();
-  const start = parseInt(match[2]) * 60 + parseInt(match[3]);
-  const end = start + 3;
-
-  return { text, start, end };
-}
-
-function parseTrim(prompt) {
-  const match = prompt.match(/trim.*?(\d+):(\d+)\s*to\s*(\d+):(\d+)/i);
-  if (!match) return null;
-
-  return {
-    start: parseInt(match[1]) * 60 + parseInt(match[2]),
-    end: parseInt(match[3]) * 60 + parseInt(match[4])
-  };
-}
-
-function detectColor(prompt) {
-  const p = prompt.toLowerCase();
-
-  if (p.includes("black and white") || p.includes("bw")) return "bw";
-  if (p.includes("cinematic")) return "cinematic";
-  if (p.includes("blue") || p.includes("cool")) return "blue";
-  if (p.includes("warm")) return "warm";
-
-  return null;
-}
-
-function wantsSubtitles(prompt) {
-  const p = prompt.toLowerCase();
-  return p.includes("subtitle") || p.includes("captions");
-}
-
 /* -------------------- HELPERS -------------------- */
-
-async function getDuration(filePath) {
-  const { stdout } = await exec(FFPROBE, [
-    "-v", "error",
-    "-show_entries", "format=duration",
-    "-of", "default=noprint_wrappers=1:nokey=1",
-    filePath
-  ]);
-  return parseFloat(stdout.trim());
-}
 
 async function normalize(input, output) {
   await exec(FFMPEG, [
@@ -75,9 +21,7 @@ async function normalize(input, output) {
     "-i", input,
     "-vf",
     "scale=1280:720:force_original_aspect_ratio=decrease," +
-      "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
-    "-af",
-    "aresample=48000,asetpts=PTS-STARTPTS",
+      "pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30",
     "-c:v", "libx264",
     "-pix_fmt", "yuv420p",
     "-c:a", "aac",
@@ -90,126 +34,20 @@ async function normalize(input, output) {
 export async function POST(req) {
   try {
     const formData = await req.formData();
-    const file1 = formData.get("video1");
-    const file2 = formData.get("video2");
-    const prompt = formData.get("prompt") || "";
+    const file = formData.get("video1");
 
-    if (!file1) {
+    if (!file) {
       return Response.json({ error: "Missing video" }, { status: 400 });
     }
 
     const tmpDir = path.join(os.tmpdir(), `cliponaut-${Date.now()}`);
     if (!existsSync(tmpDir)) await mkdir(tmpDir);
 
-    const v1 = path.join(tmpDir, "v1.mp4");
-    const v2 = path.join(tmpDir, "v2.mp4");
-    const n1 = path.join(tmpDir, "n1.mp4");
-    const n2 = path.join(tmpDir, "n2.mp4");
-    const merged = path.join(tmpDir, "merged.mp4");
-    const processed = path.join(tmpDir, "processed.mp4");
-    const trimmed = path.join(tmpDir, "trimmed.mp4");
-    const audio = path.join(tmpDir, "audio.wav");
-    const srt = path.join(tmpDir, "audio.srt");
+    const input = path.join(tmpDir, "input.mp4");
     const output = path.join(tmpDir, "output.mp4");
 
-    await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
-    await normalize(v1, n1);
-
-    let baseVideo = n1;
-
-    if (file2) {
-      await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
-      await normalize(v2, n2);
-
-      await exec(FFMPEG, [
-        "-y",
-        "-i", n1,
-        "-i", n2,
-        "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
-        "-map", "[v]",
-        "-map", "[a]",
-        merged
-      ]);
-
-      baseVideo = merged;
-    }
-
-    const overlay = parseOverlay(prompt);
-    const trim = parseTrim(prompt);
-    const color = detectColor(prompt);
-
-    const filters = [];
-
-    if (color === "bw") filters.push("format=gray");
-
-    if (overlay) {
-      filters.push(
-        `drawtext=text='${overlay.text.replace(/'/g, "\\'")}':` +
-        `x=(w-text_w)/2:y=(h-text_h)/2:` +
-        `fontsize=h*0.07:fontcolor=white:` +
-        `enable='between(t,${overlay.start},${overlay.end})'`
-      );
-    }
-
-    const vf = filters.length ? filters.join(",") : "null";
-
-    await exec(FFMPEG, [
-      "-y",
-      "-i", baseVideo,
-      "-vf", vf,
-      "-c:v", "libx264",
-      "-c:a", "aac",
-      processed
-    ]);
-
-    let finalVideo = processed;
-
-    if (trim) {
-      const duration = await getDuration(processed);
-      const safeStart = Math.max(0, trim.start);
-      const safeEnd = Math.min(trim.end, duration);
-
-      await exec(FFMPEG, [
-        "-y",
-        "-ss", safeStart.toString(),
-        "-to", safeEnd.toString(),
-        "-i", processed,
-        "-c", "copy",
-        trimmed
-      ]);
-
-      finalVideo = trimmed;
-    }
-
-    if (wantsSubtitles(prompt)) {
-      await exec(FFMPEG, [
-        "-y",
-        "-i", finalVideo,
-        "-vn",
-        "-acodec", "pcm_s16le",
-        "-ar", "16000",
-        audio
-      ]);
-
-      await exec("python3", [
-        "-m", "whisper",
-        audio,
-        "--model", "tiny",
-        "--output_format", "srt",
-        "--output_dir", tmpDir
-      ]);
-
-      await exec(FFMPEG, [
-        "-y",
-        "-i", finalVideo,
-        "-vf", `subtitles=${srt}`,
-        "-c:v", "libx264",
-        "-c:a", "copy",
-        output
-      ]);
-    } else {
-      await exec(FFMPEG, ["-y", "-i", finalVideo, "-c", "copy", output]);
-    }
+    await writeFile(input, Buffer.from(await file.arrayBuffer()));
+    await normalize(input, output);
 
     const buffer = await import("fs").then(fs =>
       fs.promises.readFile(output)
@@ -223,7 +61,7 @@ export async function POST(req) {
     });
 
   } catch (err) {
-    console.error("ERROR:", err);
+    console.error(err);
     return Response.json({ error: err.message }, { status: 500 });
   }
 }
