@@ -1,16 +1,18 @@
 FROM node:22-bullseye
 
-# Install system deps
+# System dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     python3 \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Whisper + Torch (CPU)
+# Install Torch (CPU only)
 RUN pip3 install --no-cache-dir \
-    whisper \
     torch --index-url https://download.pytorch.org/whl/cpu
+
+# Install Whisper from PyPI
+RUN pip3 install --no-cache-dir openai-whisper
 
 WORKDIR /app
 
