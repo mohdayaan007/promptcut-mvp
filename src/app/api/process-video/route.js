@@ -1,5 +1,6 @@
 import { writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
+import fs from "fs";
 import path from "path";
 import os from "os";
 import { execFile } from "child_process";
@@ -7,7 +8,6 @@ import { promisify } from "util";
 
 const exec = promisify(execFile);
 
-// Railway / Docker system binaries
 const FFMPEG = "ffmpeg";
 const FFPROBE = "ffprobe";
 
@@ -27,11 +27,8 @@ function detectColor(prompt = "") {
 function parseOverlay(prompt = "") {
   const m = prompt.match(/add title:\s*(.+?)\s*at\s*(\d+):(\d+)/i);
   if (!m) return null;
-  return {
-    text: m[1],
-    start: parseInt(m[2]) * 60 + parseInt(m[3]),
-    end: parseInt(m[2]) * 60 + parseInt(m[3]) + 3
-  };
+  const start = parseInt(m[2]) * 60 + parseInt(m[3]);
+  return { text: m[1], start, end: start + 3 };
 }
 
 function parseTrim(prompt = "") {
@@ -80,32 +77,59 @@ async function normalize(input, output) {
 export async function POST(req) {
   try {
     const formData = await req.formData();
-    const file = formData.get("video1");
+    const video1 = formData.get("video1");
+    const video2 = formData.get("video2");
     const prompt = formData.get("prompt") || "";
 
-    if (!file) {
+    if (!video1) {
       return Response.json({ error: "Missing video" }, { status: 400 });
     }
 
     const tmp = path.join(os.tmpdir(), `cliponaut-${Date.now()}`);
     if (!existsSync(tmp)) await mkdir(tmp);
 
-    const input = path.join(tmp, "input.mp4");
-    const base = path.join(tmp, "base.mp4");
+    const v1 = path.join(tmp, "v1.mp4");
+    const v2 = path.join(tmp, "v2.mp4");
+    const n1 = path.join(tmp, "n1.mp4");
+    const n2 = path.join(tmp, "n2.mp4");
+    const merged = path.join(tmp, "merged.mp4");
     const processed = path.join(tmp, "processed.mp4");
     const trimmed = path.join(tmp, "trimmed.mp4");
     const audio = path.join(tmp, "audio.wav");
     const srt = path.join(tmp, "audio.srt");
     const output = path.join(tmp, "output.mp4");
 
-    await writeFile(input, Buffer.from(await file.arrayBuffer()));
-    await normalize(input, base);
+    /* ---------- NORMALIZE ---------- */
+
+    await writeFile(v1, Buffer.from(await video1.arrayBuffer()));
+    await normalize(v1, n1);
+
+    let baseVideo = n1;
+
+    if (video2) {
+      await writeFile(v2, Buffer.from(await video2.arrayBuffer()));
+      await normalize(v2, n2);
+
+      const list = path.join(tmp, "list.txt");
+      fs.writeFileSync(list, `file '${n1}'\nfile '${n2}'\n`);
+
+      await exec(FFMPEG, [
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", list,
+        "-c", "copy",
+        merged
+      ]);
+
+      baseVideo = merged;
+    }
 
     /* ---------- COLOR + TITLE ---------- */
 
+    const filters = [];
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
-    const filters = [];
 
     if (color === "bw") filters.push("format=gray");
 
@@ -134,7 +158,7 @@ export async function POST(req) {
 
     await exec(FFMPEG, [
       "-y",
-      "-i", base,
+      "-i", baseVideo,
       "-vf", filters.length ? filters.join(",") : "null",
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
@@ -205,7 +229,7 @@ export async function POST(req) {
       await exec(FFMPEG, ["-y", "-i", finalVideo, "-c", "copy", output]);
     }
 
-    const buffer = await import("fs").then(fs => fs.promises.readFile(output));
+    const buffer = await fs.promises.readFile(output);
 
     return new Response(buffer, {
       headers: {
