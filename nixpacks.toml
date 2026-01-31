@@ -1,11 +1,21 @@
 [phases.setup]
-nixPkgs = ["ffmpeg", "python3"]
+aptPkgs = [
+  "ffmpeg",
+  "python3",
+  "python3-pip"
+]
 
 [phases.install]
-cmds = ["npm install"]
+cmds = [
+  "pip3 install --no-cache-dir openai-whisper",
+  "pip3 install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu",
+  "npm install"
+]
 
 [phases.build]
-cmds = ["NEXT_DISABLE_TURBOPACK=1 npm run build"]
+cmds = [
+  "npm run build"
+]
 
 [start]
-cmds = ["bash", "-lc", "which ffmpeg && ffmpeg -version && npm run start"]
+cmd = "npm run start"
