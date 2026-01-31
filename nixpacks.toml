@@ -5,12 +5,7 @@ nixPkgs = ["ffmpeg", "python3"]
 cmds = ["npm install"]
 
 [phases.build]
-cmds = [
-  "which ffmpeg",
-  "which ffprobe",
-  "npm run build"
-]
+cmds = ["NEXT_DISABLE_TURBOPACK=1 npm run build"]
 
 [start]
-cmd = "bash -lc 'which ffmpeg && ffmpeg -version && npm run start'"
-
+cmds = ["bash", "-lc", "which ffmpeg && ffmpeg -version && npm run start"]
