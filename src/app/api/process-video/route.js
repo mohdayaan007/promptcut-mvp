@@ -2,14 +2,18 @@ import { writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import os from "os";
-import { execFile } from "child_process";
+import { execFile, execSync } from "child_process";
 import { promisify } from "util";
 
 const exec = promisify(execFile);
 
-// Railway + Nixpacks system binaries
-const FFMPEG = "ffmpeg";
-const FFPROBE = "ffprobe";
+/**
+ * 🔑 CRITICAL FIX
+ * Resolve ffmpeg / ffprobe absolute paths at runtime
+ * This works reliably on Railway + Nixpacks
+ */
+const FFMPEG = execSync("which ffmpeg").toString().trim();
+const FFPROBE = execSync("which ffprobe").toString().trim();
 
 export const runtime = "nodejs";
 
@@ -61,7 +65,7 @@ export async function POST(req) {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("FFMPEG ERROR:", err);
     return Response.json({ error: err.message }, { status: 500 });
   }
 }
