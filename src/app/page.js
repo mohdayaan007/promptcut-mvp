@@ -37,7 +37,7 @@ export default function Home() {
   };
 
   const handleGenerate = async () => {
-    if (!video1 || !prompt.trim()) return;
+    if (!video1) return;
 
     setMessages((prev) => [...prev, { role: "user", text: prompt }]);
     setStatus("processing");
