@@ -2,25 +2,20 @@ import { writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import os from "os";
-import { execFile, execSync } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 
 const exec = promisify(execFile);
+
+// ✅ Just call ffmpeg directly
+const FFMPEG = "ffmpeg";
 
 export const runtime = "nodejs";
 
 /* -------------------- HELPERS -------------------- */
 
-function resolveFFmpeg() {
-  try {
-    return execSync("which ffmpeg").toString().trim();
-  } catch {
-    throw new Error("ffmpeg not found at runtime");
-  }
-}
-
-async function normalize(input, output, ffmpegPath) {
-  await exec(ffmpegPath, [
+async function normalize(input, output) {
+  await exec(FFMPEG, [
     "-y",
     "-i", input,
     "-vf",
@@ -37,9 +32,6 @@ async function normalize(input, output, ffmpegPath) {
 
 export async function POST(req) {
   try {
-    // 🔑 Resolve ffmpeg ONLY at runtime
-    const FFMPEG = resolveFFmpeg();
-
     const formData = await req.formData();
     const file = formData.get("video1");
 
@@ -54,7 +46,7 @@ export async function POST(req) {
     const output = path.join(tmpDir, "output.mp4");
 
     await writeFile(input, Buffer.from(await file.arrayBuffer()));
-    await normalize(input, output, FFMPEG);
+    await normalize(input, output);
 
     const buffer = await import("fs").then(fs =>
       fs.promises.readFile(output)
