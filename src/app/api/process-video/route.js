@@ -1,6 +1,5 @@
 import { writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
-import fs from "fs";
 import path from "path";
 import os from "os";
 import { execFile } from "child_process";
@@ -8,6 +7,7 @@ import { promisify } from "util";
 
 const exec = promisify(execFile);
 
+// Railway / Docker system binaries
 const FFMPEG = "ffmpeg";
 const FFPROBE = "ffprobe";
 
@@ -27,22 +27,23 @@ function detectColor(prompt = "") {
 function parseOverlay(prompt = "") {
   const m = prompt.match(/add title:\s*(.+?)\s*at\s*(\d+):(\d+)/i);
   if (!m) return null;
+
   const start = parseInt(m[2]) * 60 + parseInt(m[3]);
-  return { text: m[1], start, end: start + 3 };
+  return {
+    text: m[1].trim(),
+    start,
+    end: start + 3
+  };
 }
 
 function parseTrim(prompt = "") {
   const m = prompt.match(/trim.*?(\d+):(\d+)\s*to\s*(\d+):(\d+)/i);
   if (!m) return null;
+
   return {
     start: parseInt(m[1]) * 60 + parseInt(m[2]),
     end: parseInt(m[3]) * 60 + parseInt(m[4])
   };
-}
-
-function wantsSubtitles(prompt = "") {
-  const p = prompt.toLowerCase();
-  return p.includes("subtitle") || p.includes("captions");
 }
 
 /* -------------------- HELPERS -------------------- */
@@ -77,11 +78,11 @@ async function normalize(input, output) {
 export async function POST(req) {
   try {
     const formData = await req.formData();
-    const video1 = formData.get("video1");
-    const video2 = formData.get("video2");
+    const file1 = formData.get("video1");
+    const file2 = formData.get("video2");
     const prompt = formData.get("prompt") || "";
 
-    if (!video1) {
+    if (!file1) {
       return Response.json({ error: "Missing video" }, { status: 400 });
     }
 
@@ -95,30 +96,25 @@ export async function POST(req) {
     const merged = path.join(tmp, "merged.mp4");
     const processed = path.join(tmp, "processed.mp4");
     const trimmed = path.join(tmp, "trimmed.mp4");
-    const audio = path.join(tmp, "audio.wav");
-    const srt = path.join(tmp, "audio.wav.srt");
     const output = path.join(tmp, "output.mp4");
 
-    /* ---------- NORMALIZE ---------- */
-
-    await writeFile(v1, Buffer.from(await video1.arrayBuffer()));
+    /* ---------- NORMALIZE VIDEO 1 ---------- */
+    await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
     await normalize(v1, n1);
-
     let baseVideo = n1;
 
-    if (video2) {
-      await writeFile(v2, Buffer.from(await video2.arrayBuffer()));
+    /* ---------- MERGE VIDEO 2 (OPTIONAL) ---------- */
+    if (file2) {
+      await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
-
-      const list = path.join(tmp, "list.txt");
-      fs.writeFileSync(list, `file '${n1}'\nfile '${n2}'\n`);
 
       await exec(FFMPEG, [
         "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", list,
-        "-c", "copy",
+        "-i", n1,
+        "-i", n2,
+        "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
+        "-map", "[v]",
+        "-map", "[a]",
         merged
       ]);
 
@@ -126,12 +122,13 @@ export async function POST(req) {
     }
 
     /* ---------- COLOR + TITLE ---------- */
-
-    const filters = [];
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
+    const filters = [];
 
-    if (color === "bw") filters.push("format=gray");
+    if (color === "bw") {
+      filters.push("format=gray");
+    }
 
     if (color && color !== "bw") {
       const lut = path.join(process.cwd(), "luts", `${color}.cube`);
@@ -167,7 +164,6 @@ export async function POST(req) {
     ]);
 
     /* ---------- TRIM ---------- */
-
     let finalVideo = processed;
     const trim = parseTrim(prompt);
 
@@ -175,6 +171,10 @@ export async function POST(req) {
       const dur = await getDuration(processed);
       const start = Math.max(0, trim.start);
       const end = Math.min(trim.end, dur);
+
+      if (end <= start) {
+        throw new Error("Invalid trim range");
+      }
 
       await exec(FFMPEG, [
         "-y",
@@ -190,46 +190,12 @@ export async function POST(req) {
       finalVideo = trimmed;
     }
 
-    /* ---------- SUBTITLES ---------- */
+    /* ---------- FINAL OUTPUT ---------- */
+    await exec(FFMPEG, ["-y", "-i", finalVideo, "-c", "copy", output]);
 
-    if (wantsSubtitles(prompt)) {
-      await exec(FFMPEG, [
-        "-y",
-        "-i", finalVideo,
-        "-vn",
-        "-acodec", "pcm_s16le",
-        "-ar", "16000",
-        audio
-      ]);
-
-      await exec("python3", [
-        "-m", "whisper",
-        audio,
-        "--model", "tiny",
-        "--task", "translate",
-        "--language", "en",
-        "--output_format", "srt",
-        "--output_dir", tmp
-      ]);
-
-      if (existsSync(srt)) {
-        await exec(FFMPEG, [
-          "-y",
-          "-i", finalVideo,
-          "-vf", `subtitles=${srt}`,
-          "-c:v", "libx264",
-          "-pix_fmt", "yuv420p",
-          "-c:a", "copy",
-          output
-        ]);
-      } else {
-        await exec(FFMPEG, ["-y", "-i", finalVideo, "-c", "copy", output]);
-      }
-    } else {
-      await exec(FFMPEG, ["-y", "-i", finalVideo, "-c", "copy", output]);
-    }
-
-    const buffer = await fs.promises.readFile(output);
+    const buffer = await import("fs").then(fs =>
+      fs.promises.readFile(output)
+    );
 
     return new Response(buffer, {
       headers: {
