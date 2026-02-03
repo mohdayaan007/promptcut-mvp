@@ -13,8 +13,16 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "PromptCut",
-  description: "Edit videos using natural language",
+  title: "Cliponaut — Edit videos using prompts",
+  description:
+    "Cliponaut is an AI-powered video editor where you edit videos by typing what you want. No timelines, no complexity.",
+  openGraph: {
+    title: "Cliponaut",
+    description: "AI-powered video editing with simple prompts",
+    url: "https://cliponaut.com",
+    siteName: "Cliponaut",
+    type: "website",
+  },
 };
 
 export default function RootLayout({ children }) {

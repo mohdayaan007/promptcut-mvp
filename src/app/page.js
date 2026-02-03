@@ -196,7 +196,62 @@ export default function Home() {
       </div>
 
       {/* PROMPT BAR */}
-      <div className="fixed bottom-0 left-0 right-0 bg-black border-t border-gray-800">
+      {/* PROMPT BAR */}
+<div className="fixed bottom-0 left-0 right-0 bg-black border-t border-gray-800">
+  <div className="max-w-4xl mx-auto p-4 space-y-2">
+
+    {/* EXAMPLES */}
+    <div className="text-xs text-gray-400">
+      Try examples:
+      <div className="flex flex-wrap gap-2 mt-1">
+        {[
+          "Make it cinematic",
+          "Trim from 0:05 to 0:10",
+          "Add title: My Trip at 0:03",
+          "Merge videos and make it warm"
+        ].map((ex) => (
+          <button
+            key={ex}
+            onClick={() => setPrompt(ex)}
+            className="px-2 py-1 rounded bg-[#1A1A1A] hover:bg-[#2A2A2A]"
+          >
+            {ex}
+          </button>
+        ))}
+      </div>
+    </div>
+
+    {/* INPUT */}
+    <div className="relative flex items-end bg-[#111] border border-gray-700 rounded-xl px-3 py-2">
+      <textarea
+        rows={2}
+        className="w-full bg-transparent resize-none text-sm leading-relaxed outline-none placeholder-gray-500 pr-28"
+        placeholder="Describe what you want… (e.g. Make it cinematic and trim from 0:05 to 0:10)"
+        value={prompt}
+        onChange={(e) => setPrompt(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            handleGenerate();
+          }
+        }}
+      />
+
+      <button
+        onClick={handleGenerate}
+        disabled={status === "processing"}
+        className="absolute right-3 bottom-3 px-4 h-[36px] bg-white text-black rounded-md text-sm font-medium hover:bg-gray-200 disabled:opacity-50"
+      >
+        {status === "processing" ? "…" : "Generate"}
+      </button>
+    </div>
+
+    {/* GUARDRAIL */}
+    <p className="text-center text-xs text-gray-500">
+      Best results with short clips and clear instructions (trim, title, color).
+    </p>
+  </div>
+</div>
         <div className="max-w-4xl mx-auto p-4">
           <div className="flex items-center bg-[#111] border border-gray-700 rounded-xl px-3 min-h-[52px]">
             <textarea
