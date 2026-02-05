@@ -1,4 +1,4 @@
-import { writeFile, mkdir, readFile } from "fs/promises";
+import { writeFile, mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import os from "os";
@@ -37,7 +37,7 @@ function parseTrim(prompt = "") {
 
   return {
     start: parseInt(m[1]) * 60 + parseInt(m[2]),
-    end: parseInt(m[3]) * 60 + parseInt(m[4]),
+    end: parseInt(m[3]) * 60 + parseInt(m[4])
   };
 }
 
@@ -48,12 +48,11 @@ async function getDuration(file) {
     "-v", "error",
     "-show_entries", "format=duration",
     "-of", "default=noprint_wrappers=1:nokey=1",
-    file,
+    file
   ]);
   return parseFloat(stdout.trim());
 }
 
-/* ✅ MOBILE-SAFE NORMALIZATION */
 async function normalize(input, output) {
   await exec(FFMPEG, [
     "-y",
@@ -68,7 +67,7 @@ async function normalize(input, output) {
     "-c:v", "libx264",
     "-pix_fmt", "yuv420p",
     "-c:a", "aac",
-    output,
+    output
   ]);
 }
 
@@ -97,12 +96,10 @@ export async function POST(req) {
     const trimmed = path.join(tmp, "trimmed.mp4");
     const output = path.join(tmp, "output.mp4");
 
-    /* ---------- NORMALIZE VIDEO 1 ---------- */
     await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
     await normalize(v1, n1);
     let baseVideo = n1;
 
-    /* ---------- MERGE VIDEO 2 ---------- */
     if (file2) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
@@ -111,17 +108,15 @@ export async function POST(req) {
         "-y",
         "-i", n1,
         "-i", n2,
-        "-filter_complex",
-        "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
+        "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
         "-map", "[v]",
         "-map", "[a]",
-        merged,
+        merged
       ]);
 
       baseVideo = merged;
     }
 
-    /* ---------- COLOR + TITLE ---------- */
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
     const filters = [];
@@ -158,10 +153,9 @@ export async function POST(req) {
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
-      processed,
+      processed
     ]);
 
-    /* ---------- TRIM ---------- */
     let finalVideo = processed;
     const trim = parseTrim(prompt);
 
@@ -170,12 +164,7 @@ export async function POST(req) {
       const start = Math.max(0, trim.start);
       const end = Math.min(trim.end, dur);
 
-      if (end <= start) {
-        return Response.json(
-          { error: "Invalid trim range" },
-          { status: 400 }
-        );
-      }
+      if (end <= start) throw new Error("Invalid trim range");
 
       await exec(FFMPEG, [
         "-y",
@@ -185,43 +174,40 @@ export async function POST(req) {
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
-        trimmed,
+        trimmed
       ]);
 
       finalVideo = trimmed;
     }
 
-    /* ---------- FINAL SAFE OUTPUT (NO COPY) ---------- */
+    // ✅ FINAL SAFE ENCODE (fixes audio + ENOENT)
     await exec(FFMPEG, [
       "-y",
       "-i", finalVideo,
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
-      output,
+      "-ar", "48000",
+      output
     ]);
 
     if (!existsSync(output)) {
-      return Response.json(
-        { error: "Video processing failed. Try a shorter clip." },
-        { status: 500 }
-      );
+      throw new Error("Processing failed before output generation");
     }
 
-    const buffer = await readFile(output);
+    const buffer = await import("fs").then(fs =>
+      fs.promises.readFile(output)
+    );
 
     return new Response(buffer, {
       headers: {
         "Content-Type": "video/mp4",
-        "Content-Disposition": "attachment; filename=cliponaut.mp4",
-      },
+        "Content-Disposition": "attachment; filename=cliponaut.mp4"
+      }
     });
 
   } catch (err) {
     console.error("CLIPONAUT ERROR:", err);
-    return Response.json(
-      { error: "Processing failed. Try a shorter or simpler video." },
-      { status: 500 }
-    );
+    return Response.json({ error: err.message }, { status: 500 });
   }
 }
