@@ -37,7 +37,7 @@ export default function Home() {
   };
 
   const handleGenerate = async () => {
-    if (!video1 || status === "processing") return;
+    if (!video1 || !prompt.trim() || status === "processing") return;
 
     setMessages((prev) => [...prev, { role: "user", text: prompt }]);
     setStatus("processing");
@@ -180,7 +180,7 @@ export default function Home() {
               }`}
             >
               <div
-                className="max-w-[75%] px-4 py-2 rounded-lg text-sm"
+                className="max-w-[75%] px-4 py-2 rounded-lg text-sm break-words whitespace-pre-wrap"
                 style={{
                   backgroundColor:
                     m.role === "user" ? "#1C1C1C" : "#1C2A3A",
@@ -196,7 +196,6 @@ export default function Home() {
       {/* PROMPT BAR */}
       <div className="fixed bottom-0 left-0 right-0 bg-black border-t border-gray-800">
         <div className="max-w-4xl mx-auto p-4 space-y-2">
-          {/* EXAMPLES */}
           <div className="text-xs text-gray-400">
             Try examples:
             <div className="flex flex-wrap gap-2 mt-1">
@@ -217,7 +216,6 @@ export default function Home() {
             </div>
           </div>
 
-          {/* INPUT */}
           <div className="relative flex items-end bg-[#111] border border-gray-700 rounded-xl px-3 py-2">
             <textarea
               rows={2}
