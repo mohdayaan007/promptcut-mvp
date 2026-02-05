@@ -1,251 +1,194 @@
-"use client";
-
-import { useRef, useState } from "react";
-
-export default function Home() {
-  const [video1, setVideo1] = useState(null);
-  const [video2, setVideo2] = useState(null);
-  const [prompt, setPrompt] = useState("");
-  const [status, setStatus] = useState("idle");
-  const [error, setError] = useState(null);
-  const [resultUrl, setResultUrl] = useState(null);
-  const [messages, setMessages] = useState([]);
-
-  const fileRef1 = useRef(null);
-  const fileRef2 = useRef(null);
-
-  const generateResponseText = (prompt) => {
-    const p = prompt.toLowerCase();
-    const responses = [];
-
-    if (p.includes("cinematic")) responses.push("🎬 Cinematic look applied");
-    if (p.includes("warm")) responses.push("🔥 Warm tone applied");
-    if (p.includes("blue") || p.includes("cool"))
-      responses.push("❄️ Cool blue tone applied");
-    if (p.includes("black and white") || p.includes("bw"))
-      responses.push("🖤 Black & white look applied");
-    if (p.includes("add title")) responses.push("🏷️ Title added");
-
-    const trimMatch = p.match(/from\s*(\d+:\d+)\s*to\s*(\d+:\d+)/);
-    if (trimMatch) {
-      responses.push(`✂️ Exported ${trimMatch[1]} to ${trimMatch[2]}`);
-    }
-
-    return responses.length
-      ? responses.join(" · ")
-      : "✅ Video generated";
-  };
-
-  const handleGenerate = async () => {
-    if (!video1 || !prompt.trim() || status === "processing") return;
-
-    setMessages((prev) => [...prev, { role: "user", text: prompt }]);
-    setStatus("processing");
-    setError(null);
-
-    try {
-      const formData = new FormData();
-      formData.append("video1", video1);
-      if (video2) formData.append("video2", video2);
-      formData.append("prompt", prompt);
-
-      const res = await fetch("/api/process-video", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Processing failed");
-      }
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      setResultUrl(url);
-      setStatus("done");
-
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: generateResponseText(prompt) },
-      ]);
-
-      setPrompt("");
-    } catch (err) {
-      setError(err.message);
-      setStatus("error");
-    }
-  };
-
+export default function LandingPage() {
   return (
-    <main className="min-h-screen bg-black text-white pb-40">
-      <div className="max-w-6xl mx-auto p-6 space-y-6">
-        {/* HEADER */}
-        <div className="flex items-center gap-3">
-          <img
-            src="/cliponaut.svg"
-            alt="Cliponaut logo"
-            className="w-8 h-8 rounded-md"
-          />
-          <div>
-            <h1 className="text-2xl font-bold">Cliponaut</h1>
-            <p className="text-gray-400 text-sm">
-              AI-powered video editing with simple prompts
+    <main className="min-h-screen bg-black text-white font-serif">
+      <div className="max-w-5xl mx-auto px-6">
+
+        {/* HERO */}
+        <section className="pt-24 pb-16 text-center space-y-4">
+          <h1 className="text-5xl md:text-6xl font-semibold leading-tight">
+            AI-powered video editing
+          </h1>
+
+          <p className="text-lg md:text-xl text-gray-300">
+            Just type what you want.
+          </p>
+
+          <p className="text-base text-gray-400 max-w-2xl mx-auto pt-2">
+            Cliponaut uses AI to turn simple text instructions into video edits —
+            without timelines, manual tools, or a learning curve.
+          </p>
+
+          <div className="pt-5 flex flex-col items-center gap-3">
+            <a
+              href="/editor"
+              className="inline-flex items-center px-6 py-3 bg-white text-black rounded-md text-sm font-medium hover:bg-gray-200 transition"
+            >
+              Try the MVP →
+            </a>
+
+            <p className="text-sm text-gray-400">
+              No signup · Upload → type → download
+            </p>
+
+            <p className="text-xs text-gray-500">
+              Desktop recommended · Short clips work best
             </p>
           </div>
-        </div>
+        </section>
 
-        {/* MAIN GRID */}
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
-          {/* SOURCE VIDEOS */}
-          <div className="md:col-span-2 bg-[#111] rounded-xl p-4 border border-gray-800 min-h-[420px] flex flex-col">
-            <h2 className="font-semibold mb-4">Source Videos</h2>
+        <Divider />
 
-            <label className="cursor-pointer block mb-4">
-              <div className="border border-dashed border-gray-600 rounded-md p-4 min-h-[120px] flex items-center justify-center text-center hover:border-gray-400 transition">
-                {!video1 ? "⬆️ Upload first video" : `🎬 ${video1.name}`}
-              </div>
-              <input
-                ref={fileRef1}
-                type="file"
-                accept="video/*"
-                className="hidden"
-                onChange={(e) => {
-                  setVideo1(e.target.files[0]);
-                  setVideo2(null);
-                  if (fileRef2.current) fileRef2.current.value = "";
-                }}
-              />
-            </label>
-
-            <label className="cursor-pointer block">
-              <div className="border border-dashed border-gray-600 rounded-md p-4 min-h-[120px] flex items-center justify-center text-center hover:border-gray-400 transition">
-                {!video2 ? "➕ Add second video (optional)" : `🎬 ${video2.name}`}
-              </div>
-              <input
-                ref={fileRef2}
-                type="file"
-                accept="video/*"
-                className="hidden"
-                onChange={(e) => setVideo2(e.target.files[0])}
-              />
-            </label>
-
-            <div className="mt-auto pt-4 border-t border-gray-800 text-sm text-gray-400 space-y-1">
-              <p>• Upload one or two videos (Videos merge automatically)</p>
-              <p>• Combine instructions in one prompt</p>
-              <p>• Generate and download</p>
-            </div>
-          </div>
-
-          {/* OUTPUT */}
-          <div className="md:col-span-3 bg-[#111] rounded-xl p-4 border border-gray-800 min-h-[420px] flex flex-col">
-            <h2 className="font-semibold mb-3">Output</h2>
-
-            <div className="aspect-video border border-gray-700 rounded-md bg-black flex items-center justify-center">
-              {status === "idle" && "Preview will appear here"}
-              {status === "processing" && "⏳ Processing…"}
-              {status === "done" && resultUrl && (
-                <video
-                  src={resultUrl}
-                  controls
-                  className="w-full h-full object-contain rounded-md"
-                />
-              )}
-              {status === "error" && (
-                <span className="text-red-400">❌ {error}</span>
-              )}
-            </div>
-
-            <a
-              href={resultUrl || "#"}
-              download="cliponaut.mp4"
-              className={`mt-4 text-center py-2 rounded-lg text-sm font-medium ${
-                status === "done"
-                  ? "bg-white text-black hover:bg-gray-200"
-                  : "bg-gray-800 text-gray-500 pointer-events-none"
-              }`}
-            >
-              Download MP4
-            </a>
-          </div>
-        </div>
-
-        {/* CHAT */}
-        <div className="space-y-3">
-          {messages.map((m, i) => (
-            <div
-              key={i}
-              className={`flex ${
-                m.role === "user" ? "justify-end" : "justify-start"
-              }`}
-            >
-              <div
-                className="max-w-[75%] px-4 py-2 rounded-lg text-sm break-words whitespace-pre-wrap"
-                style={{
-                  backgroundColor:
-                    m.role === "user" ? "#1C1C1C" : "#1C2A3A",
-                }}
-              >
-                {m.text}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* PROMPT BAR */}
-      <div className="fixed bottom-0 left-0 right-0 bg-black border-t border-gray-800">
-        <div className="max-w-4xl mx-auto p-4 space-y-2">
-          <div className="text-xs text-gray-400">
-            Try examples:
-            <div className="flex flex-wrap gap-2 mt-1">
-              {[
-                "Make it cinematic",
-                "Trim from 0:05 to 0:10",
-                "Add title: My Trip at 0:03",
-                "Merge videos and make it warm",
-              ].map((ex) => (
-                <button
-                  key={ex}
-                  onClick={() => setPrompt(ex)}
-                  className="px-2 py-1 rounded bg-[#1A1A1A] hover:bg-[#2A2A2A]"
-                >
-                  {ex}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="relative flex items-end bg-[#111] border border-gray-700 rounded-xl px-3 py-2">
-            <textarea
-              rows={2}
-              className="w-full bg-transparent resize-none text-sm leading-relaxed outline-none placeholder-gray-500 pr-28"
-              placeholder="Describe what you want… (e.g. Make it cinematic and trim from 0:05 to 0:10)"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleGenerate();
-                }
-              }}
-            />
-
-            <button
-              onClick={handleGenerate}
-              disabled={status === "processing"}
-              className="absolute right-3 bottom-3 px-4 h-[36px] bg-white text-black rounded-md text-sm font-medium hover:bg-gray-200 disabled:opacity-50"
-            >
-              {status === "processing" ? "…" : "Generate"}
-            </button>
-          </div>
-
-          <p className="text-center text-xs text-gray-500">
-            Best results with short clips and clear instructions (trim, title,
-            color).
+        {/* WHO */}
+        <section className="py-12 space-y-3 max-w-2xl mx-auto">
+          <h2 className="text-2xl font-medium">Who is this for?</h2>
+          <p className="text-gray-400 text-lg">
+            Cliponaut is for people who want to edit and export videos in minutes,
+            without opening complex video editing software.
           </p>
-        </div>
+        </section>
+
+        <Divider />
+
+        {/* FEATURES */}
+        <section className="py-12 space-y-12">
+          <h2 className="text-2xl font-medium text-center">
+            What Cliponaut can do today
+          </h2>
+
+          <Feature
+            title="Color grading"
+            description="Apply a look using simple language."
+            examples={[
+              "Make it cinematic",
+              "Make it warm",
+              "Make it blue",
+              "Make it black and white",
+            ]}
+          />
+
+          <Feature
+            title="Trim clips"
+            description="Export only the part you need."
+            examples={[
+              "Trim from 0:05 to 0:10",
+              "Keep only 1:41 to 1:46",
+            ]}
+          />
+
+          <Feature
+            title="Add titles"
+            description="Add simple text overlays at a specific time."
+            examples={[
+              "Add title: My Trip at 0:03",
+              "Add title: Hello World at 0:10",
+            ]}
+          />
+
+          <Feature
+            title="Auto-merge videos"
+            description="Upload two videos and Cliponaut automatically merges them."
+            examples={[
+              "Upload two videos → Make it cinematic",
+            ]}
+          />
+        </section>
+
+        <Divider />
+
+        {/* HOW */}
+        <section className="py-12 space-y-3 max-w-2xl mx-auto">
+          <h2 className="text-2xl font-medium">How it works</h2>
+          <ol className="space-y-2 text-gray-400 text-lg">
+            <li>1. Upload one or two videos</li>
+            <li>2. Type a single prompt (you can combine instructions)</li>
+            <li>3. Generate and download your video</li>
+          </ol>
+          <p className="text-gray-400">That’s it.</p>
+        </section>
+
+        <Divider />
+
+        {/* CLARITY */}
+        <section className="py-12 space-y-3 max-w-2xl mx-auto">
+          <h2 className="text-2xl font-medium">How to get the best results</h2>
+
+          <p className="text-gray-400 text-lg">
+            Cliponaut works best with clear, explicit instructions —
+            exact trim times, simple color styles, and straightforward titles.
+          </p>
+
+          <p className="text-gray-500">
+            Advanced creative edits (vibes, music, smart cuts, positioning)
+            are part of the long-term vision and will come later.
+          </p>
+        </section>
+
+        <Divider />
+
+        {/* COMING SOON */}
+        <section className="py-12 space-y-3 max-w-2xl mx-auto">
+          <h2 className="text-2xl font-medium">Coming soon</h2>
+          <ul className="space-y-2 text-gray-400">
+            <li>Smarter AI-based edits</li>
+            <li>More expressive prompts</li>
+            <li>Better text styling</li>
+            <li>Faster processing</li>
+            <li>Expanded editing actions</li>
+          </ul>
+        </section>
+
+        <Divider />
+
+        {/* WHY + CTA */}
+        <section className="py-12 space-y-4 max-w-2xl mx-auto">
+          <h2 className="text-2xl font-medium">Why Cliponaut exists?</h2>
+
+          <p className="text-gray-400 text-lg">
+            Most people don’t edit videos every day.
+            Opening a full timeline editor for one small change feels heavy.
+          </p>
+
+          <p className="text-lg">
+            What if video editing worked like giving instructions? That's exactly what Cliponaut is!
+          </p>
+
+          <div className="pt-2 flex flex-col items-start gap-2">
+            <a
+              href="/editor"
+              className="inline-flex items-center px-6 py-3 bg-white text-black rounded-md text-sm font-medium hover:bg-gray-200 transition"
+            >
+              Try Cliponaut →
+            </a>
+      
+          </div>
+        </section>
+
       </div>
     </main>
+  );
+}
+
+/* ---------- Components ---------- */
+
+function Divider() {
+  return <div className="border-t border-gray-800" />;
+}
+
+function Feature({ title, description, examples }) {
+  return (
+    <div className="space-y-3 max-w-2xl mx-auto">
+      <h3 className="text-xl font-medium">{title}</h3>
+      <p className="text-gray-400">{description}</p>
+      <div className="flex flex-wrap gap-2">
+        {examples.map((ex) => (
+          <span
+            key={ex}
+            className="px-3 py-1 text-sm bg-[#111] border border-gray-800 rounded"
+          >
+            {ex}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
