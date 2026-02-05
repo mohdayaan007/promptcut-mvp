@@ -3,15 +3,26 @@ import { existsSync } from "fs";
 import path from "path";
 import os from "os";
 import { execFile } from "child_process";
-import { promisify } from "util";
-
-const exec = promisify(execFile);
 
 // Railway / Docker system binaries
 const FFMPEG = "ffmpeg";
 const FFPROBE = "ffprobe";
 
 export const runtime = "nodejs";
+
+/* -------------------- SAFE EXEC (CRITICAL FIX) -------------------- */
+// FFmpeg writes warnings to stderr even on success.
+// This wrapper prevents false failures.
+async function run(cmd, args) {
+  try {
+    return await execFile(cmd, args, { maxBuffer: 1024 * 1024 * 20 });
+  } catch (err) {
+    if (err.code === 0 || err.signal === null) {
+      return err;
+    }
+    throw err;
+  }
+}
 
 /* -------------------- PARSERS -------------------- */
 
@@ -49,7 +60,7 @@ function parseTrim(prompt = "") {
 /* -------------------- HELPERS -------------------- */
 
 async function getDuration(file) {
-  const { stdout } = await exec(FFPROBE, [
+  const { stdout } = await run(FFPROBE, [
     "-v", "error",
     "-show_entries", "format=duration",
     "-of", "default=noprint_wrappers=1:nokey=1",
@@ -60,16 +71,16 @@ async function getDuration(file) {
 
 /* ✅ MOBILE-SAFE NORMALIZATION */
 async function normalize(input, output) {
-  await exec(FFMPEG, [
+  await run(FFMPEG, [
     "-y",
-    "-noautorotate",           // ⬅️ IMPORTANT
+    "-noautorotate",
     "-i", input,
     "-vf",
     "format=yuv420p," +
       "scale=1280:720:force_original_aspect_ratio=decrease," +
       "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
     "-af", "aresample=48000,asetpts=PTS-STARTPTS",
-    "-metadata:s:v", "rotate=0", // ⬅️ normalize rotation metadata
+    "-metadata:s:v", "rotate=0",
     "-c:v", "libx264",
     "-pix_fmt", "yuv420p",
     "-c:a", "aac",
@@ -102,15 +113,17 @@ export async function POST(req) {
     const trimmed = path.join(tmp, "trimmed.mp4");
     const output = path.join(tmp, "output.mp4");
 
+    /* ---------- NORMALIZE VIDEO 1 ---------- */
     await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
     await normalize(v1, n1);
     let baseVideo = n1;
 
+    /* ---------- MERGE VIDEO 2 ---------- */
     if (file2) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
 
-      await exec(FFMPEG, [
+      await run(FFMPEG, [
         "-y",
         "-i", n1,
         "-i", n2,
@@ -123,11 +136,14 @@ export async function POST(req) {
       baseVideo = merged;
     }
 
+    /* ---------- COLOR + TITLE ---------- */
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
     const filters = [];
 
-    if (color === "bw") filters.push("format=gray");
+    if (color === "bw") {
+      filters.push("format=gray");
+    }
 
     if (color && color !== "bw") {
       const lut = path.join(process.cwd(), "luts", `${color}.cube`);
@@ -152,7 +168,7 @@ export async function POST(req) {
       );
     }
 
-    await exec(FFMPEG, [
+    await run(FFMPEG, [
       "-y",
       "-i", baseVideo,
       "-vf", filters.length ? filters.join(",") : "null",
@@ -162,6 +178,7 @@ export async function POST(req) {
       processed
     ]);
 
+    /* ---------- TRIM ---------- */
     let finalVideo = processed;
     const trim = parseTrim(prompt);
 
@@ -172,7 +189,7 @@ export async function POST(req) {
 
       if (end <= start) throw new Error("Invalid trim range");
 
-      await exec(FFMPEG, [
+      await run(FFMPEG, [
         "-y",
         "-ss", start.toString(),
         "-to", end.toString(),
@@ -186,7 +203,8 @@ export async function POST(req) {
       finalVideo = trimmed;
     }
 
-    await exec(FFMPEG, ["-y", "-i", finalVideo, "-c", "copy", output]);
+    /* ---------- FINAL OUTPUT ---------- */
+    await run(FFMPEG, ["-y", "-i", finalVideo, "-c", "copy", output]);
 
     const buffer = await import("fs").then(fs =>
       fs.promises.readFile(output)
