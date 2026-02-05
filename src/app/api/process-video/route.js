@@ -1,28 +1,16 @@
-import { writeFile, mkdir } from "fs/promises";
+import { writeFile, mkdir, readFile } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import os from "os";
 import { execFile } from "child_process";
+import { promisify } from "util";
 
-// Railway / Docker system binaries
+const exec = promisify(execFile);
+
 const FFMPEG = "ffmpeg";
 const FFPROBE = "ffprobe";
 
 export const runtime = "nodejs";
-
-/* -------------------- SAFE EXEC (CRITICAL FIX) -------------------- */
-// FFmpeg writes warnings to stderr even on success.
-// This wrapper prevents false failures.
-async function run(cmd, args) {
-  try {
-    return await execFile(cmd, args, { maxBuffer: 1024 * 1024 * 20 });
-  } catch (err) {
-    if (err.code === 0 || err.signal === null) {
-      return err;
-    }
-    throw err;
-  }
-}
 
 /* -------------------- PARSERS -------------------- */
 
@@ -40,11 +28,7 @@ function parseOverlay(prompt = "") {
   if (!m) return null;
 
   const start = parseInt(m[2]) * 60 + parseInt(m[3]);
-  return {
-    text: m[1].trim(),
-    start,
-    end: start + 3
-  };
+  return { text: m[1].trim(), start, end: start + 3 };
 }
 
 function parseTrim(prompt = "") {
@@ -53,25 +37,25 @@ function parseTrim(prompt = "") {
 
   return {
     start: parseInt(m[1]) * 60 + parseInt(m[2]),
-    end: parseInt(m[3]) * 60 + parseInt(m[4])
+    end: parseInt(m[3]) * 60 + parseInt(m[4]),
   };
 }
 
 /* -------------------- HELPERS -------------------- */
 
 async function getDuration(file) {
-  const { stdout } = await run(FFPROBE, [
+  const { stdout } = await exec(FFPROBE, [
     "-v", "error",
     "-show_entries", "format=duration",
     "-of", "default=noprint_wrappers=1:nokey=1",
-    file
+    file,
   ]);
   return parseFloat(stdout.trim());
 }
 
 /* ✅ MOBILE-SAFE NORMALIZATION */
 async function normalize(input, output) {
-  await run(FFMPEG, [
+  await exec(FFMPEG, [
     "-y",
     "-noautorotate",
     "-i", input,
@@ -84,7 +68,7 @@ async function normalize(input, output) {
     "-c:v", "libx264",
     "-pix_fmt", "yuv420p",
     "-c:a", "aac",
-    output
+    output,
   ]);
 }
 
@@ -123,14 +107,15 @@ export async function POST(req) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
 
-      await run(FFMPEG, [
+      await exec(FFMPEG, [
         "-y",
         "-i", n1,
         "-i", n2,
-        "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
+        "-filter_complex",
+        "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
         "-map", "[v]",
         "-map", "[a]",
-        merged
+        merged,
       ]);
 
       baseVideo = merged;
@@ -141,9 +126,7 @@ export async function POST(req) {
     const overlay = parseOverlay(prompt);
     const filters = [];
 
-    if (color === "bw") {
-      filters.push("format=gray");
-    }
+    if (color === "bw") filters.push("format=gray");
 
     if (color && color !== "bw") {
       const lut = path.join(process.cwd(), "luts", `${color}.cube`);
@@ -168,14 +151,14 @@ export async function POST(req) {
       );
     }
 
-    await run(FFMPEG, [
+    await exec(FFMPEG, [
       "-y",
       "-i", baseVideo,
       "-vf", filters.length ? filters.join(",") : "null",
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
-      processed
+      processed,
     ]);
 
     /* ---------- TRIM ---------- */
@@ -187,9 +170,14 @@ export async function POST(req) {
       const start = Math.max(0, trim.start);
       const end = Math.min(trim.end, dur);
 
-      if (end <= start) throw new Error("Invalid trim range");
+      if (end <= start) {
+        return Response.json(
+          { error: "Invalid trim range" },
+          { status: 400 }
+        );
+      }
 
-      await run(FFMPEG, [
+      await exec(FFMPEG, [
         "-y",
         "-ss", start.toString(),
         "-to", end.toString(),
@@ -197,28 +185,43 @@ export async function POST(req) {
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
-        trimmed
+        trimmed,
       ]);
 
       finalVideo = trimmed;
     }
 
-    /* ---------- FINAL OUTPUT ---------- */
-    await run(FFMPEG, ["-y", "-i", finalVideo, "-c", "copy", output]);
+    /* ---------- FINAL SAFE OUTPUT (NO COPY) ---------- */
+    await exec(FFMPEG, [
+      "-y",
+      "-i", finalVideo,
+      "-c:v", "libx264",
+      "-pix_fmt", "yuv420p",
+      "-c:a", "aac",
+      output,
+    ]);
 
-    const buffer = await import("fs").then(fs =>
-      fs.promises.readFile(output)
-    );
+    if (!existsSync(output)) {
+      return Response.json(
+        { error: "Video processing failed. Try a shorter clip." },
+        { status: 500 }
+      );
+    }
+
+    const buffer = await readFile(output);
 
     return new Response(buffer, {
       headers: {
         "Content-Type": "video/mp4",
-        "Content-Disposition": "attachment; filename=cliponaut.mp4"
-      }
+        "Content-Disposition": "attachment; filename=cliponaut.mp4",
+      },
     });
 
   } catch (err) {
     console.error("CLIPONAUT ERROR:", err);
-    return Response.json({ error: err.message }, { status: 500 });
+    return Response.json(
+      { error: "Processing failed. Try a shorter or simpler video." },
+      { status: 500 }
+    );
   }
 }
