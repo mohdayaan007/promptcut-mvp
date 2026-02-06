@@ -1,166 +1,97 @@
 export default function LandingPage() {
   return (
-    <main className="min-h-screen bg-black text-white font-serif">
-      <div className="max-w-5xl mx-auto px-6">
+    <main className="min-h-screen bg-black text-white font-inter">
+      <div className="max-w-6xl mx-auto px-6">
 
         {/* HERO */}
-        <section className="pt-24 pb-16 text-center space-y-4">
-          <h1 className="text-5xl md:text-6xl font-semibold leading-tight">
-            AI-powered video editing
+        <section className="pt-28 pb-16 text-center">
+          <h1 className="text-5xl md:text-6xl font-semibold tracking-tight">
+            Video editing, simplified by AI.
           </h1>
 
-          <p className="text-lg md:text-xl text-gray-300">
-            Just type what you want.
+          <p className="mt-6 text-lg md:text-lg text-gray-400 max-w-3xl mx-auto">
+            Edit your clips by describing the changes you want. No timelines, no learning curve.
           </p>
 
-          <p className="text-base text-gray-400 max-w-2xl mx-auto pt-2">
-            Cliponaut uses AI to turn simple text instructions into video edits —
-            without timelines, manual tools, or a learning curve.
-          </p>
-
-          <div className="pt-5 flex flex-col items-center gap-3">
+          <div className="mt-6 flex flex-col items-center gap-3">
             <a
               href="/editor"
-              className="inline-flex items-center px-6 py-3 bg-white text-black rounded-md text-sm font-medium hover:bg-gray-200 transition"
+              className="px-7 py-3 bg-white text-black rounded-md text-sm font-medium hover:bg-gray-200 transition"
             >
-              Try the MVP →
+              Start Editing for Free
             </a>
-
-            <p className="text-sm text-gray-400">
-              No signup · Upload → type → download
-            </p>
 
             <p className="text-xs text-gray-500">
-              Desktop recommended · Short clips work best
+              Built for a desktop experience. Mobile coming soon.
             </p>
           </div>
+
+          <div className="mt-10 mx-auto max-w-4xl h-[260px] md:h-[320px] rounded-xl border border-gray-800 flex items-center justify-center text-gray-500">
+            Demo coming soon
+          </div>
         </section>
 
-        <Divider />
-
-        {/* WHO */}
-        <section className="py-12 space-y-3 max-w-2xl mx-auto">
-          <h2 className="text-2xl font-medium">Who is this for?</h2>
-          <p className="text-gray-400 text-lg">
-            Cliponaut is for people who want to edit and export videos in minutes,
-            without opening complex video editing software.
-          </p>
+        {/* HOW IT WORKS */}
+        <section className="py-16 grid grid-cols-1 md:grid-cols-3 gap-12 text-center">
+          <Step icon={<UploadIcon />} title="Upload" text="Drop 1 or 2 clips. We auto-merge if needed." />
+          <Step icon={<PromptIcon />} title="Prompt" text="Describe your edit clearly in one sentence." />
+          <Step icon={<ExportIcon />} title="Export" text="Download a perfectly synced MP4." />
         </section>
-
-        <Divider />
 
         {/* FEATURES */}
-        <section className="py-12 space-y-12">
-          <h2 className="text-2xl font-medium text-center">
-            What Cliponaut can do today
+        <section className="py-16">
+          <h2 className="text-2xl font-medium text-center mb-12">
+            What Cliponaut can do
           </h2>
 
-          <Feature
-            title="Color grading"
-            description="Apply a look using simple language."
-            examples={[
-              "Make it cinematic",
-              "Make it warm",
-              "Make it blue",
-              "Make it black and white",
-            ]}
-          />
-
-          <Feature
-            title="Trim clips"
-            description="Export only the part you need."
-            examples={[
-              "Trim from 0:05 to 0:10",
-              "Keep only 1:41 to 1:46",
-            ]}
-          />
-
-          <Feature
-            title="Add titles"
-            description="Add simple text overlays at a specific time."
-            examples={[
-              "Add title: My Trip at 0:03",
-              "Add title: Hello World at 0:10",
-            ]}
-          />
-
-          <Feature
-            title="Auto-merge videos"
-            description="Upload two videos and Cliponaut automatically merges them."
-            examples={[
-              "Upload two videos → Make it cinematic",
-            ]}
-          />
-        </section>
-
-        <Divider />
-
-        {/* HOW */}
-        <section className="py-12 space-y-3 max-w-2xl mx-auto">
-          <h2 className="text-2xl font-medium">How it works</h2>
-          <ol className="space-y-2 text-gray-400 text-lg">
-            <li>1. Upload one or two videos</li>
-            <li>2. Type a single prompt (you can combine instructions)</li>
-            <li>3. Generate and download your video</li>
-          </ol>
-          <p className="text-gray-400">That’s it.</p>
-        </section>
-
-        <Divider />
-
-        {/* CLARITY */}
-        <section className="py-12 space-y-3 max-w-2xl mx-auto">
-          <h2 className="text-2xl font-medium">How to get the best results</h2>
-
-          <p className="text-gray-400 text-lg">
-            Cliponaut works best with clear, explicit instructions —
-            exact trim times, simple color styles, and straightforward titles.
-          </p>
-
-          <p className="text-gray-500">
-            Advanced creative edits (vibes, music, smart cuts, positioning)
-            are part of the long-term vision and will come later.
-          </p>
-        </section>
-
-        <Divider />
-
-        {/* COMING SOON */}
-        <section className="py-12 space-y-3 max-w-2xl mx-auto">
-          <h2 className="text-2xl font-medium">Coming soon</h2>
-          <ul className="space-y-2 text-gray-400">
-            <li>Smarter AI-based edits</li>
-            <li>More expressive prompts</li>
-            <li>Better text styling</li>
-            <li>Faster processing</li>
-            <li>Expanded editing actions</li>
-          </ul>
-        </section>
-
-        <Divider />
-
-        {/* WHY + CTA */}
-        <section className="py-12 space-y-4 max-w-2xl mx-auto">
-          <h2 className="text-2xl font-medium">Why Cliponaut exists?</h2>
-
-          <p className="text-gray-400 text-lg">
-            Most people don’t edit videos every day.
-            Opening a full timeline editor for one small change feels heavy.
-          </p>
-
-          <p className="text-lg">
-            What if video editing worked like giving instructions? That's exactly what Cliponaut is!
-          </p>
-
-          <div className="pt-2 flex flex-col items-start gap-2">
-            <a
-              href="/editor"
-              className="inline-flex items-center px-6 py-3 bg-white text-black rounded-md text-sm font-medium hover:bg-gray-200 transition"
-            >
-              Try Cliponaut →
-            </a>
-      
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <FeatureCard
+              icon={<TrimIcon />}
+              title="Prompt-based trimming"
+              text="Tell us the timestamps. We handle the cuts."
+              example="Trim from 0:05 to 0:12"
+            />
+            <FeatureCard
+              icon={<PaletteIcon />}
+              title="Natural color grading"
+              text="Change the look instantly without touching a color wheel."
+              example="Make the video cinematic"
+            />
+            <FeatureCard
+              icon={<TitleIcon />}
+              title="Instant title overlays"
+              text="Add text exactly when you need it."
+              example="Add title: How I made $1000 at 0:05"
+            />
+            <FeatureCard
+              icon={<MergeIcon />}
+              title="Zero-config merging"
+              text="Upload two clips and they join automatically."
+            />
           </div>
+        </section>
+
+        {/* WHY */}
+        <section className="py-16">
+          <p className="max-w-xl mx-auto text-center italic text-gray-300 leading-relaxed">
+            Most video editors are built for Hollywood, but most people just need
+            a quick fix. Cliponaut is built for “10-second edits” — trimming a
+            clip, joining two videos, or adding a title — tasks that should take
+            seconds, not minutes.
+          </p>
+        </section>
+
+        {/* FOOTER */}
+        <section className="py-14 text-center text-sm text-gray-500">
+          Have a suggestion? Connect with the founder on{" "}
+          <a
+            href="https://x.com/uxayaan"
+            target="_blank"
+            className="underline hover:text-gray-300"
+          >
+            X
+          </a>
+          .
         </section>
 
       </div>
@@ -170,25 +101,79 @@ export default function LandingPage() {
 
 /* ---------- Components ---------- */
 
-function Divider() {
-  return <div className="border-t border-gray-800" />;
+function Step({ icon, title, text }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-center">{icon}</div>
+      <h3 className="text-lg font-medium">{title}</h3>
+      <p className="text-gray-400 max-w-xs mx-auto">{text}</p>
+    </div>
+  );
 }
 
-function Feature({ title, description, examples }) {
+function FeatureCard({ icon, title, text, example }) {
   return (
-    <div className="space-y-3 max-w-2xl mx-auto">
-      <h3 className="text-xl font-medium">{title}</h3>
-      <p className="text-gray-400">{description}</p>
-      <div className="flex flex-wrap gap-2">
-        {examples.map((ex) => (
-          <span
-            key={ex}
-            className="px-3 py-1 text-sm bg-[#111] border border-gray-800 rounded"
-          >
-            {ex}
-          </span>
-        ))}
-      </div>
+    <div className="border border-gray-800 rounded-xl p-6 space-y-3">
+      <div>{icon}</div>
+      <h3 className="font-medium tracking-wide">{title}</h3>
+      <p className="text-gray-400 text-sm">{text}</p>
+      {example && (
+        <p className="text-xs text-gray-500 italic">e.g. “{example}”</p>
+      )}
     </div>
+  );
+}
+
+/* ---------- Icons (Material-style, semantic) ---------- */
+
+const iconBase = (path) => (
+  <svg
+    className="w-6 h-6 text-gray-300"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    viewBox="0 0 24 24"
+  >
+    {path}
+  </svg>
+);
+
+function UploadIcon() {
+  return iconBase(<path d="M12 16V4m0 0-4 4m4-4 4 4M4 20h16" />);
+}
+
+function PromptIcon() {
+  return iconBase(
+    <path d="M4 5h16v10H7l-3 4V5z" />
+  );
+}
+
+function ExportIcon() {
+  return iconBase(
+    <path d="M12 4v12m0 0 4-4m-4 4-4-4M4 20h16" />
+  );
+}
+
+function TrimIcon() {
+  return iconBase(
+    <path d="M4 4l16 16M4 20L20 4" />
+  );
+}
+
+function PaletteIcon() {
+  return iconBase(
+    <path d="M12 3a9 9 0 1 0 0 18 2 2 0 0 0 0-4h-1a2 2 0 0 1 0-4h5a4 4 0 0 0 0-8h-1" />
+  );
+}
+
+function TitleIcon() {
+  return iconBase(
+    <path d="M4 4h16M12 4v16" />
+  );
+}
+
+function MergeIcon() {
+  return iconBase(
+    <path d="M7 3v6a4 4 0 0 0 4 4h2m0 0v4l4-4-4-4" />
   );
 }
