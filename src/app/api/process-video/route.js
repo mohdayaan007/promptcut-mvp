@@ -5,7 +5,16 @@ import os from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
-const exec = promisify(execFile);
+/* -------------------- EXEC WITH SAFE BUFFER -------------------- */
+/**
+ * FFmpeg produces a LOT of stderr output.
+ * Node's default maxBuffer (1MB) causes false failures.
+ * We increase it safely to 20MB.
+ */
+const exec = (cmd, args) =>
+  promisify(execFile)(cmd, args, {
+    maxBuffer: 1024 * 1024 * 20 // 20MB
+  });
 
 const FFMPEG = "ffmpeg";
 const FFPROBE = "ffprobe";
@@ -180,7 +189,7 @@ export async function POST(req) {
       finalVideo = trimmed;
     }
 
-    // ✅ FINAL SAFE ENCODE (fixes audio + ENOENT)
+    // ✅ FINAL SAFE ENCODE (audio sync + guaranteed output)
     await exec(FFMPEG, [
       "-y",
       "-i", finalVideo,
