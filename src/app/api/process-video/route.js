@@ -29,6 +29,7 @@ function detectColor(prompt = "") {
 function parseOverlay(prompt = "") {
   const m = prompt.match(/add title:\s*(.+?)\s*at\s*(\d+):(\d+)/i);
   if (!m) return null;
+
   const start = parseInt(m[2]) * 60 + parseInt(m[3]);
   return { text: m[1].trim(), start, end: start + 3 };
 }
@@ -36,6 +37,7 @@ function parseOverlay(prompt = "") {
 function parseTrim(prompt = "") {
   const m = prompt.match(/trim.*?(\d+):(\d+)\s*to\s*(\d+):(\d+)/i);
   if (!m) return null;
+
   return {
     start: parseInt(m[1]) * 60 + parseInt(m[2]),
     end: parseInt(m[3]) * 60 + parseInt(m[4])
@@ -54,13 +56,8 @@ async function getDuration(file) {
   return parseFloat(stdout.trim());
 }
 
-/* -------------------- STABLE NORMALIZE -------------------- */
-/* Fixes:
-   - Android 4K full range
-   - HDR quirks
-   - Concat mismatches
-   - Random scale crashes
-*/
+/* 🔥 STABLE NORMALIZATION (4K SAFE) */
+
 async function normalize(input, output) {
   await exec(FFMPEG, [
     "-y",
@@ -68,14 +65,10 @@ async function normalize(input, output) {
     "-loglevel", "error",
     "-noautorotate",
     "-i", input,
-    "-vf",
-    "format=yuv420p," +                 // convert first (important)
-    "scale=1280:-2:flags=lanczos," +
-    "setsar=1",
+    "-vf", "scale=1280:-2,format=yuv420p",
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-pix_fmt", "yuv420p",
-    "-movflags", "+faststart",
     "-c:a", "aac",
     "-b:a", "128k",
     output
@@ -111,7 +104,7 @@ export async function POST(req) {
     await normalize(v1, n1);
     let baseVideo = n1;
 
-    /* -------- SAFE MERGE -------- */
+    /* 🔀 MERGE */
     if (file2) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
@@ -127,37 +120,45 @@ export async function POST(req) {
         "-map", "[v]",
         "-map", "[a]",
         "-c:v", "libx264",
+        "-preset", "veryfast",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
+        "-b:a", "128k",
         merged
       ]);
 
       baseVideo = merged;
     }
 
-    /* -------- COLOR + TITLE -------- */
-
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
     const filters = [];
+
+    /* 🎨 COLOR GRADING */
 
     if (color === "bw") {
       filters.push("format=gray");
     }
 
-    if (color === "cinematic") {
-  filters.push(
-    "eq=contrast=1.25:saturation=1.35:brightness=0.03,curves=vintage"
-  );
-}
-
     if (color === "blue") {
-      filters.push("colorbalance=bs=0.2");
+      filters.push(
+        "eq=contrast=1.05:saturation=1.1:brightness=-0.01,colorbalance=bs=0.2"
+      );
     }
 
     if (color === "warm") {
-      filters.push("colorbalance=rs=0.15");
+      filters.push(
+        "eq=contrast=1.05:saturation=1.15:brightness=0.01"
+      );
     }
+
+    if (color === "cinematic") {
+      filters.push(
+        "eq=contrast=1.2:saturation=1.1:brightness=-0.02"
+      );
+    }
+
+    /* 🏷 TITLE */
 
     if (overlay) {
       filters.push(
@@ -168,6 +169,8 @@ export async function POST(req) {
       );
     }
 
+    /* 🎬 APPLY FILTERS */
+
     await exec(FFMPEG, [
       "-y",
       "-hide_banner",
@@ -175,13 +178,17 @@ export async function POST(req) {
       "-i", baseVideo,
       "-vf", filters.length ? filters.join(",") : "null",
       "-c:v", "libx264",
+      "-preset", "veryfast",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
+      "-b:a", "128k",
       processed
     ]);
 
     let finalVideo = processed;
     const trim = parseTrim(prompt);
+
+    /* ✂️ TRIM */
 
     if (trim) {
       const dur = await getDuration(processed);
@@ -198,15 +205,17 @@ export async function POST(req) {
         "-to", end.toString(),
         "-i", processed,
         "-c:v", "libx264",
+        "-preset", "veryfast",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
+        "-b:a", "128k",
         trimmed
       ]);
 
       finalVideo = trimmed;
     }
 
-    /* -------- FINAL SAFE ENCODE -------- */
+    /* 🔐 FINAL SAFE ENCODE */
 
     await exec(FFMPEG, [
       "-y",
@@ -214,9 +223,10 @@ export async function POST(req) {
       "-loglevel", "error",
       "-i", finalVideo,
       "-c:v", "libx264",
+      "-preset", "veryfast",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
-      "-ar", "48000",
+      "-b:a", "128k",
       output
     ]);
 
