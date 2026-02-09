@@ -148,19 +148,19 @@ export async function POST(req) {
 
 if (color === "blue") {
   filters.push(
-    "colorbalance=bs=0.2,eq=contrast=1.05:saturation=1.05"
+    "colorchannelmixer=rr=0.9:rg=0:rb=0:gr=0:gg=0.95:gb=0:br=0: bg=0:bb=1.1,eq=saturation=1.05"
   );
 }
 
 if (color === "warm") {
   filters.push(
-    "colorbalance=rs=0.2,eq=contrast=1.05:saturation=1.08"
+    "colorchannelmixer=rr=1.1:rg=0:rb=0:gr=0:gg=1.0:gb=0:br=0:bg=0:bb=0.9,eq=saturation=1.08"
   );
 }
 
 if (color === "cinematic") {
   filters.push(
-    "eq=contrast=1.2:saturation=0.95:brightness=-0.02"
+    "eq=contrast=1.25:saturation=0.9:brightness=-0.03"
   );
 }
 
