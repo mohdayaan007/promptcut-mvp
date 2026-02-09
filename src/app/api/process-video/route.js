@@ -8,7 +8,7 @@ import { promisify } from "util";
 /* -------------------- EXEC WITH SAFE BUFFER -------------------- */
 const exec = (cmd, args) =>
   promisify(execFile)(cmd, args, {
-    maxBuffer: 1024 * 1024 * 20 // 20MB buffer
+    maxBuffer: 1024 * 1024 * 20 // 20MB
   });
 
 const FFMPEG = "ffmpeg";
@@ -66,9 +66,11 @@ async function normalize(input, output) {
     "-noautorotate",
     "-i", input,
     "-vf",
-    "format=yuv420p," +
+      // 🔥 FIXED FILTER ORDER FOR ANDROID yuvj420p
       "scale=1280:720:force_original_aspect_ratio=decrease," +
-      "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
+      "pad=1280:720:(ow-iw)/2:(oh-ih)/2," +
+      "format=yuv420p," +
+      "setsar=1,fps=30",
     "-af", "aresample=48000,asetpts=PTS-STARTPTS",
     "-metadata:s:v", "rotate=0",
     "-c:v", "libx264",
