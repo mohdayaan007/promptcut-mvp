@@ -5,10 +5,9 @@ import os from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
-/* -------------------- SAFE EXEC -------------------- */
 const exec = (cmd, args) =>
   promisify(execFile)(cmd, args, {
-    maxBuffer: 1024 * 1024 * 20 // 20MB buffer
+    maxBuffer: 1024 * 1024 * 20
   });
 
 const FFMPEG = "ffmpeg";
@@ -57,31 +56,47 @@ async function getDuration(file) {
   return parseFloat(stdout.trim());
 }
 
-/**
- * 🔥 LIGHTWEIGHT NORMALIZE
- * Stable for 4K phone videos
- */
+/* 
+  🔥 NEW NORMALIZATION:
+  - Forces constant frame rate
+  - Forces 1280 width
+  - Auto height
+  - Fixes SAR
+  - Converts pixel format safely
+  - Removes HDR color space metadata
+*/
 async function normalize(input, output) {
   await exec(FFMPEG, [
     "-y",
     "-hide_banner",
     "-loglevel", "error",
-    "-nostats",
+
     "-noautorotate",
+    "-fflags", "+genpts",
     "-i", input,
 
-    // lighter scaling (avoid pad overload)
     "-vf",
-    "scale=1280:-2,format=yuv420p,setsar=1",
+    "scale=1280:-2:flags=lanczos," +
+    "format=yuv420p," +
+    "setsar=1," +
+    "fps=30",
 
     "-af", "aresample=48000",
 
+    "-movflags", "+faststart",
+
+    "-colorspace", "bt709",
+    "-color_primaries", "bt709",
+    "-color_trc", "bt709",
+
     "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-crf", "23",
+    "-profile:v", "high",
+    "-level", "4.0",
     "-pix_fmt", "yuv420p",
+
     "-c:a", "aac",
-    "-ar", "48000",
+    "-b:a", "128k",
+
     output
   ]);
 }
@@ -111,12 +126,10 @@ export async function POST(req) {
     const trimmed = path.join(tmp, "trimmed.mp4");
     const output = path.join(tmp, "output.mp4");
 
-    /* ---------- SAVE + NORMALIZE FIRST VIDEO ---------- */
     await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
     await normalize(v1, n1);
     let baseVideo = n1;
 
-    /* ---------- MERGE IF SECOND VIDEO EXISTS ---------- */
     if (file2) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
@@ -125,16 +138,13 @@ export async function POST(req) {
         "-y",
         "-hide_banner",
         "-loglevel", "error",
-        "-nostats",
         "-i", n1,
         "-i", n2,
         "-filter_complex",
-        "[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[v][a]",
+        "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
         "-map", "[v]",
         "-map", "[a]",
         "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "23",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         merged
@@ -143,19 +153,22 @@ export async function POST(req) {
       baseVideo = merged;
     }
 
-    /* ---------- COLOR + TEXT ---------- */
-
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
 
-    const filters = [];
+    let filterChain = [];
 
     if (color === "bw") {
-      filters.push("format=gray");
+      filterChain.push("format=gray");
+    }
+
+    if (color && color !== "bw") {
+      const lut = path.join(process.cwd(), "luts", `${color}.cube`);
+      filterChain.push(`lut3d=${lut}`);
     }
 
     if (overlay) {
-      filters.push(
+      filterChain.push(
         `drawtext=text='${overlay.text.replace(/'/g, "\\'")}':` +
         `x=(w-text_w)/2:y=(h-text_h)/2:` +
         `fontsize=h*0.07:fontcolor=white:` +
@@ -167,20 +180,15 @@ export async function POST(req) {
       "-y",
       "-hide_banner",
       "-loglevel", "error",
-      "-nostats",
       "-i", baseVideo,
-      "-vf", filters.length ? filters.join(",") : "null",
+      "-vf", filterChain.length ? filterChain.join(",") : "null",
       "-c:v", "libx264",
-      "-preset", "veryfast",
-      "-crf", "23",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
       processed
     ]);
 
     let finalVideo = processed;
-
-    /* ---------- TRIM ---------- */
     const trim = parseTrim(prompt);
 
     if (trim) {
@@ -194,13 +202,10 @@ export async function POST(req) {
         "-y",
         "-hide_banner",
         "-loglevel", "error",
-        "-nostats",
         "-ss", start.toString(),
         "-to", end.toString(),
         "-i", processed,
         "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "23",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         trimmed
@@ -209,16 +214,12 @@ export async function POST(req) {
       finalVideo = trimmed;
     }
 
-    /* ---------- FINAL ENCODE ---------- */
     await exec(FFMPEG, [
       "-y",
       "-hide_banner",
       "-loglevel", "error",
-      "-nostats",
       "-i", finalVideo,
       "-c:v", "libx264",
-      "-preset", "veryfast",
-      "-crf", "23",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
       "-ar", "48000",
