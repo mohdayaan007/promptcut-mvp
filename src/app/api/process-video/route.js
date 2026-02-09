@@ -6,14 +6,9 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 
 /* -------------------- EXEC WITH SAFE BUFFER -------------------- */
-/**
- * FFmpeg produces a LOT of stderr output.
- * Node's default maxBuffer (1MB) causes false failures.
- * We increase it safely to 20MB.
- */
 const exec = (cmd, args) =>
   promisify(execFile)(cmd, args, {
-    maxBuffer: 1024 * 1024 * 20 // 20MB
+    maxBuffer: 1024 * 1024 * 20 // 20MB buffer
   });
 
 const FFMPEG = "ffmpeg";
@@ -65,6 +60,9 @@ async function getDuration(file) {
 async function normalize(input, output) {
   await exec(FFMPEG, [
     "-y",
+    "-hide_banner",
+    "-loglevel", "error",
+    "-nostats",
     "-noautorotate",
     "-i", input,
     "-vf",
@@ -115,6 +113,9 @@ export async function POST(req) {
 
       await exec(FFMPEG, [
         "-y",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-nostats",
         "-i", n1,
         "-i", n2,
         "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
@@ -157,6 +158,9 @@ export async function POST(req) {
 
     await exec(FFMPEG, [
       "-y",
+      "-hide_banner",
+      "-loglevel", "error",
+      "-nostats",
       "-i", baseVideo,
       "-vf", filters.length ? filters.join(",") : "null",
       "-c:v", "libx264",
@@ -177,6 +181,9 @@ export async function POST(req) {
 
       await exec(FFMPEG, [
         "-y",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-nostats",
         "-ss", start.toString(),
         "-to", end.toString(),
         "-i", processed,
@@ -189,9 +196,11 @@ export async function POST(req) {
       finalVideo = trimmed;
     }
 
-    // ✅ FINAL SAFE ENCODE (audio sync + guaranteed output)
     await exec(FFMPEG, [
       "-y",
+      "-hide_banner",
+      "-loglevel", "error",
+      "-nostats",
       "-i", finalVideo,
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
