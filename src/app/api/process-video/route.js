@@ -5,10 +5,7 @@ import os from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
-const exec = (cmd, args) =>
-  promisify(execFile)(cmd, args, {
-    maxBuffer: 1024 * 1024 * 20
-  });
+const exec = promisify(execFile);
 
 const FFMPEG = "ffmpeg";
 const FFPROBE = "ffprobe";
@@ -29,7 +26,6 @@ function detectColor(prompt = "") {
 function parseOverlay(prompt = "") {
   const m = prompt.match(/add title:\s*(.+?)\s*at\s*(\d+):(\d+)/i);
   if (!m) return null;
-
   const start = parseInt(m[2]) * 60 + parseInt(m[3]);
   return { text: m[1].trim(), start, end: start + 3 };
 }
@@ -37,7 +33,6 @@ function parseOverlay(prompt = "") {
 function parseTrim(prompt = "") {
   const m = prompt.match(/trim.*?(\d+):(\d+)\s*to\s*(\d+):(\d+)/i);
   if (!m) return null;
-
   return {
     start: parseInt(m[1]) * 60 + parseInt(m[2]),
     end: parseInt(m[3]) * 60 + parseInt(m[4])
@@ -56,9 +51,7 @@ async function getDuration(file) {
   return parseFloat(stdout.trim());
 }
 
-/* -------------------- SAFE NORMALIZE -------------------- */
-/* 4K SAFE — NO FPS FORCING — NO SAR FORCING */
-
+/* 🔥 STABLE NORMALIZATION (MERGE SAFE) */
 async function normalize(input, output) {
   await exec(FFMPEG, [
     "-y",
@@ -67,7 +60,8 @@ async function normalize(input, output) {
     "-noautorotate",
     "-i", input,
     "-vf",
-    "scale='min(1280,iw)':-2:flags=lanczos,format=yuv420p",
+    "scale=1280:720:force_original_aspect_ratio=decrease," +
+    "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-crf", "23",
@@ -106,15 +100,13 @@ export async function POST(req) {
 
     await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
     await normalize(v1, n1);
-
     let baseVideo = n1;
-
-    /* -------------------- MERGE -------------------- */
 
     if (file2) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
 
+      /* 🔥 STABLE CONCAT */
       await exec(FFMPEG, [
         "-y",
         "-hide_banner",
@@ -122,7 +114,8 @@ export async function POST(req) {
         "-i", n1,
         "-i", n2,
         "-filter_complex",
-        "[0:v][1:v]concat=n=2:v=1:a=0[v];[0:a][1:a]concat=n=2:v=0:a=1[a]",
+        "[0:v][1:v]concat=n=2:v=1:a=0[v];" +
+        "[0:a][1:a]concat=n=2:v=0:a=1[a]",
         "-map", "[v]",
         "-map", "[a]",
         "-c:v", "libx264",
@@ -136,39 +129,40 @@ export async function POST(req) {
       baseVideo = merged;
     }
 
-    /* -------------------- COLOR + TEXT -------------------- */
-
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
+    const trim = parseTrim(prompt);
     const filters = [];
 
+    /* 🎨 COLOR GRADING (VISIBLE + STABLE) */
+
     if (color === "bw") {
-  filters.push("hue=s=0");
-}
+      filters.push("hue=s=0");
+    }
 
-if (color === "blue") {
-  filters.push(
-    "colorchannelmixer=rr=0.9:rg=0:rb=0:gr=0:gg=0.95:gb=0:br=0: bg=0:bb=1.1,eq=saturation=1.05"
-  );
-}
+    if (color === "blue") {
+      filters.push(
+        "colorchannelmixer=rr=0.85:gg=0.95:bb=1.25,eq=saturation=1.1"
+      );
+    }
 
-if (color === "warm") {
-  filters.push(
-    "colorchannelmixer=rr=1.1:rg=0:rb=0:gr=0:gg=1.0:gb=0:br=0:bg=0:bb=0.9,eq=saturation=1.08"
-  );
-}
+    if (color === "warm") {
+      filters.push(
+        "colorchannelmixer=rr=1.2:gg=1.05:bb=0.85,eq=saturation=1.1"
+      );
+    }
 
-if (color === "cinematic") {
-  filters.push(
-    "eq=contrast=1.25:saturation=0.9:brightness=-0.03"
-  );
-}
+    if (color === "cinematic") {
+      filters.push(
+        "eq=contrast=1.15:saturation=1.05:brightness=0.02,gamma=1.05"
+      );
+    }
 
     if (overlay) {
       filters.push(
         `drawtext=text='${overlay.text.replace(/'/g, "\\'")}':` +
-        `x=(w-text_w)/2:y=(h-text_h)/2:` +
-        `fontsize=h*0.07:fontcolor=white:` +
+        `x=(w-text_w)/2:y=h*0.1:` +
+        `fontsize=40:fontcolor=white:` +
         `enable='between(t,${overlay.start},${overlay.end})'`
       );
     }
@@ -189,10 +183,6 @@ if (color === "cinematic") {
     ]);
 
     let finalVideo = processed;
-
-    /* -------------------- TRIM -------------------- */
-
-    const trim = parseTrim(prompt);
 
     if (trim) {
       const dur = await getDuration(processed);
@@ -219,7 +209,7 @@ if (color === "cinematic") {
       finalVideo = trimmed;
     }
 
-    /* -------------------- FINAL OUTPUT -------------------- */
+    /* FINAL SAFE ENCODE */
 
     await exec(FFMPEG, [
       "-y",
