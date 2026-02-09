@@ -57,6 +57,10 @@ async function getDuration(file) {
   return parseFloat(stdout.trim());
 }
 
+/**
+ * 🔥 LIGHTWEIGHT NORMALIZE
+ * Stable for 4K phone videos
+ */
 async function normalize(input, output) {
   await exec(FFMPEG, [
     "-y",
@@ -65,15 +69,19 @@ async function normalize(input, output) {
     "-nostats",
     "-noautorotate",
     "-i", input,
+
+    // lighter scaling (avoid pad overload)
     "-vf",
-    "scale=1280:720:force_original_aspect_ratio=decrease," +
-      "pad=1280:720:(ow-iw)/2:(oh-ih)/2," +
-      "format=yuv420p,setsar=1,fps=30",
-    "-af", "aresample=48000,asetpts=PTS-STARTPTS",
-    "-metadata:s:v", "rotate=0",
+    "scale=1280:-2,format=yuv420p,setsar=1",
+
+    "-af", "aresample=48000",
+
     "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", "23",
     "-pix_fmt", "yuv420p",
     "-c:a", "aac",
+    "-ar", "48000",
     output
   ]);
 }
@@ -103,12 +111,12 @@ export async function POST(req) {
     const trimmed = path.join(tmp, "trimmed.mp4");
     const output = path.join(tmp, "output.mp4");
 
+    /* ---------- SAVE + NORMALIZE FIRST VIDEO ---------- */
     await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
     await normalize(v1, n1);
     let baseVideo = n1;
 
-    /* -------- MERGE BLOCK (BULLETPROOF VERSION) -------- */
-
+    /* ---------- MERGE IF SECOND VIDEO EXISTS ---------- */
     if (file2) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
@@ -121,14 +129,12 @@ export async function POST(req) {
         "-i", n1,
         "-i", n2,
         "-filter_complex",
-        "[0:v]scale=1280:720,fps=30,format=yuv420p,setsar=1[v0];" +
-        "[1:v]scale=1280:720,fps=30,format=yuv420p,setsar=1[v1];" +
-        "[0:a]aresample=48000[a0];" +
-        "[1:a]aresample=48000[a1];" +
-        "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]",
+        "[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[v][a]",
         "-map", "[v]",
         "-map", "[a]",
         "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         merged
@@ -137,13 +143,16 @@ export async function POST(req) {
       baseVideo = merged;
     }
 
-    /* -------- COLOR + OVERLAY -------- */
+    /* ---------- COLOR + TEXT ---------- */
 
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
+
     const filters = [];
 
-    if (color === "bw") filters.push("format=gray");
+    if (color === "bw") {
+      filters.push("format=gray");
+    }
 
     if (overlay) {
       filters.push(
@@ -162,6 +171,8 @@ export async function POST(req) {
       "-i", baseVideo,
       "-vf", filters.length ? filters.join(",") : "null",
       "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-crf", "23",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
       processed
@@ -169,8 +180,7 @@ export async function POST(req) {
 
     let finalVideo = processed;
 
-    /* -------- TRIM -------- */
-
+    /* ---------- TRIM ---------- */
     const trim = parseTrim(prompt);
 
     if (trim) {
@@ -189,6 +199,8 @@ export async function POST(req) {
         "-to", end.toString(),
         "-i", processed,
         "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         trimmed
@@ -197,8 +209,7 @@ export async function POST(req) {
       finalVideo = trimmed;
     }
 
-    /* -------- FINAL SAFE ENCODE -------- */
-
+    /* ---------- FINAL ENCODE ---------- */
     await exec(FFMPEG, [
       "-y",
       "-hide_banner",
@@ -206,6 +217,8 @@ export async function POST(req) {
       "-nostats",
       "-i", finalVideo,
       "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-crf", "23",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
       "-ar", "48000",
