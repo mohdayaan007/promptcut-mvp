@@ -143,26 +143,26 @@ export async function POST(req) {
     const filters = [];
 
     if (color === "bw") {
-      filters.push("hue=s=0");
-    }
+  filters.push("hue=s=0");
+}
 
-    if (color === "blue") {
-      filters.push(
-        "colorbalance=bs=0.15:ms=0.05,eq=contrast=1.08:saturation=1.05"
-      );
-    }
+if (color === "blue") {
+  filters.push(
+    "colorbalance=bs=0.2,eq=contrast=1.05:saturation=1.05"
+  );
+}
 
-    if (color === "warm") {
-      filters.push(
-        "colorbalance=rs=0.12:ms=0.05,eq=contrast=1.08:saturation=1.08"
-      );
-    }
+if (color === "warm") {
+  filters.push(
+    "colorbalance=rs=0.2,eq=contrast=1.05:saturation=1.08"
+  );
+}
 
-    if (color === "cinematic") {
-      filters.push(
-        "eq=contrast=1.15:saturation=1.08:brightness=-0.02"
-      );
-    }
+if (color === "cinematic") {
+  filters.push(
+    "eq=contrast=1.2:saturation=0.95:brightness=-0.02"
+  );
+}
 
     if (overlay) {
       filters.push(
