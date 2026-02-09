@@ -159,13 +159,15 @@ export async function POST(req) {
 }
 
     if (overlay) {
-      filters.push(
-        `drawtext=text='${overlay.text.replace(/'/g, "\\'")}':` +
-        `x=(w-text_w)/2:y=h*0.1:` +
-        `fontsize=40:fontcolor=white:` +
-        `enable='between(t,${overlay.start},${overlay.end})'`
-      );
-    }
+  filters.push(
+    `drawtext=text='${overlay.text.replace(/'/g, "\\'")}':` +
+    `x=(w-text_w)/2:` +
+    `y=(h-text_h)/2:` +
+    `fontsize=h*0.07:` +
+    `fontcolor=white:` +
+    `enable='between(t,${overlay.start},${overlay.end})'`
+  );
+}
 
     await exec(FFMPEG, [
       "-y",
