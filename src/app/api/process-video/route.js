@@ -44,35 +44,17 @@ function parseTrim(prompt = "") {
   };
 }
 
-/* -------------------- HELPERS -------------------- */
+/* -------------------- NORMALIZE -------------------- */
 
-async function getDuration(file) {
-  const { stdout } = await exec(FFPROBE, [
-    "-v", "error",
-    "-show_entries", "format=duration",
-    "-of", "default=noprint_wrappers=1:nokey=1",
-    file
-  ]);
-  return parseFloat(stdout.trim());
-}
-
-/* -------------------- STABLE NORMALIZATION -------------------- */
-/* 
-   - No forced padding
-   - No fixed 1280x720
-   - Keeps aspect ratio
-   - Handles 4K phone videos safely
-*/
 async function normalize(input, output) {
   await exec(FFMPEG, [
     "-y",
     "-hide_banner",
     "-loglevel", "error",
     "-noautorotate",
-    "-fflags", "+genpts",
     "-i", input,
     "-vf",
-    "scale='min(1280,iw)':-2:flags=lanczos,format=yuv420p",
+    "scale='min(1280,iw)':-2:flags=lanczos,format=yuv420p,setsar=1",
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-crf", "23",
@@ -82,30 +64,6 @@ async function normalize(input, output) {
     "-b:a", "128k",
     output
   ]);
-}
-
-/* -------------------- COLOR FILTERS -------------------- */
-
-function buildColorFilter(color) {
-  if (!color) return null;
-
-  if (color === "bw") {
-    return "format=gray";
-  }
-
-  if (color === "cinematic") {
-    return "eq=contrast=1.15:saturation=1.05:brightness=0.02";
-  }
-
-  if (color === "warm") {
-    return "eq=contrast=1.05:saturation=1.10:brightness=0.01";
-  }
-
-  if (color === "blue") {
-    return "eq=contrast=1.05:saturation=1.08:brightness=-0.01";
-  }
-
-  return null;
 }
 
 /* -------------------- API -------------------- */
@@ -129,15 +87,15 @@ export async function POST(req) {
     const n1 = path.join(tmp, "n1.mp4");
     const n2 = path.join(tmp, "n2.mp4");
     const merged = path.join(tmp, "merged.mp4");
-    const processed = path.join(tmp, "processed.mp4");
+    const processedPath = path.join(tmp, "processed.mp4");
     const trimmed = path.join(tmp, "trimmed.mp4");
     const output = path.join(tmp, "output.mp4");
 
     await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
     await normalize(v1, n1);
+
     let baseVideo = n1;
 
-    /* -------- MERGE -------- */
     if (file2) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
@@ -149,37 +107,58 @@ export async function POST(req) {
         "-i", n1,
         "-i", n2,
         "-filter_complex",
-        "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+        "[0:v][1:v]concat=n=2:v=1:a=0[v];[0:a][1:a]concat=n=2:v=0:a=1[a]",
         "-map", "[v]",
+        "-map", "[a]",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "128k",
         merged
       ]);
 
       baseVideo = merged;
     }
 
-    /* -------- COLOR + TITLE -------- */
-
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
+    const trim = parseTrim(prompt);
 
-    const filters = [];
+    let filters = [];
 
-    const colorFilter = buildColorFilter(color);
-    if (colorFilter) filters.push(colorFilter);
+    /* ---- COLOR GRADING ---- */
+
+    if (color === "bw") {
+      filters.push("hue=s=0");
+    }
+
+    if (color === "cinematic") {
+      filters.push("eq=contrast=1.18:saturation=1.12:brightness=0.02");
+    }
+
+    if (color === "warm") {
+      filters.push("colorbalance=rs=0.15:gs=0.05:bs=-0.05");
+    }
+
+    if (color === "blue") {
+      filters.push("colorbalance=rs=-0.05:gs=0.02:bs=0.18");
+    }
+
+    /* ---- TITLE ---- */
 
     if (overlay) {
       filters.push(
         `drawtext=text='${overlay.text.replace(/'/g, "\\'")}':` +
-        `x=(w-text_w)/2:` +
-        `y=(h-text_h)/2:` +
-        `fontsize=h*0.07:` +
-        `fontcolor=white:` +
+        `x=(w-text_w)/2:y=(h-text_h)/2:` +
+        `fontsize=h*0.07:fontcolor=white:` +
         `enable='between(t,${overlay.start},${overlay.end})'`
       );
     }
+
+    /* ---- APPLY FILTERS ---- */
+
+    let processed = baseVideo;
 
     if (filters.length) {
       await exec(FFMPEG, [
@@ -194,32 +173,23 @@ export async function POST(req) {
         "-movflags", "+faststart",
         "-c:a", "aac",
         "-b:a", "128k",
-        processed
+        processedPath
       ]);
-    } else {
-      processed = baseVideo;
+
+      processed = processedPath;
     }
+
+    /* ---- TRIM ---- */
 
     let finalVideo = processed;
 
-    /* -------- TRIM -------- */
-
-    const trim = parseTrim(prompt);
     if (trim) {
-      const dur = await getDuration(processed);
-      const start = Math.max(0, trim.start);
-      const end = Math.min(trim.end, dur);
-
-      if (end <= start) {
-        throw new Error("Invalid trim range");
-      }
-
       await exec(FFMPEG, [
         "-y",
         "-hide_banner",
         "-loglevel", "error",
-        "-ss", start.toString(),
-        "-to", end.toString(),
+        "-ss", trim.start.toString(),
+        "-to", trim.end.toString(),
         "-i", processed,
         "-c:v", "libx264",
         "-preset", "veryfast",
@@ -232,7 +202,7 @@ export async function POST(req) {
       finalVideo = trimmed;
     }
 
-    /* -------- FINAL ENCODE -------- */
+    /* ---- FINAL OUTPUT ---- */
 
     await exec(FFMPEG, [
       "-y",
