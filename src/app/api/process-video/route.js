@@ -146,10 +146,10 @@ export async function POST(req) {
     }
 
     if (color === "cinematic") {
-      filters.push(
-        "eq=contrast=1.1:saturation=1.2:brightness=0.02"
-      );
-    }
+  filters.push(
+    "eq=contrast=1.25:saturation=1.35:brightness=0.03,curves=vintage"
+  );
+}
 
     if (color === "blue") {
       filters.push("colorbalance=bs=0.2");
