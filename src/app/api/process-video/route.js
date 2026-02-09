@@ -8,7 +8,7 @@ import { promisify } from "util";
 /* -------------------- SAFE EXEC -------------------- */
 const exec = (cmd, args) =>
   promisify(execFile)(cmd, args, {
-    maxBuffer: 1024 * 1024 * 20
+    maxBuffer: 1024 * 1024 * 20 // 20MB buffer
   });
 
 const FFMPEG = "ffmpeg";
@@ -57,8 +57,6 @@ async function getDuration(file) {
   return parseFloat(stdout.trim());
 }
 
-/* -------------------- LIGHTWEIGHT NORMALIZE -------------------- */
-/* This avoids CPU spikes from 4K Android uploads */
 async function normalize(input, output) {
   await exec(FFMPEG, [
     "-y",
@@ -67,21 +65,15 @@ async function normalize(input, output) {
     "-nostats",
     "-noautorotate",
     "-i", input,
-
-    // 🔥 Only scale down if larger than 1280px width
     "-vf",
-      "scale='min(1280,iw)':-2," +
-      "format=yuv420p," +
-      "setsar=1",
-
-    "-preset", "veryfast",
-    "-crf", "28",
+    "scale=1280:720:force_original_aspect_ratio=decrease," +
+      "pad=1280:720:(ow-iw)/2:(oh-ih)/2," +
+      "format=yuv420p,setsar=1,fps=30",
+    "-af", "aresample=48000,asetpts=PTS-STARTPTS",
+    "-metadata:s:v", "rotate=0",
     "-c:v", "libx264",
     "-pix_fmt", "yuv420p",
-
     "-c:a", "aac",
-    "-b:a", "128k",
-
     output
   ]);
 }
@@ -115,6 +107,8 @@ export async function POST(req) {
     await normalize(v1, n1);
     let baseVideo = n1;
 
+    /* -------- MERGE BLOCK (BULLETPROOF VERSION) -------- */
+
     if (file2) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
@@ -126,34 +120,30 @@ export async function POST(req) {
         "-nostats",
         "-i", n1,
         "-i", n2,
-        "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
+        "-filter_complex",
+        "[0:v]scale=1280:720,fps=30,format=yuv420p,setsar=1[v0];" +
+        "[1:v]scale=1280:720,fps=30,format=yuv420p,setsar=1[v1];" +
+        "[0:a]aresample=48000[a0];" +
+        "[1:a]aresample=48000[a1];" +
+        "[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]",
         "-map", "[v]",
         "-map", "[a]",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
         merged
       ]);
 
       baseVideo = merged;
     }
 
+    /* -------- COLOR + OVERLAY -------- */
+
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
     const filters = [];
 
     if (color === "bw") filters.push("format=gray");
-
-    if (color && color !== "bw") {
-      const lut = path.join(process.cwd(), "luts", `${color}.cube`);
-      const strength =
-        color === "warm" ? 0.22 :
-        color === "blue" ? 0.3 :
-        color === "cinematic" ? 0.28 : 0.25;
-
-      filters.push(
-        `[0:v]split=2[a][b];` +
-        `[b]lut3d=${lut},format=rgba,colorchannelmixer=aa=${strength}[c];` +
-        `[a][c]overlay`
-      );
-    }
 
     if (overlay) {
       filters.push(
@@ -171,8 +161,6 @@ export async function POST(req) {
       "-nostats",
       "-i", baseVideo,
       "-vf", filters.length ? filters.join(",") : "null",
-      "-preset", "veryfast",
-      "-crf", "28",
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
@@ -180,6 +168,9 @@ export async function POST(req) {
     ]);
 
     let finalVideo = processed;
+
+    /* -------- TRIM -------- */
+
     const trim = parseTrim(prompt);
 
     if (trim) {
@@ -197,8 +188,6 @@ export async function POST(req) {
         "-ss", start.toString(),
         "-to", end.toString(),
         "-i", processed,
-        "-preset", "veryfast",
-        "-crf", "28",
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
@@ -208,14 +197,14 @@ export async function POST(req) {
       finalVideo = trimmed;
     }
 
+    /* -------- FINAL SAFE ENCODE -------- */
+
     await exec(FFMPEG, [
       "-y",
       "-hide_banner",
       "-loglevel", "error",
       "-nostats",
       "-i", finalVideo,
-      "-preset", "veryfast",
-      "-crf", "28",
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
