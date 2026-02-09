@@ -5,10 +5,10 @@ import os from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
-/* -------------------- EXEC WITH SAFE BUFFER -------------------- */
+/* -------------------- SAFE EXEC -------------------- */
 const exec = (cmd, args) =>
   promisify(execFile)(cmd, args, {
-    maxBuffer: 1024 * 1024 * 20 // 20MB
+    maxBuffer: 1024 * 1024 * 20
   });
 
 const FFMPEG = "ffmpeg";
@@ -57,6 +57,8 @@ async function getDuration(file) {
   return parseFloat(stdout.trim());
 }
 
+/* -------------------- LIGHTWEIGHT NORMALIZE -------------------- */
+/* This avoids CPU spikes from 4K Android uploads */
 async function normalize(input, output) {
   await exec(FFMPEG, [
     "-y",
@@ -65,17 +67,21 @@ async function normalize(input, output) {
     "-nostats",
     "-noautorotate",
     "-i", input,
+
+    // 🔥 Only scale down if larger than 1280px width
     "-vf",
-      // 🔥 FIXED FILTER ORDER FOR ANDROID yuvj420p
-      "scale=1280:720:force_original_aspect_ratio=decrease," +
-      "pad=1280:720:(ow-iw)/2:(oh-ih)/2," +
+      "scale='min(1280,iw)':-2," +
       "format=yuv420p," +
-      "setsar=1,fps=30",
-    "-af", "aresample=48000,asetpts=PTS-STARTPTS",
-    "-metadata:s:v", "rotate=0",
+      "setsar=1",
+
+    "-preset", "veryfast",
+    "-crf", "28",
     "-c:v", "libx264",
     "-pix_fmt", "yuv420p",
+
     "-c:a", "aac",
+    "-b:a", "128k",
+
     output
   ]);
 }
@@ -165,6 +171,8 @@ export async function POST(req) {
       "-nostats",
       "-i", baseVideo,
       "-vf", filters.length ? filters.join(",") : "null",
+      "-preset", "veryfast",
+      "-crf", "28",
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
@@ -189,6 +197,8 @@ export async function POST(req) {
         "-ss", start.toString(),
         "-to", end.toString(),
         "-i", processed,
+        "-preset", "veryfast",
+        "-crf", "28",
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
@@ -204,6 +214,8 @@ export async function POST(req) {
       "-loglevel", "error",
       "-nostats",
       "-i", finalVideo,
+      "-preset", "veryfast",
+      "-crf", "28",
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
