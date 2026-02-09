@@ -7,7 +7,7 @@ import { promisify } from "util";
 
 const exec = (cmd, args) =>
   promisify(execFile)(cmd, args, {
-    maxBuffer: 1024 * 1024 * 50
+    maxBuffer: 1024 * 1024 * 20
   });
 
 const FFMPEG = "ffmpeg";
@@ -29,7 +29,6 @@ function detectColor(prompt = "") {
 function parseOverlay(prompt = "") {
   const m = prompt.match(/add title:\s*(.+?)\s*at\s*(\d+):(\d+)/i);
   if (!m) return null;
-
   const start = parseInt(m[2]) * 60 + parseInt(m[3]);
   return { text: m[1].trim(), start, end: start + 3 };
 }
@@ -37,15 +36,31 @@ function parseOverlay(prompt = "") {
 function parseTrim(prompt = "") {
   const m = prompt.match(/trim.*?(\d+):(\d+)\s*to\s*(\d+):(\d+)/i);
   if (!m) return null;
-
   return {
     start: parseInt(m[1]) * 60 + parseInt(m[2]),
     end: parseInt(m[3]) * 60 + parseInt(m[4])
   };
 }
 
-/* -------------------- SAFE NORMALIZE -------------------- */
+/* -------------------- HELPERS -------------------- */
 
+async function getDuration(file) {
+  const { stdout } = await exec(FFPROBE, [
+    "-v", "error",
+    "-show_entries", "format=duration",
+    "-of", "default=noprint_wrappers=1:nokey=1",
+    file
+  ]);
+  return parseFloat(stdout.trim());
+}
+
+/* -------------------- STABLE NORMALIZE -------------------- */
+/* Fixes:
+   - Android 4K full range
+   - HDR quirks
+   - Concat mismatches
+   - Random scale crashes
+*/
 async function normalize(input, output) {
   await exec(FFMPEG, [
     "-y",
@@ -54,10 +69,13 @@ async function normalize(input, output) {
     "-noautorotate",
     "-i", input,
     "-vf",
-    "scale=1280:-2:flags=lanczos,format=yuv420p,setsar=1",
+    "format=yuv420p," +                 // convert first (important)
+    "scale=1280:-2:flags=lanczos," +
+    "setsar=1",
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-pix_fmt", "yuv420p",
+    "-movflags", "+faststart",
     "-c:a", "aac",
     "-b:a", "128k",
     output
@@ -91,9 +109,9 @@ export async function POST(req) {
 
     await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
     await normalize(v1, n1);
-
     let baseVideo = n1;
 
+    /* -------- SAFE MERGE -------- */
     if (file2) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
@@ -109,12 +127,15 @@ export async function POST(req) {
         "-map", "[v]",
         "-map", "[a]",
         "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         merged
       ]);
 
       baseVideo = merged;
     }
+
+    /* -------- COLOR + TITLE -------- */
 
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
@@ -124,16 +145,18 @@ export async function POST(req) {
       filters.push("format=gray");
     }
 
-    if (color === "warm") {
-      filters.push("eq=saturation=1.2:gamma=1.05");
+    if (color === "cinematic") {
+      filters.push(
+        "eq=contrast=1.1:saturation=1.2:brightness=0.02"
+      );
     }
 
     if (color === "blue") {
-      filters.push("colorbalance=bs=.3");
+      filters.push("colorbalance=bs=0.2");
     }
 
-    if (color === "cinematic") {
-      filters.push("eq=contrast=1.15:saturation=1.2");
+    if (color === "warm") {
+      filters.push("colorbalance=rs=0.15");
     }
 
     if (overlay) {
@@ -161,12 +184,18 @@ export async function POST(req) {
     const trim = parseTrim(prompt);
 
     if (trim) {
+      const dur = await getDuration(processed);
+      const start = Math.max(0, trim.start);
+      const end = Math.min(trim.end, dur);
+
+      if (end <= start) throw new Error("Invalid trim range");
+
       await exec(FFMPEG, [
         "-y",
         "-hide_banner",
         "-loglevel", "error",
-        "-ss", trim.start.toString(),
-        "-to", trim.end.toString(),
+        "-ss", start.toString(),
+        "-to", end.toString(),
         "-i", processed,
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
@@ -177,6 +206,8 @@ export async function POST(req) {
       finalVideo = trimmed;
     }
 
+    /* -------- FINAL SAFE ENCODE -------- */
+
     await exec(FFMPEG, [
       "-y",
       "-hide_banner",
@@ -185,6 +216,7 @@ export async function POST(req) {
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
+      "-ar", "48000",
       output
     ]);
 
