@@ -7,7 +7,7 @@ import { promisify } from "util";
 
 const exec = (cmd, args) =>
   promisify(execFile)(cmd, args, {
-    maxBuffer: 1024 * 1024 * 20
+    maxBuffer: 1024 * 1024 * 50
   });
 
 const FFMPEG = "ffmpeg";
@@ -44,59 +44,22 @@ function parseTrim(prompt = "") {
   };
 }
 
-/* -------------------- HELPERS -------------------- */
+/* -------------------- SAFE NORMALIZE -------------------- */
 
-async function getDuration(file) {
-  const { stdout } = await exec(FFPROBE, [
-    "-v", "error",
-    "-show_entries", "format=duration",
-    "-of", "default=noprint_wrappers=1:nokey=1",
-    file
-  ]);
-  return parseFloat(stdout.trim());
-}
-
-/* 
-  🔥 NEW NORMALIZATION:
-  - Forces constant frame rate
-  - Forces 1280 width
-  - Auto height
-  - Fixes SAR
-  - Converts pixel format safely
-  - Removes HDR color space metadata
-*/
 async function normalize(input, output) {
   await exec(FFMPEG, [
     "-y",
     "-hide_banner",
     "-loglevel", "error",
-
     "-noautorotate",
-    "-fflags", "+genpts",
     "-i", input,
-
     "-vf",
-    "scale=1280:-2:flags=lanczos," +
-    "format=yuv420p," +
-    "setsar=1," +
-    "fps=30",
-
-    "-af", "aresample=48000",
-
-    "-movflags", "+faststart",
-
-    "-colorspace", "bt709",
-    "-color_primaries", "bt709",
-    "-color_trc", "bt709",
-
+    "scale=1280:-2:flags=lanczos,format=yuv420p,setsar=1",
     "-c:v", "libx264",
-    "-profile:v", "high",
-    "-level", "4.0",
+    "-preset", "veryfast",
     "-pix_fmt", "yuv420p",
-
     "-c:a", "aac",
     "-b:a", "128k",
-
     output
   ]);
 }
@@ -128,6 +91,7 @@ export async function POST(req) {
 
     await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
     await normalize(v1, n1);
+
     let baseVideo = n1;
 
     if (file2) {
@@ -141,11 +105,10 @@ export async function POST(req) {
         "-i", n1,
         "-i", n2,
         "-filter_complex",
-        "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a]",
+        "[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[v][a]",
         "-map", "[v]",
         "-map", "[a]",
         "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         merged
       ]);
@@ -155,20 +118,26 @@ export async function POST(req) {
 
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
-
-    let filterChain = [];
+    const filters = [];
 
     if (color === "bw") {
-      filterChain.push("format=gray");
+      filters.push("format=gray");
     }
 
-    if (color && color !== "bw") {
-      const lut = path.join(process.cwd(), "luts", `${color}.cube`);
-      filterChain.push(`lut3d=${lut}`);
+    if (color === "warm") {
+      filters.push("eq=saturation=1.2:gamma=1.05");
+    }
+
+    if (color === "blue") {
+      filters.push("colorbalance=bs=.3");
+    }
+
+    if (color === "cinematic") {
+      filters.push("eq=contrast=1.15:saturation=1.2");
     }
 
     if (overlay) {
-      filterChain.push(
+      filters.push(
         `drawtext=text='${overlay.text.replace(/'/g, "\\'")}':` +
         `x=(w-text_w)/2:y=(h-text_h)/2:` +
         `fontsize=h*0.07:fontcolor=white:` +
@@ -181,7 +150,7 @@ export async function POST(req) {
       "-hide_banner",
       "-loglevel", "error",
       "-i", baseVideo,
-      "-vf", filterChain.length ? filterChain.join(",") : "null",
+      "-vf", filters.length ? filters.join(",") : "null",
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
@@ -192,18 +161,12 @@ export async function POST(req) {
     const trim = parseTrim(prompt);
 
     if (trim) {
-      const dur = await getDuration(processed);
-      const start = Math.max(0, trim.start);
-      const end = Math.min(trim.end, dur);
-
-      if (end <= start) throw new Error("Invalid trim range");
-
       await exec(FFMPEG, [
         "-y",
         "-hide_banner",
         "-loglevel", "error",
-        "-ss", start.toString(),
-        "-to", end.toString(),
+        "-ss", trim.start.toString(),
+        "-to", trim.end.toString(),
         "-i", processed,
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
@@ -222,7 +185,6 @@ export async function POST(req) {
       "-c:v", "libx264",
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
-      "-ar", "48000",
       output
     ]);
 
