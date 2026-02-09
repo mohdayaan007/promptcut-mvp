@@ -5,7 +5,10 @@ import os from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
-const exec = promisify(execFile);
+const exec = (cmd, args) =>
+  promisify(execFile)(cmd, args, {
+    maxBuffer: 1024 * 1024 * 20
+  });
 
 const FFMPEG = "ffmpeg";
 const FFPROBE = "ffprobe";
@@ -18,7 +21,7 @@ function detectColor(prompt = "") {
   const p = prompt.toLowerCase();
   if (p.includes("black and white") || p.includes("bw")) return "bw";
   if (p.includes("cinematic")) return "cinematic";
-  if (p.includes("blue") || p.includes("cool")) return "blue";
+  if (p.includes("blue")) return "blue";
   if (p.includes("warm")) return "warm";
   return null;
 }
@@ -26,6 +29,7 @@ function detectColor(prompt = "") {
 function parseOverlay(prompt = "") {
   const m = prompt.match(/add title:\s*(.+?)\s*at\s*(\d+):(\d+)/i);
   if (!m) return null;
+
   const start = parseInt(m[2]) * 60 + parseInt(m[3]);
   return { text: m[1].trim(), start, end: start + 3 };
 }
@@ -33,6 +37,7 @@ function parseOverlay(prompt = "") {
 function parseTrim(prompt = "") {
   const m = prompt.match(/trim.*?(\d+):(\d+)\s*to\s*(\d+):(\d+)/i);
   if (!m) return null;
+
   return {
     start: parseInt(m[1]) * 60 + parseInt(m[2]),
     end: parseInt(m[3]) * 60 + parseInt(m[4])
@@ -51,17 +56,23 @@ async function getDuration(file) {
   return parseFloat(stdout.trim());
 }
 
-/* 🔥 STABLE NORMALIZATION (MERGE SAFE) */
+/* -------------------- STABLE NORMALIZATION -------------------- */
+/* 
+   - No forced padding
+   - No fixed 1280x720
+   - Keeps aspect ratio
+   - Handles 4K phone videos safely
+*/
 async function normalize(input, output) {
   await exec(FFMPEG, [
     "-y",
     "-hide_banner",
     "-loglevel", "error",
     "-noautorotate",
+    "-fflags", "+genpts",
     "-i", input,
     "-vf",
-    "scale=1280:720:force_original_aspect_ratio=decrease," +
-    "pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+    "scale='min(1280,iw)':-2:flags=lanczos,format=yuv420p",
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-crf", "23",
@@ -71,6 +82,30 @@ async function normalize(input, output) {
     "-b:a", "128k",
     output
   ]);
+}
+
+/* -------------------- COLOR FILTERS -------------------- */
+
+function buildColorFilter(color) {
+  if (!color) return null;
+
+  if (color === "bw") {
+    return "format=gray";
+  }
+
+  if (color === "cinematic") {
+    return "eq=contrast=1.15:saturation=1.05:brightness=0.02";
+  }
+
+  if (color === "warm") {
+    return "eq=contrast=1.05:saturation=1.10:brightness=0.01";
+  }
+
+  if (color === "blue") {
+    return "eq=contrast=1.05:saturation=1.08:brightness=-0.01";
+  }
+
+  return null;
 }
 
 /* -------------------- API -------------------- */
@@ -99,18 +134,14 @@ export async function POST(req) {
     const output = path.join(tmp, "output.mp4");
 
     await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
-
-// Small delay to ensure file is flushed
-await new Promise(resolve => setTimeout(resolve, 150));
-
-await normalize(v1, n1);
+    await normalize(v1, n1);
     let baseVideo = n1;
 
+    /* -------- MERGE -------- */
     if (file2) {
       await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
       await normalize(v2, n2);
 
-      /* 🔥 STABLE CONCAT */
       await exec(FFMPEG, [
         "-y",
         "-hide_banner",
@@ -118,84 +149,70 @@ await normalize(v1, n1);
         "-i", n1,
         "-i", n2,
         "-filter_complex",
-        "[0:v][1:v]concat=n=2:v=1:a=0[v];" +
-        "[0:a][1:a]concat=n=2:v=0:a=1[a]",
+        "[0:v][1:v]concat=n=2:v=1:a=0[v]",
         "-map", "[v]",
-        "-map", "[a]",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "128k",
         merged
       ]);
 
       baseVideo = merged;
     }
 
+    /* -------- COLOR + TITLE -------- */
+
     const color = detectColor(prompt);
     const overlay = parseOverlay(prompt);
-    const trim = parseTrim(prompt);
+
     const filters = [];
 
-    /* 🎨 COLOR GRADING (VISIBLE + STABLE) */
-
-    if (color === "bw") {
-      filters.push("hue=s=0");
-    }
-
-    if (color === "blue") {
-      filters.push(
-        "colorchannelmixer=rr=0.85:gg=0.95:bb=1.25,eq=saturation=1.1"
-      );
-    }
-
-    if (color === "warm") {
-      filters.push(
-        "colorchannelmixer=rr=1.2:gg=1.05:bb=0.85,eq=saturation=1.1"
-      );
-    }
-
-    if (color === "cinematic") {
-  filters.push(
-    "curves=preset=medium_contrast,eq=saturation=1.05"
-  );
-}
+    const colorFilter = buildColorFilter(color);
+    if (colorFilter) filters.push(colorFilter);
 
     if (overlay) {
-  filters.push(
-    `drawtext=text='${overlay.text.replace(/'/g, "\\'")}':` +
-    `x=(w-text_w)/2:` +
-    `y=(h-text_h)/2:` +
-    `fontsize=h*0.07:` +
-    `fontcolor=white:` +
-    `enable='between(t,${overlay.start},${overlay.end})'`
-  );
-}
+      filters.push(
+        `drawtext=text='${overlay.text.replace(/'/g, "\\'")}':` +
+        `x=(w-text_w)/2:` +
+        `y=(h-text_h)/2:` +
+        `fontsize=h*0.07:` +
+        `fontcolor=white:` +
+        `enable='between(t,${overlay.start},${overlay.end})'`
+      );
+    }
 
-    await exec(FFMPEG, [
-      "-y",
-      "-hide_banner",
-      "-loglevel", "error",
-      "-i", baseVideo,
-      "-vf", filters.length ? filters.join(",") : "null",
-      "-c:v", "libx264",
-      "-preset", "veryfast",
-      "-pix_fmt", "yuv420p",
-      "-movflags", "+faststart",
-      "-c:a", "aac",
-      "-b:a", "128k",
-      processed
-    ]);
+    if (filters.length) {
+      await exec(FFMPEG, [
+        "-y",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-i", baseVideo,
+        "-vf", filters.join(","),
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        processed
+      ]);
+    } else {
+      processed = baseVideo;
+    }
 
     let finalVideo = processed;
 
+    /* -------- TRIM -------- */
+
+    const trim = parseTrim(prompt);
     if (trim) {
       const dur = await getDuration(processed);
       const start = Math.max(0, trim.start);
       const end = Math.min(trim.end, dur);
 
-      if (end <= start) throw new Error("Invalid trim range");
+      if (end <= start) {
+        throw new Error("Invalid trim range");
+      }
 
       await exec(FFMPEG, [
         "-y",
@@ -215,7 +232,7 @@ await normalize(v1, n1);
       finalVideo = trimmed;
     }
 
-    /* FINAL SAFE ENCODE */
+    /* -------- FINAL ENCODE -------- */
 
     await exec(FFMPEG, [
       "-y",
@@ -230,10 +247,6 @@ await normalize(v1, n1);
       "-b:a", "128k",
       output
     ]);
-
-    if (!existsSync(output)) {
-      throw new Error("Processing failed before output generation");
-    }
 
     const buffer = await import("fs").then(fs =>
       fs.promises.readFile(output)
