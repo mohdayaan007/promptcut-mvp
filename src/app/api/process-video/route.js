@@ -153,10 +153,10 @@ export async function POST(req) {
     }
 
     if (color === "cinematic") {
-      filters.push(
-        "eq=contrast=1.15:saturation=1.05:brightness=0.02,gamma=1.05"
-      );
-    }
+  filters.push(
+    "curves=preset=medium_contrast,eq=saturation=1.05"
+  );
+}
 
     if (overlay) {
       filters.push(
