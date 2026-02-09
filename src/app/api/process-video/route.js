@@ -99,7 +99,11 @@ export async function POST(req) {
     const output = path.join(tmp, "output.mp4");
 
     await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
-    await normalize(v1, n1);
+
+// Small delay to ensure file is flushed
+await new Promise(resolve => setTimeout(resolve, 150));
+
+await normalize(v1, n1);
     let baseVideo = n1;
 
     if (file2) {
