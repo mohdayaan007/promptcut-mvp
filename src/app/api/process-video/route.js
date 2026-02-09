@@ -130,20 +130,29 @@ export async function POST(req) {
     /* ---- COLOR GRADING ---- */
 
     if (color === "bw") {
-      filters.push("hue=s=0");
-    }
+  filters.push("hue=s=0");
+}
 
-    if (color === "cinematic") {
-      filters.push("eq=contrast=1.18:saturation=1.12:brightness=0.02");
-    }
+if (color === "cinematic") {
+  filters.push(
+    "eq=contrast=1.12:saturation=1.08:brightness=0.01",
+    "colorchannelmixer=rr=1.04:gg=1.0:bb=0.96"
+  );
+}
 
-    if (color === "warm") {
-      filters.push("colorbalance=rs=0.15:gs=0.05:bs=-0.05");
-    }
+if (color === "warm") {
+  filters.push(
+    "eq=contrast=1.05:saturation=1.07:brightness=0.02",
+    "colorchannelmixer=rr=1.06:gg=1.0:bb=0.94"
+  );
+}
 
-    if (color === "blue") {
-      filters.push("colorbalance=rs=-0.05:gs=0.02:bs=0.18");
-    }
+if (color === "blue") {
+  filters.push(
+    "eq=contrast=1.05:saturation=1.05",
+    "colorchannelmixer=rr=0.94:gg=1.0:bb=1.10"
+  );
+}
 
     /* ---- TITLE ---- */
 
