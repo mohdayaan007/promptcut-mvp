@@ -54,7 +54,7 @@ async function normalize(input, output) {
     "-noautorotate",
     "-i", input,
     "-vf",
-    "scale='min(1280,iw)':-2:flags=lanczos,format=yuv420p,setsar=1",
+"scale=1280:-2:flags=lanczos,format=yuv420p,setsar=1",
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-crf", "23",
