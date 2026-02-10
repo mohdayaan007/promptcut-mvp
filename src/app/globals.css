@@ -28,3 +28,15 @@ body {
 .font-serif {
   font-family: var(--font-source-serif), serif;
 }
+
+.font-serif {
+  font-family: var(--font-source-serif), serif;
+}
+
+.font-raleway {
+  font-family: var(--font-raleway), sans-serif;
+}
+
+.font-inter {
+  font-family: var(--font-inter), system-ui, sans-serif;
+}
