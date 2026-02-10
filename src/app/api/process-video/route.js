@@ -51,10 +51,11 @@ async function normalize(input, output) {
     "-y",
     "-hide_banner",
     "-loglevel", "error",
+    "-fflags", "+genpts",        // regenerate timestamps (fix Android VFR)
     "-noautorotate",
     "-i", input,
     "-vf",
-"scale=1280:-2:flags=lanczos,format=yuv420p,setsar=1",
+    "fps=30,format=yuv420p,scale=1280:-2:flags=lanczos,setsar=1",
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-crf", "23",
