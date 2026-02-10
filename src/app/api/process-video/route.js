@@ -44,7 +44,7 @@ function parseTrim(prompt = "") {
   };
 }
 
-/* -------------------- NORMALIZE -------------------- */
+/* -------------------- NORMALIZE (STABLE) -------------------- */
 
 async function normalize(input, output) {
   await exec(FFMPEG, [
@@ -55,8 +55,11 @@ async function normalize(input, output) {
     "-noautorotate",
     "-i", input,
     "-vf",
-    "fps=30,format=yuv420p,scale=1280:-2:flags=lanczos,setsar=1",
-    "-threads", "2",              // 🚨 prevents memory spike
+    // FORCE identical resolution for ALL videos
+    "scale=1280:720:force_original_aspect_ratio=decrease," +
+    "pad=1280:720:(ow-iw)/2:(oh-ih)/2," +
+    "fps=30,format=yuv420p,setsar=1",
+    "-threads", "2",
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-crf", "23",
@@ -132,29 +135,29 @@ export async function POST(req) {
     /* ---- COLOR GRADING ---- */
 
     if (color === "bw") {
-  filters.push("hue=s=0");
-}
+      filters.push("hue=s=0");
+    }
 
-if (color === "cinematic") {
-  filters.push(
-    "eq=contrast=1.12:saturation=1.08:brightness=0.01",
-    "colorchannelmixer=rr=1.04:gg=1.0:bb=0.96"
-  );
-}
+    if (color === "cinematic") {
+      filters.push(
+        "eq=contrast=1.12:saturation=1.08:brightness=0.01",
+        "colorchannelmixer=rr=1.04:gg=1.0:bb=0.96"
+      );
+    }
 
-if (color === "warm") {
-  filters.push(
-    "eq=contrast=1.05:saturation=1.07:brightness=0.02",
-    "colorchannelmixer=rr=1.06:gg=1.0:bb=0.94"
-  );
-}
+    if (color === "warm") {
+      filters.push(
+        "eq=contrast=1.05:saturation=1.07:brightness=0.02",
+        "colorchannelmixer=rr=1.06:gg=1.0:bb=0.94"
+      );
+    }
 
-if (color === "blue") {
-  filters.push(
-    "eq=contrast=1.05:saturation=1.05",
-    "colorchannelmixer=rr=0.94:gg=1.0:bb=1.10"
-  );
-}
+    if (color === "blue") {
+      filters.push(
+        "eq=contrast=1.05:saturation=1.05",
+        "colorchannelmixer=rr=0.94:gg=1.0:bb=1.10"
+      );
+    }
 
     /* ---- TITLE ---- */
 
