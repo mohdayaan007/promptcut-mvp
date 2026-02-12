@@ -4,7 +4,7 @@ import "./globals.css";
 
 const manrope = Manrope({
   subsets: ["latin"],
-  weight: ["200"], // ExtraLight
+  weight: ["400"], // Regular
 });
 
 export const metadata = {
