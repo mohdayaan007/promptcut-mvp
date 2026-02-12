@@ -37,7 +37,7 @@ export default function LandingPage() {
             </p>
           </div>
 
-          {/* HERO DEMO VIDEO */}
+          {/* VIDEO */}
           <div className="mt-10 mx-auto max-w-4xl rounded-xl overflow-hidden border border-gray-800">
             <video
               ref={videoRef}
@@ -101,9 +101,7 @@ export default function LandingPage() {
         <section className="py-16">
           <p className="max-w-xl mx-auto text-center italic text-[#8A8F98] leading-relaxed">
             Most video editors are built for Hollywood, but most people just need
-            a quick fix. Cliponaut is built for “10-second edits” — trimming a
-            clip, joining two videos, or adding a title — tasks that should take
-            seconds, not minutes.
+            a quick fix. Cliponaut is built for “10-second edits”.
           </p>
         </section>
 
@@ -123,4 +121,71 @@ export default function LandingPage() {
       </div>
     </main>
   );
+}
+
+/* ---------- COMPONENTS ---------- */
+
+function Step({ icon, title, text }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-center">{icon}</div>
+      <h3 className="text-lg font-medium">{title}</h3>
+      <p className="text-[#8A8F98] max-w-xs mx-auto">{text}</p>
+    </div>
+  );
+}
+
+function FeatureCard({ icon, title, text, example }) {
+  return (
+    <div className="border border-gray-800 rounded-xl p-6 space-y-3">
+      <div>{icon}</div>
+      <h3 className="font-medium tracking-wide">{title}</h3>
+      <p className="text-[#8A8F98] text-sm">{text}</p>
+      {example && (
+        <p className="text-xs text-[#8A8F98] italic">e.g. “{example}”</p>
+      )}
+    </div>
+  );
+}
+
+/* ---------- ICONS ---------- */
+
+const iconBase = (path) => (
+  <svg
+    className="w-6 h-6 text-gray-300"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    viewBox="0 0 24 24"
+  >
+    {path}
+  </svg>
+);
+
+function UploadIcon() {
+  return iconBase(<path d="M12 16V4m0 0-4 4m4-4 4 4M4 20h16" />);
+}
+
+function PromptIcon() {
+  return iconBase(<path d="M4 5h16v10H7l-3 4V5z" />);
+}
+
+function ExportIcon() {
+  return iconBase(<path d="M12 4v12m0 0 4-4m-4 4-4-4M4 20h16" />);
+}
+
+function TrimIcon() {
+  return iconBase(<path d="M4 4l16 16M4 20L20 4" />);
+}
+
+function PaletteIcon() {
+  return iconBase(<path d="M12 3a9 9 0 1 0 0 18 2 2 0 0 0 0-4h-1a2 2 0 0 1 0-4h5a4 4 0 0 0 0-8h-1" />);
+}
+
+function TitleIcon() {
+  return iconBase(<path d="M4 4h16M12 4v16" />);
+}
+
+function MergeIcon() {
+  return iconBase(<path d="M7 3v6a4 4 0 0 0 4 4h2m0 0v4l4-4-4-4" />);
 }
