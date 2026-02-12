@@ -1,6 +1,6 @@
 export default function LandingPage() {
   return (
-    <main className="min-h-screen bg-black text-white font-inter">
+    <main className="min-h-screen bg-black text-white">
       <div className="max-w-6xl mx-auto px-6">
 
         {/* HERO */}
@@ -26,8 +26,16 @@ export default function LandingPage() {
             </p>
           </div>
 
-          <div className="mt-10 mx-auto max-w-4xl h-[260px] md:h-[320px] rounded-xl border border-gray-800 flex items-center justify-center text-gray-500">
-            Demo coming soon
+          {/* HERO DEMO VIDEO */}
+          <div className="mt-10 mx-auto max-w-4xl rounded-xl overflow-hidden border border-gray-800">
+            <video
+              src="/demo.mp4"
+              autoPlay
+              muted
+              loop
+              playsInline
+              className="w-full h-full object-cover"
+            />
           </div>
         </section>
 
@@ -124,7 +132,7 @@ function FeatureCard({ icon, title, text, example }) {
   );
 }
 
-/* ---------- Icons (Material-style, semantic) ---------- */
+/* ---------- Icons ---------- */
 
 const iconBase = (path) => (
   <svg

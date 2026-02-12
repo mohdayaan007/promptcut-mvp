@@ -1,10 +1,10 @@
-import { Inter } from "next/font/google";
+import { Manrope } from "next/font/google";
 import { Analytics } from "@vercel/analytics/react";
 import "./globals.css";
 
-const inter = Inter({
+const manrope = Manrope({
   subsets: ["latin"],
-  variable: "--font-inter",
+  weight: ["200"], // ExtraLight
 });
 
 export const metadata = {
@@ -22,8 +22,8 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en" className={inter.variable}>
-      <body className="bg-black text-white antialiased">
+    <html lang="en">
+      <body className={`${manrope.className} bg-black text-white antialiased`}>
         {children}
         <Analytics />
       </body>
