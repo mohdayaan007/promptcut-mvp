@@ -33,7 +33,7 @@ export default function LandingPage() {
             </a>
 
             <p className="text-xs text-[#8A8F98]">
-              Desktop built · Short clips (&lt;30s) recommended
+              Desktop · Short clips under 30 seconds recommended
             </p>
           </div>
 
