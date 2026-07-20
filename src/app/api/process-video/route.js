@@ -12,6 +12,8 @@ const exec = (cmd, args) =>
 
 const FFMPEG = "ffmpeg";
 const FFPROBE = "ffprobe";
+const MAX_VIDEO_FILE_SIZE_BYTES = 100 * 1024 * 1024;
+const MAX_PROMPT_LENGTH = 1000;
 
 export const runtime = "nodejs";
 
@@ -78,10 +80,40 @@ export async function POST(req) {
     const formData = await req.formData();
     const file1 = formData.get("video1");
     const file2 = formData.get("video2");
-    const prompt = formData.get("prompt") || "";
+    const promptValue = formData.get("prompt");
 
-    if (!file1) {
-      return Response.json({ error: "Missing video" }, { status: 400 });
+    if (!(file1 instanceof File)) {
+      return Response.json({ error: "video1 must be an uploaded file" }, { status: 400 });
+    }
+
+    if (file2 !== null && !(file2 instanceof File)) {
+      return Response.json({ error: "video2 must be an uploaded file" }, { status: 400 });
+    }
+
+    if (file1.size > MAX_VIDEO_FILE_SIZE_BYTES ||
+        file2 instanceof File && file2.size > MAX_VIDEO_FILE_SIZE_BYTES) {
+      return Response.json(
+        { error: "Each video must be 100 MB or smaller" },
+        { status: 413 }
+      );
+    }
+
+    if (!file1.type.startsWith("video/") ||
+        file2 instanceof File && !file2.type.startsWith("video/")) {
+      return Response.json({ error: "Uploaded files must be videos" }, { status: 400 });
+    }
+
+    if (promptValue !== null && typeof promptValue !== "string") {
+      return Response.json({ error: "prompt must be text" }, { status: 400 });
+    }
+
+    const prompt = promptValue || "";
+
+    if (prompt.length > MAX_PROMPT_LENGTH) {
+      return Response.json(
+        { error: "prompt must be 1000 characters or fewer" },
+        { status: 400 }
+      );
     }
 
     const tmp = path.join(os.tmpdir(), `cliponaut-${Date.now()}`);
