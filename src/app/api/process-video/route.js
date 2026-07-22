@@ -4,6 +4,7 @@ import path from "path";
 import os from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { getIntentPattern, understandPrompt } from "@/lib/prompt-understanding";
 
 const exec = (cmd, args) =>
   promisify(execFile)(cmd, args, {
@@ -19,25 +20,32 @@ export const runtime = "nodejs";
 
 /* -------------------- PARSERS -------------------- */
 
-function detectColor(prompt = "") {
-  const p = prompt.toLowerCase();
-  if (p.includes("black and white") || p.includes("bw")) return "bw";
-  if (p.includes("cinematic")) return "cinematic";
-  if (p.includes("blue")) return "blue";
-  if (p.includes("warm")) return "warm";
+function detectColor(intents = []) {
+  if (intents.includes("blackWhite")) return "bw";
+  if (intents.includes("cinematic")) return "cinematic";
+  if (intents.includes("cool")) return "blue";
+  if (intents.includes("warm")) return "warm";
   return null;
 }
 
-function parseOverlay(prompt = "") {
-  const m = prompt.match(/add title:\s*(.+?)\s*at\s*(\d+):(\d+)/i);
+function parseOverlay(prompt = "", intents = []) {
+  if (!intents.includes("title")) return null;
+
+  const m = prompt.match(
+    new RegExp(`(?:${getIntentPattern("title")})\\s*:\\s*(.+?)\\s*at\\s*(\\d+):(\\d+)`, "i")
+  );
   if (!m) return null;
 
   const start = parseInt(m[2]) * 60 + parseInt(m[3]);
   return { text: m[1].trim(), start, end: start + 3 };
 }
 
-function parseTrim(prompt = "") {
-  const m = prompt.match(/trim.*?(\d+):(\d+)\s*to\s*(\d+):(\d+)/i);
+function parseTrim(prompt = "", intents = []) {
+  if (!intents.includes("trim")) return null;
+
+  const m = prompt.match(
+    new RegExp(`(?:${getIntentPattern("trim")}).*?(\\d+):(\\d+)\\s*to\\s*(\\d+):(\\d+)`, "i")
+  );
   if (!m) return null;
 
   return {
@@ -158,9 +166,10 @@ export async function POST(req) {
       baseVideo = merged;
     }
 
-    const color = detectColor(prompt);
-    const overlay = parseOverlay(prompt);
-    const trim = parseTrim(prompt);
+    const { intents } = understandPrompt(prompt);
+    const color = detectColor(intents);
+    const overlay = parseOverlay(prompt, intents);
+    const trim = parseTrim(prompt, intents);
 
     let filters = [];
 
