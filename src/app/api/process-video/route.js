@@ -4,7 +4,10 @@ import path from "path";
 import os from "os";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { COLOR_PRESETS } from "@/lib/color-presets";
 import { getIntentPattern, understandPrompt } from "@/lib/prompt-understanding";
+import { parseTitle } from "@/lib/title-parser";
+import { buildTitleFilter } from "@/lib/title-renderer";
 
 const exec = (cmd, args) =>
   promisify(execFile)(cmd, args, {
@@ -26,18 +29,6 @@ function detectColor(intents = []) {
   if (intents.includes("cool")) return "blue";
   if (intents.includes("warm")) return "warm";
   return null;
-}
-
-function parseOverlay(prompt = "", intents = []) {
-  if (!intents.includes("title")) return null;
-
-  const m = prompt.match(
-    new RegExp(`(?:${getIntentPattern("title")})\\s*:\\s*(.+?)\\s*at\\s*(\\d+):(\\d+)`, "i")
-  );
-  if (!m) return null;
-
-  const start = parseInt(m[2]) * 60 + parseInt(m[3]);
-  return { text: m[1].trim(), start, end: start + 3 };
 }
 
 function parseTrim(prompt = "", intents = []) {
@@ -168,47 +159,21 @@ export async function POST(req) {
 
     const { intents } = understandPrompt(prompt);
     const color = detectColor(intents);
-    const overlay = parseOverlay(prompt, intents);
+    const title = parseTitle(prompt);
     const trim = parseTrim(prompt, intents);
 
     let filters = [];
 
     /* ---- COLOR GRADING ---- */
 
-    if (color === "bw") {
-      filters.push("hue=s=0");
-    }
-
-    if (color === "cinematic") {
-      filters.push(
-        "eq=contrast=1.12:saturation=1.08:brightness=0.01",
-        "colorchannelmixer=rr=1.04:gg=1.0:bb=0.96"
-      );
-    }
-
-    if (color === "warm") {
-      filters.push(
-        "eq=contrast=1.05:saturation=1.07:brightness=0.02",
-        "colorchannelmixer=rr=1.06:gg=1.0:bb=0.94"
-      );
-    }
-
-    if (color === "blue") {
-      filters.push(
-        "eq=contrast=1.05:saturation=1.05",
-        "colorchannelmixer=rr=0.94:gg=1.0:bb=1.10"
-      );
+    if (COLOR_PRESETS[color]) {
+      filters.push(...COLOR_PRESETS[color]);
     }
 
     /* ---- TITLE ---- */
 
-    if (overlay) {
-      filters.push(
-        `drawtext=text='${overlay.text.replace(/'/g, "\\'")}':` +
-        `x=(w-text_w)/2:y=(h-text_h)/2:` +
-        `fontsize=h*0.07:fontcolor=white:` +
-        `enable='between(t,${overlay.start},${overlay.end})'`
-      );
+    if (title) {
+      filters.push(buildTitleFilter(title));
     }
 
     /* ---- APPLY FILTERS ---- */
