@@ -1,4 +1,4 @@
-FROM node:22-bullseye
+FROM node:22-bookworm
 
 # System dependencies
 RUN apt-get update && apt-get install -y \
