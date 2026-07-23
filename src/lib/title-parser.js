@@ -17,13 +17,23 @@ function extractTitleText(prompt) {
     /\b(?:put|show)\s+(.+?)\s+at\s+(?:the\s+)?(?:top|center|bottom)\b/i
   );
   const titleMatch = prompt.match(/\b(?:title|text|caption|headline)\s+(.+)/i);
-  const text = colonMatch?.[1] || sayingMatch?.[1] || positionedMatch?.[1] || titleMatch?.[1];
+
+  let text =
+    colonMatch?.[1] ||
+    sayingMatch?.[1] ||
+    positionedMatch?.[1] ||
+    titleMatch?.[1];
+
+  if (!text) return null;
 
   return text
-    ?.replace(/\s+at\s+\d+:\d+\b.*$/i, "")
+    .replace(/\s+at\s+\d+:\d+\b.*$/i, "")
+    .replace(/\s+at\s+(?:the\s+)?(?:left|right)\s+(?:top|center|bottom)\b.*$/i, "")
+    .replace(/\s+at\s+(?:the\s+)?(?:top|center|bottom)\s+(?:left|right)\b.*$/i, "")
+    .replace(/\s+at\s+(?:the\s+)?(?:left|right)\b.*$/i, "")
     .replace(/\s+at\s+(?:the\s+)?(?:top|center|bottom)\b.*$/i, "")
     .replace(/\s+(?:using|use)\s+(?:instrument\s+serif|jetbrains\s+mono|inter)\b.*$/i, "")
-    .trim() || null;
+    .trim();
 }
 
 function extractStartTime(prompt) {

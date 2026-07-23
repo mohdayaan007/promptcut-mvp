@@ -178,26 +178,26 @@ export async function POST(req) {
 
     /* ---- APPLY FILTERS ---- */
 
-    let processed = baseVideo;
+let processed = baseVideo;
 
-    if (filters.length) {
-      await exec(FFMPEG, [
-        "-y",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-i", baseVideo,
-        "-vf", filters.join(","),
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        processedPath
-      ]);
+if (filters.length) {
+  await exec(FFMPEG, [
+    "-y",
+    "-hide_banner",
+    "-loglevel", "info",
+    "-i", baseVideo,
+    "-vf", filters.join(","),
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-pix_fmt", "yuv420p",
+    "-movflags", "+faststart",
+    "-c:a", "aac",
+    "-b:a", "128k",
+    processedPath
+  ]);
 
-      processed = processedPath;
-    }
+  processed = processedPath;
+}
 
     /* ---- TRIM ---- */
 
