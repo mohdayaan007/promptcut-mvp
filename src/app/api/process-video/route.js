@@ -158,35 +158,46 @@ export async function POST(req) {
     }
 
     const { intents } = understandPrompt(prompt);
-    const color = detectColor(intents);
-    const title = parseTitle(prompt);
-    const trim = parseTrim(prompt, intents);
 
-    let filters = [];
+const editPlan = {
+  colorGrade: detectColor(intents),
+  trim: parseTrim(prompt, intents),
+  titles: [],
+  visuals: [],
+  subtitles: []
+};
+
+const parsedTitle = parseTitle(prompt);
+
+if (parsedTitle) {
+  editPlan.titles.push(parsedTitle);
+}
+
+    let videoFilters = [];
 
     /* ---- COLOR GRADING ---- */
 
-    if (COLOR_PRESETS[color]) {
-      filters.push(...COLOR_PRESETS[color]);
-    }
+    if (COLOR_PRESETS[editPlan.colorGrade]) {
+  videoFilters.push(...COLOR_PRESETS[editPlan.colorGrade]);
+}
 
     /* ---- TITLE ---- */
 
-    if (title) {
-      filters.push(buildTitleFilter(title));
-    }
+    for (const title of editPlan.titles) {
+  videoFilters.push(buildTitleFilter(title));
+}
 
     /* ---- APPLY FILTERS ---- */
 
 let processed = baseVideo;
 
-if (filters.length) {
+if (videoFilters.length) {
   await exec(FFMPEG, [
     "-y",
     "-hide_banner",
     "-loglevel", "info",
     "-i", baseVideo,
-    "-vf", filters.join(","),
+    "-vf", videoFilters.join(","),
     "-c:v", "libx264",
     "-preset", "veryfast",
     "-pix_fmt", "yuv420p",
@@ -203,13 +214,13 @@ if (filters.length) {
 
     let finalVideo = processed;
 
-    if (trim) {
+    if (editPlan.trim) {
       await exec(FFMPEG, [
         "-y",
         "-hide_banner",
         "-loglevel", "error",
-        "-ss", trim.start.toString(),
-        "-to", trim.end.toString(),
+        "-ss", editPlan.trim.start.toString(),
+"-to", editPlan.trim.end.toString(),
         "-i", processed,
         "-c:v", "libx264",
         "-preset", "veryfast",
