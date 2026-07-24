@@ -22,6 +22,6 @@ export function buildTitleFilter(title) {
     `fontcolor=${color}`,
     position,
     "expansion=none",
-    `enable='between(t,${title.start},${title.end})'`
+    `enable=between(t\\,${title.start}\\,${title.end})`
   ].join(":");
 }
