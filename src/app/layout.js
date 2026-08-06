@@ -1,10 +1,17 @@
-import { Manrope } from "next/font/google";
+import localFont from "next/font/local";
 import { Analytics } from "@vercel/analytics/react";
 import "./globals.css";
 
-const manrope = Manrope({
-  subsets: ["latin"],
-  weight: ["400"], // Regular
+const satoshiFallback = localFont({
+  src: "../../public/fonts/Inter-Variable.ttf",
+  variable: "--font-satoshi",
+  display: "swap",
+});
+
+const displayFallback = localFont({
+  src: "../../public/fonts/InstrumentSerif-Regular.ttf",
+  variable: "--font-display",
+  display: "swap",
 });
 
 export const metadata = {
@@ -23,7 +30,7 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body className={`${manrope.className} bg-black text-white antialiased`}>
+      <body className={`${satoshiFallback.variable} ${displayFallback.variable} antialiased`}>
         {children}
         <Analytics />
       </body>
