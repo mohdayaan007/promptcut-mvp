@@ -9,9 +9,6 @@ export function AppHeader() {
       </Link>
 
       <nav className="cliponaut-header-links" aria-label="External links">
-        <a href="https://github.com/mohdayaan007/promptcut-mvp" target="_blank" rel="noreferrer">
-          GitHub
-        </a>
         <a href="https://x.com/uxayaan" target="_blank" rel="noreferrer">
           X
         </a>

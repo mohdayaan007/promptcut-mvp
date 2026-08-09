@@ -25,6 +25,14 @@ export function ArrowUpIcon() {
   );
 }
 
+export function ArrowLeftIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
+      <path d="M13 8H3m0 0 3.5-3.5M3 8l3.5 3.5" />
+    </svg>
+  );
+}
+
 export function PlusIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">

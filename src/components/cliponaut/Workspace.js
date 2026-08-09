@@ -1,7 +1,7 @@
 /* eslint-disable @next/next/no-img-element -- Blob URLs are local previews and cannot use Next image optimization. */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AttachmentControls } from "@/components/cliponaut/AttachmentControls";
-import { DownloadIcon, ImageIcon, PlusIcon, VideoIcon } from "@/components/cliponaut/icons";
+import { ArrowLeftIcon, DownloadIcon, ImageIcon, PlusIcon, VideoIcon } from "@/components/cliponaut/icons";
 
 export function Workspace({
   video1,
@@ -18,8 +18,14 @@ export function Workspace({
   onRemoveSecondVideo,
   onRemoveImage,
   onEditAgain,
+  onBack,
 }) {
   return (
+    <>
+      <button className="cliponaut-back-button" type="button" onClick={onBack}>
+        <ArrowLeftIcon />
+        Back
+      </button>
     <div className="cliponaut-workspace-grid">
       <section className="cliponaut-panel cliponaut-media-panel" aria-labelledby="media-heading">
         <div className="cliponaut-panel-heading">
@@ -67,6 +73,8 @@ export function Workspace({
         onEditAgain={onEditAgain}
       />
     </div>
+    <ConversationFeedback messages={messages} status={status} />
+    </>
   );
 }
 
@@ -114,8 +122,6 @@ function PreviewPanel({ status, error, resultUrl, messages, onEditAgain }) {
     setPlaybackRate(nextRate);
   };
 
-  const latestMessage = messages.at(-1);
-
   return (
     <section className="cliponaut-panel cliponaut-preview-panel" aria-labelledby="preview-heading">
       <div className="cliponaut-panel-heading">
@@ -155,9 +161,27 @@ function PreviewPanel({ status, error, resultUrl, messages, onEditAgain }) {
           </button>
         </div>
       )}
+    </section>
+  );
+}
 
-      {latestMessage && status !== "processing" && (
-        <p className={`cliponaut-processing-note is-${latestMessage.role}`}>{latestMessage.text}</p>
+function ConversationFeedback({ messages, status }) {
+  const isVisible = messages.length || status === "processing";
+  if (!isVisible) return null;
+
+  return (
+    <section className="cliponaut-conversation" aria-live="polite" aria-label="Editing activity">
+      {messages.map((message, index) => (
+        <div className={`cliponaut-conversation-message is-${message.role}`} key={`${message.role}-${index}`}>
+          <span>{message.role === "user" ? "You" : "Cliponaut"}</span>
+          <p>{message.text}</p>
+        </div>
+      ))}
+      {status === "processing" && (
+        <div className="cliponaut-conversation-message is-assistant is-processing">
+          <span>Cliponaut</span>
+          <p>Editing your video…</p>
+        </div>
       )}
     </section>
   );

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { AppHeader } from "@/components/cliponaut/AppHeader";
 import { EmptyEditorState } from "@/components/cliponaut/EmptyEditorState";
 import { PromptComposer } from "@/components/cliponaut/PromptComposer";
+import { PromptSuggestions } from "@/components/cliponaut/PromptSuggestions";
 import { Workspace } from "@/components/cliponaut/Workspace";
 
 export default function HomePage() {
@@ -20,6 +21,7 @@ export default function HomePage() {
   const video2InputRef = useRef(null);
   const imageInputRef = useRef(null);
   const promptRef = useRef(null);
+  const requestControllerRef = useRef(null);
 
   const hasWorkspace = Boolean(video1 || images.length);
 
@@ -33,20 +35,21 @@ export default function HomePage() {
     const lowerCasePrompt = value.toLowerCase();
     const responses = [];
 
-    if (lowerCasePrompt.includes("cinematic")) responses.push("Cinematic look applied");
-    if (lowerCasePrompt.includes("warm")) responses.push("Warm tone applied");
+    if (lowerCasePrompt.includes("cinematic")) responses.push("Cinematic colour grading added.");
+    if (lowerCasePrompt.includes("warm")) responses.push("Warm colour grading added.");
     if (lowerCasePrompt.includes("blue") || lowerCasePrompt.includes("cool")) {
-      responses.push("Cool blue tone applied");
+      responses.push("Cool colour grading added.");
     }
     if (lowerCasePrompt.includes("black and white") || lowerCasePrompt.includes("bw")) {
-      responses.push("Black & white look applied");
+      responses.push("Black & white grading added.");
     }
-    if (lowerCasePrompt.includes("add title")) responses.push("Title added");
+    if (lowerCasePrompt.includes("add title") || lowerCasePrompt.includes("show title")) responses.push("Title added.");
 
     const trimMatch = lowerCasePrompt.match(/from\s*(\d+:\d+)\s*to\s*(\d+:\d+)/);
-    if (trimMatch) responses.push(`Exported ${trimMatch[1]} to ${trimMatch[2]}`);
+    if (trimMatch) responses.push(`Video trimmed from ${trimMatch[1]} to ${trimMatch[2]}.`);
+    if (video2 || lowerCasePrompt.includes("merge")) responses.push("Videos merged.");
 
-    return responses.length ? responses.join(" · ") : "Video generated";
+    return responses.length ? responses.join(" ") : "Your edit is ready.";
   };
 
   const handlePrimaryVideoChange = (event) => {
@@ -98,6 +101,9 @@ export default function HomePage() {
     if (!video1 || !prompt.trim() || status === "processing") return;
 
     const submittedPrompt = prompt;
+    const controller = new AbortController();
+    requestControllerRef.current?.abort();
+    requestControllerRef.current = controller;
     setMessages((currentMessages) => [
       ...currentMessages,
       { role: "user", text: submittedPrompt },
@@ -114,6 +120,7 @@ export default function HomePage() {
       const response = await fetch("/api/process-video", {
         method: "POST",
         body: formData,
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -122,6 +129,7 @@ export default function HomePage() {
       }
 
       const blob = await response.blob();
+      if (controller.signal.aborted) return;
       setResultUrl(URL.createObjectURL(blob));
       setStatus("done");
       setMessages((currentMessages) => [
@@ -130,8 +138,15 @@ export default function HomePage() {
       ]);
       setPrompt("");
     } catch (processingError) {
+      if (controller.signal.aborted) return;
       setError(processingError.message);
       setStatus("error");
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        { role: "assistant", text: "We couldn’t complete that edit. Please try again." },
+      ]);
+    } finally {
+      if (requestControllerRef.current === controller) requestControllerRef.current = null;
     }
   };
 
@@ -140,6 +155,22 @@ export default function HomePage() {
     setStatus("idle");
     setError(null);
     promptRef.current?.focus();
+  };
+
+  const handleBackToEmptyState = () => {
+    requestControllerRef.current?.abort();
+    requestControllerRef.current = null;
+    setVideo1(null);
+    setVideo2(null);
+    setImages([]);
+    setPrompt("");
+    setStatus("idle");
+    setError(null);
+    setResultUrl(null);
+    setMessages([]);
+    if (video1InputRef.current) video1InputRef.current.value = "";
+    if (video2InputRef.current) video2InputRef.current.value = "";
+    if (imageInputRef.current) imageInputRef.current.value = "";
   };
 
   return (
@@ -188,16 +219,22 @@ export default function HomePage() {
               setImages((currentImages) => currentImages.filter((_, imageIndex) => imageIndex !== index))
             }
             onEditAgain={handleEditAgain}
+            onBack={handleBackToEmptyState}
           />
-          <PromptComposer
-            inputRef={promptRef}
-            prompt={prompt}
-            onPromptChange={setPrompt}
-            onSubmit={handleGenerate}
-            isProcessing={status === "processing"}
-            canGenerate={Boolean(video1 && prompt.trim())}
-            compact
-          />
+          <div className="cliponaut-workspace-prompt-area">
+            <PromptSuggestions className="is-workspace" onSelect={setPrompt} />
+            <div className="cliponaut-mobile-composer-dock">
+              <PromptComposer
+                inputRef={promptRef}
+                prompt={prompt}
+                onPromptChange={setPrompt}
+                onSubmit={handleGenerate}
+                isProcessing={status === "processing"}
+                canGenerate={Boolean(video1 && prompt.trim())}
+                compact
+              />
+            </div>
+          </div>
         </section>
       ) : (
         <EmptyEditorState
