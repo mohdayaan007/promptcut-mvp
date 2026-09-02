@@ -1,78 +1,14 @@
-import { writeFile, mkdir } from "fs/promises";
+import { mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import os from "os";
-import { execFile } from "child_process";
-import { promisify } from "util";
-import { COLOR_PRESETS } from "@/lib/color-presets";
-import { getIntentPattern, understandPrompt } from "@/lib/prompt-understanding";
-import { parseTitle } from "@/lib/title-parser";
-import { buildTitleFilter } from "@/lib/title-renderer";
-
-const exec = (cmd, args) =>
-  promisify(execFile)(cmd, args, {
-    maxBuffer: 1024 * 1024 * 20
-  });
-
-const FFMPEG = "ffmpeg";
-const FFPROBE = "ffprobe";
+import { createEditPlan } from "@/lib/editor-core/edit-plan";
+import { validateEditPlan } from "@/lib/editor-core/plan-validator";
+import { executeEditPlan } from "@/lib/editor-core/edit-executor";
 const MAX_VIDEO_FILE_SIZE_BYTES = 100 * 1024 * 1024;
 const MAX_PROMPT_LENGTH = 1000;
 
 export const runtime = "nodejs";
-
-/* -------------------- PARSERS -------------------- */
-
-function detectColor(intents = []) {
-  if (intents.includes("blackWhite")) return "bw";
-  if (intents.includes("cinematic")) return "cinematic";
-  if (intents.includes("cool")) return "blue";
-  if (intents.includes("warm")) return "warm";
-  return null;
-}
-
-function parseTrim(prompt = "", intents = []) {
-  if (!intents.includes("trim")) return null;
-
-  const m = prompt.match(
-    new RegExp(`(?:${getIntentPattern("trim")}).*?(\\d+):(\\d+)\\s*to\\s*(\\d+):(\\d+)`, "i")
-  );
-  if (!m) return null;
-
-  return {
-    start: parseInt(m[1]) * 60 + parseInt(m[2]),
-    end: parseInt(m[3]) * 60 + parseInt(m[4])
-  };
-}
-
-/* -------------------- NORMALIZE (STABLE) -------------------- */
-
-async function normalize(input, output) {
-  await exec(FFMPEG, [
-    "-y",
-    "-hide_banner",
-    "-loglevel", "error",
-    "-fflags", "+genpts",
-    "-noautorotate",
-    "-i", input,
-    "-vf",
-    // FORCE identical resolution for ALL videos
-    "scale=1280:720:force_original_aspect_ratio=decrease," +
-    "pad=1280:720:(ow-iw)/2:(oh-ih)/2," +
-    "fps=30,format=yuv420p,setsar=1",
-    "-threads", "2",
-    "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-crf", "23",
-    "-pix_fmt", "yuv420p",
-    "-movflags", "+faststart",
-    "-c:a", "aac",
-    "-b:a", "128k",
-    output
-  ]);
-}
-
-/* -------------------- API -------------------- */
 
 export async function POST(req) {
   try {
@@ -115,143 +51,15 @@ export async function POST(req) {
       );
     }
 
-    const tmp = path.join(os.tmpdir(), `cliponaut-${Date.now()}`);
-    if (!existsSync(tmp)) await mkdir(tmp);
+    const tempDirectory = path.join(os.tmpdir(), `cliponaut-${Date.now()}`);
+    if (!existsSync(tempDirectory)) await mkdir(tempDirectory);
 
-    const v1 = path.join(tmp, "v1.mp4");
-    const v2 = path.join(tmp, "v2.mp4");
-    const n1 = path.join(tmp, "n1.mp4");
-    const n2 = path.join(tmp, "n2.mp4");
-    const merged = path.join(tmp, "merged.mp4");
-    const processedPath = path.join(tmp, "processed.mp4");
-    const trimmed = path.join(tmp, "trimmed.mp4");
-    const output = path.join(tmp, "output.mp4");
-
-    await writeFile(v1, Buffer.from(await file1.arrayBuffer()));
-    await normalize(v1, n1);
-
-    let baseVideo = n1;
-
-    if (file2) {
-      await writeFile(v2, Buffer.from(await file2.arrayBuffer()));
-      await normalize(v2, n2);
-
-      await exec(FFMPEG, [
-        "-y",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-i", n1,
-        "-i", n2,
-        "-filter_complex",
-        "[0:v][1:v]concat=n=2:v=1:a=0[v];[0:a][1:a]concat=n=2:v=0:a=1[a]",
-        "-map", "[v]",
-        "-map", "[a]",
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        merged
-      ]);
-
-      baseVideo = merged;
-    }
-
-    const { intents } = understandPrompt(prompt);
-
-const editPlan = {
-  colorGrade: detectColor(intents),
-  trim: parseTrim(prompt, intents),
-  titles: [],
-  visuals: [],
-  subtitles: []
-};
-
-const parsedTitle = parseTitle(prompt);
-
-if (parsedTitle) {
-  editPlan.titles.push(parsedTitle);
-}
-
-    let videoFilters = [];
-
-    /* ---- COLOR GRADING ---- */
-
-    if (COLOR_PRESETS[editPlan.colorGrade]) {
-  videoFilters.push(...COLOR_PRESETS[editPlan.colorGrade]);
-}
-
-    /* ---- TITLE ---- */
-
-    for (const title of editPlan.titles) {
-  videoFilters.push(buildTitleFilter(title));
-}
-
-    /* ---- APPLY FILTERS ---- */
-
-let processed = baseVideo;
-
-if (videoFilters.length) {
-  await exec(FFMPEG, [
-    "-y",
-    "-hide_banner",
-    "-loglevel", "info",
-    "-i", baseVideo,
-    "-vf", videoFilters.join(","),
-    "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-pix_fmt", "yuv420p",
-    "-movflags", "+faststart",
-    "-c:a", "aac",
-    "-b:a", "128k",
-    processedPath
-  ]);
-
-  processed = processedPath;
-}
-
-    /* ---- TRIM ---- */
-
-    let finalVideo = processed;
-
-    if (editPlan.trim) {
-      await exec(FFMPEG, [
-        "-y",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-ss", editPlan.trim.start.toString(),
-"-to", editPlan.trim.end.toString(),
-        "-i", processed,
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        trimmed
-      ]);
-
-      finalVideo = trimmed;
-    }
-
-    /* ---- FINAL OUTPUT ---- */
-
-    await exec(FFMPEG, [
-      "-y",
-      "-hide_banner",
-      "-loglevel", "error",
-      "-i", finalVideo,
-      "-c:v", "libx264",
-      "-preset", "veryfast",
-      "-pix_fmt", "yuv420p",
-      "-movflags", "+faststart",
-      "-c:a", "aac",
-      "-b:a", "128k",
-      output
-    ]);
-
-    const buffer = await import("fs").then(fs =>
-      fs.promises.readFile(output)
-    );
+    const editPlan = validateEditPlan(createEditPlan({
+      prompt,
+      hasSecondVideo: file2 instanceof File
+    }));
+    const outputPath = await executeEditPlan({ file1, file2, plan: editPlan, tempDirectory });
+    const buffer = await import("fs").then((fs) => fs.promises.readFile(outputPath));
 
     return new Response(buffer, {
       headers: {
