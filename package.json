@@ -3,14 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-  "dev": "NEXT_DISABLE_TURBOPACK=1 next dev",
-  "build": "NEXT_DISABLE_TURBOPACK=1 next build",
-  "start": "next start",
-  "lint": "eslint"
-},
+    "dev": "NEXT_DISABLE_TURBOPACK=1 next dev",
+    "build": "NEXT_DISABLE_TURBOPACK=1 next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
   "dependencies": {
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
+    "@google/genai": "^2.20.0",
     "@vercel/analytics": "^1.6.1",
     "next": "16.1.1",
     "react": "19.2.3",

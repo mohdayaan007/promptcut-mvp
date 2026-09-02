@@ -2,9 +2,9 @@ import { mkdir } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import os from "os";
-import { createEditPlan } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { executeEditPlan } from "@/lib/editor-core/edit-executor";
+import { createAiEditPlan, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 const MAX_VIDEO_FILE_SIZE_BYTES = 100 * 1024 * 1024;
 const MAX_PROMPT_LENGTH = 1000;
 
@@ -54,10 +54,19 @@ export async function POST(req) {
     const tempDirectory = path.join(os.tmpdir(), `cliponaut-${Date.now()}`);
     if (!existsSync(tempDirectory)) await mkdir(tempDirectory);
 
-    const editPlan = validateEditPlan(createEditPlan({
+    const { plan } = await createAiEditPlan({
+      file1,
       prompt,
+      tempDirectory,
       hasSecondVideo: file2 instanceof File
-    }));
+    });
+    let editPlan;
+    try {
+      editPlan = validateEditPlan(plan);
+    } catch (error) {
+      console.error("Edit plan validation failed:", error.message);
+      return Response.json({ error: "This edit is not currently supported" }, { status: 422 });
+    }
     const outputPath = await executeEditPlan({ file1, file2, plan: editPlan, tempDirectory });
     const buffer = await import("fs").then((fs) => fs.promises.readFile(outputPath));
 
@@ -70,6 +79,9 @@ export async function POST(req) {
 
   } catch (err) {
     console.error("CLIPONAUT ERROR:", err);
-    return Response.json({ error: err.message }, { status: 500 });
+    if (err instanceof UnsupportedEditRequestError) {
+      return Response.json({ error: err.message }, { status: 422 });
+    }
+    return Response.json({ error: "Unable to process this video. Please try again." }, { status: 500 });
   }
 }
