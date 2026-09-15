@@ -36,6 +36,7 @@ export function validateEditPlan(plan) {
   }
 
   const seenSingletons = new Set();
+  const zoomRanges = [];
   for (const operation of plan.operations) {
     const capability = getCapability(operation?.type);
     if (!capability) throw validationError(`unsupported operation type: ${operation?.type || "unknown"}`);
@@ -46,7 +47,7 @@ export function validateEditPlan(plan) {
       }
     }
 
-    if (["merge", "color_grade", "trim", "zoom", "speed", "fade", "crop"].includes(operation.type)) {
+    if (["merge", "color_grade", "trim", "speed", "fade", "crop"].includes(operation.type)) {
       if (seenSingletons.has(operation.type)) throw validationError(`only one ${operation.type} operation is allowed`);
       seenSingletons.add(operation.type);
     }
@@ -61,6 +62,7 @@ export function validateEditPlan(plan) {
       if (!isNonNegativeNumber(operation.amount) || operation.amount < CAPABILITY_LIMITS.zoom.minAmount || operation.amount > CAPABILITY_LIMITS.zoom.maxAmount) {
         throw validationError(`zoom amount must be between ${CAPABILITY_LIMITS.zoom.minAmount} and ${CAPABILITY_LIMITS.zoom.maxAmount}`);
       }
+      zoomRanges.push({ start: operation.start, end: operation.end });
     }
     if (operation.type === "speed") {
       if (!isNonNegativeNumber(operation.factor) || operation.factor < CAPABILITY_LIMITS.speed.minFactor || operation.factor > CAPABILITY_LIMITS.speed.maxFactor) {
@@ -79,6 +81,13 @@ export function validateEditPlan(plan) {
     }
     if (operation.type === "crop" && !CAPABILITY_LIMITS.aspectRatios.includes(operation.aspect_ratio)) {
       throw validationError("crop aspect ratio is unsupported");
+    }
+  }
+
+  zoomRanges.sort((first, second) => first.start - second.start);
+  for (let index = 1; index < zoomRanges.length; index += 1) {
+    if (zoomRanges[index].start < zoomRanges[index - 1].end) {
+      throw validationError("zoom operations must not overlap");
     }
   }
 
