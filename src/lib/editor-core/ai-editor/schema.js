@@ -1,5 +1,6 @@
 import { COLOR_MAP, FONT_MAP, POSITION_MAP, SIZE_MAP } from "@/lib/title-config";
 import { COLOR_PRESETS } from "@/lib/color-presets";
+import { CAPABILITY_LIMITS } from "@/lib/editor-core/capability-registry";
 
 const titleFields = {
   type: "object",
@@ -44,6 +45,47 @@ export const EDIT_PLAN_JSON_SCHEMA = {
               end: { type: "number", minimum: 0 }
             },
             required: ["type", "start", "end"],
+            additionalProperties: false
+          },
+          {
+            type: "object",
+            properties: {
+              type: { type: "string", enum: ["zoom"] },
+              start: { type: "number", minimum: 0 },
+              end: { type: "number", minimum: 0 },
+              amount: { type: "number", minimum: CAPABILITY_LIMITS.zoom.minAmount, maximum: CAPABILITY_LIMITS.zoom.maxAmount }
+            },
+            required: ["type", "start", "end", "amount"],
+            additionalProperties: false
+          },
+          {
+            type: "object",
+            properties: {
+              type: { type: "string", enum: ["speed"] },
+              start: { type: "number", minimum: 0 },
+              end: { type: "number", minimum: 0 },
+              factor: { type: "number", minimum: CAPABILITY_LIMITS.speed.minFactor, maximum: CAPABILITY_LIMITS.speed.maxFactor }
+            },
+            required: ["type", "factor"],
+            additionalProperties: false
+          },
+          {
+            type: "object",
+            properties: {
+              type: { type: "string", enum: ["fade"] },
+              mode: { type: "string", enum: ["in", "out", "both"] },
+              duration: { type: "number", minimum: CAPABILITY_LIMITS.fade.minDuration, maximum: CAPABILITY_LIMITS.fade.maxDuration }
+            },
+            required: ["type", "mode", "duration"],
+            additionalProperties: false
+          },
+          {
+            type: "object",
+            properties: {
+              type: { type: "string", enum: ["crop"] },
+              aspect_ratio: { type: "string", enum: CAPABILITY_LIMITS.aspectRatios }
+            },
+            required: ["type", "aspect_ratio"],
             additionalProperties: false
           }
         ]
