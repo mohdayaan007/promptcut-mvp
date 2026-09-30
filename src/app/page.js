@@ -6,6 +6,7 @@ import { EmptyEditorState } from "@/components/cliponaut/EmptyEditorState";
 import { PromptComposer } from "@/components/cliponaut/PromptComposer";
 import { PromptSuggestions } from "@/components/cliponaut/PromptSuggestions";
 import { Workspace } from "@/components/cliponaut/Workspace";
+import { clearActiveJob, getJobStatus, loadActiveJob, saveActiveJob, uploadAndQueueJob } from "@/lib/client/direct-upload";
 
 const MAX_VIDEO_COUNT = 5;
 
@@ -38,14 +39,50 @@ export default function HomePage() {
   const [error, setError] = useState(null);
   const [resultUrl, setResultUrl] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [activeJob, setActiveJob] = useState(null);
 
   const videoInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const promptRef = useRef(null);
   const requestControllerRef = useRef(null);
 
-  const hasWorkspace = Boolean(videos.length || images.length);
+  const hasWorkspace = Boolean(videos.length || images.length || activeJob);
   const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
+  const isProcessing = ["uploading", "queued", "analyzing", "rendering"].includes(status);
+
+  useEffect(() => {
+    const saved = loadActiveJob();
+    if (!saved?.id || !saved?.accessToken) return;
+    setActiveJob(saved);
+    setStatus("queued");
+  }, []);
+
+  useEffect(() => {
+    if (!activeJob || !["queued", "analyzing", "rendering"].includes(status)) return undefined;
+    let stopped = false;
+    const check = async () => {
+      try {
+        const job = await getJobStatus(activeJob);
+        if (stopped) return;
+        setStatus(job.status === "completed" ? "done" : job.status);
+        if (job.status === "completed") {
+          setResultUrl(job.outputUrl);
+          setMessages((current) => [...current, { role: "assistant", text: "Your edit is ready." }]);
+        } else if (job.status === "failed") {
+          setError(job.error || "We couldn’t complete that edit.");
+          setStatus("error");
+          clearActiveJob();
+          setActiveJob(null);
+        }
+      } catch (statusError) {
+        if (!stopped) setError(statusError.message);
+      }
+    };
+    check();
+    const timer = setInterval(check, 3_000);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [activeJob, status]);
 
   useEffect(() => {
     return () => {
@@ -105,7 +142,7 @@ export default function HomePage() {
   };
 
   const handleGenerate = async () => {
-    if (!videos.length || !prompt.trim() || status === "processing") return;
+    if (!videos.length || !prompt.trim() || isProcessing) return;
 
     const submittedPrompt = prompt;
     const controller = new AbortController();
@@ -115,34 +152,18 @@ export default function HomePage() {
       ...currentMessages,
       { role: "user", text: submittedPrompt },
     ]);
-    setStatus("processing");
+    setStatus("uploading");
     setError(null);
 
     try {
-      const formData = new FormData();
-      videos.forEach((video) => formData.append("videos", video));
-      formData.append("prompt", submittedPrompt);
-      formData.append("exportQuality", exportQuality);
-
-      const response = await fetch("/api/process-video", {
-        method: "POST",
-        body: formData,
-        signal: controller.signal,
+      const job = await uploadAndQueueJob({
+        videos, prompt: submittedPrompt, exportQuality, signal: controller.signal,
+        onProgress: setUploadProgress,
+        onSession: (session) => { saveActiveJob(session); setActiveJob(session); history.replaceState(null, "", `/?job=${session.id}`); }
       });
-
-      if (!response.ok) {
-        const responseError = await response.json();
-        throw new Error(responseError.error || "Processing failed");
-      }
-
-      const blob = await response.blob();
       if (controller.signal.aborted) return;
-      setResultUrl(URL.createObjectURL(blob));
-      setStatus("done");
-      setMessages((currentMessages) => [
-        ...currentMessages,
-        { role: "assistant", text: generateResponseText(submittedPrompt) },
-      ]);
+      setStatus(job.status);
+      setUploadProgress(null);
       setPrompt("");
     } catch (processingError) {
       if (controller.signal.aborted) return;
@@ -176,6 +197,9 @@ export default function HomePage() {
     setError(null);
     setResultUrl(null);
     setMessages([]);
+    setUploadProgress(null);
+    setActiveJob(null);
+    clearActiveJob();
     if (videoInputRef.current) videoInputRef.current.value = "";
     if (imageInputRef.current) imageInputRef.current.value = "";
   };
@@ -207,6 +231,7 @@ export default function HomePage() {
             videos={videos}
             images={images}
             status={status}
+            uploadProgress={uploadProgress}
             error={error}
             resultUrl={resultUrl}
             messages={messages}
@@ -230,7 +255,7 @@ export default function HomePage() {
                 prompt={prompt}
                 onPromptChange={setPrompt}
                 onSubmit={handleGenerate}
-                isProcessing={status === "processing"}
+                isProcessing={isProcessing}
                 canGenerate={Boolean(videos.length && prompt.trim())}
                 compact
               />

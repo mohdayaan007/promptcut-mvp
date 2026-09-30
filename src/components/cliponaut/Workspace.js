@@ -7,6 +7,7 @@ export function Workspace({
   videos,
   images,
   status,
+  uploadProgress,
   error,
   resultUrl,
   messages,
@@ -68,6 +69,7 @@ export function Workspace({
 
       <PreviewPanel
         status={status}
+        uploadProgress={uploadProgress}
         error={error}
         resultUrl={resultUrl}
         messages={messages}
@@ -113,7 +115,7 @@ function MediaCard({ file, kind, onRemove }) {
   );
 }
 
-function PreviewPanel({ status, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain }) {
+function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain }) {
   const videoRef = useRef(null);
   const [playbackRate, setPlaybackRate] = useState("1");
 
@@ -154,7 +156,7 @@ function PreviewPanel({ status, error, resultUrl, messages, exportQuality, canEx
 
       <div className={`cliponaut-preview-stage is-${status}`}>
         {status === "idle" && <PreviewEmptyState />}
-        {status === "processing" && <PreviewProcessingState />}
+        {["uploading", "queued", "analyzing", "rendering"].includes(status) && <PreviewProcessingState status={status} uploadProgress={uploadProgress} />}
         {status === "error" && <PreviewErrorState error={error} />}
         {status === "done" && resultUrl && (
           <video ref={videoRef} src={resultUrl} controls playsInline className="cliponaut-result-video" />
@@ -186,7 +188,8 @@ function PreviewPanel({ status, error, resultUrl, messages, exportQuality, canEx
 }
 
 function ConversationFeedback({ messages, status }) {
-  const isVisible = messages.length || status === "processing";
+  const isProcessing = ["uploading", "queued", "analyzing", "rendering"].includes(status);
+  const isVisible = messages.length || isProcessing;
   if (!isVisible) return null;
 
   return (
@@ -197,10 +200,10 @@ function ConversationFeedback({ messages, status }) {
           <p>{message.text}</p>
         </div>
       ))}
-      {status === "processing" && (
+      {isProcessing && (
         <div className="cliponaut-conversation-message is-assistant is-processing">
           <span>Cliponaut</span>
-          <p>Editing your video…</p>
+          <p>{processingLabel(status)}</p>
         </div>
       )}
     </section>
@@ -216,13 +219,21 @@ function PreviewEmptyState() {
   );
 }
 
-function PreviewProcessingState() {
+function PreviewProcessingState({ status, uploadProgress }) {
+  const percent = uploadProgress?.totalBytes ? Math.round((uploadProgress.uploadedBytes / uploadProgress.totalBytes) * 100) : null;
   return (
     <div className="cliponaut-preview-placeholder">
       <span className="cliponaut-processing-orbit" aria-hidden="true" />
-      <p>Making your edit…</p>
+      <p>{processingLabel(status)}{status === "uploading" && percent !== null ? ` ${percent}%` : ""}</p>
     </div>
   );
+}
+
+function processingLabel(status) {
+  if (status === "uploading") return "Uploading your videos…";
+  if (status === "queued") return "Your edit is queued…";
+  if (status === "analyzing") return "Analyzing your video…";
+  return "Rendering your edit…";
 }
 
 function PreviewErrorState({ error }) {
