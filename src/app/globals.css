@@ -548,6 +548,69 @@ body {
   background: #f7f4f1;
 }
 
+.cliponaut-export-quality {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 0 0 14px;
+  padding: 0;
+  border: 0;
+}
+
+.cliponaut-export-quality legend {
+  color: #7c766f;
+  font-size: 0.75rem;
+}
+
+.cliponaut-export-quality-options {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid #e6e1dc;
+  border-radius: 8px;
+}
+
+.cliponaut-export-quality label {
+  cursor: pointer;
+}
+
+.cliponaut-export-quality-options label + label {
+  border-left: 1px solid #e6e1dc;
+}
+
+.cliponaut-export-quality input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.cliponaut-export-quality-options span {
+  display: block;
+  padding: 7px 10px;
+  color: #6d6863;
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.cliponaut-export-quality input:checked + span {
+  background: #171717;
+  color: #fff;
+}
+
+.cliponaut-export-quality .is-unavailable {
+  cursor: not-allowed;
+}
+
+.cliponaut-export-quality .is-unavailable span {
+  color: #b1aca6;
+}
+
+.cliponaut-export-quality p {
+  margin: 0;
+  color: #8c8781;
+  font-size: 0.6875rem;
+}
+
 .cliponaut-preview-stage.is-done {
   background: #171717;
 }

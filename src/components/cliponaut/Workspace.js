@@ -4,18 +4,18 @@ import { AttachmentControls } from "@/components/cliponaut/AttachmentControls";
 import { ArrowLeftIcon, DownloadIcon, ImageIcon, PlusIcon, VideoIcon } from "@/components/cliponaut/icons";
 
 export function Workspace({
-  video1,
-  video2,
+  videos,
   images,
   status,
   error,
   resultUrl,
   messages,
-  onSelectPrimaryVideo,
-  onSelectSecondVideo,
+  exportQuality,
+  canExport4k,
+  onExportQualityChange,
+  onSelectVideos,
   onSelectImages,
-  onRemovePrimaryVideo,
-  onRemoveSecondVideo,
+  onRemoveVideo,
   onRemoveImage,
   onEditAgain,
   onBack,
@@ -33,28 +33,29 @@ export function Workspace({
             <p className="cliponaut-panel-kicker">Source</p>
             <h1 id="media-heading">Your media</h1>
           </div>
-          <button className="cliponaut-text-button" type="button" onClick={onSelectPrimaryVideo}>
-            {video1 ? "Replace" : "Add video"}
+          <button className="cliponaut-text-button" type="button" onClick={onSelectVideos}>
+            Add video
           </button>
         </div>
 
         <div className="cliponaut-media-list">
-          {video1 && <MediaCard file={video1} kind="video" onRemove={onRemovePrimaryVideo} />}
-          {video2 && <MediaCard file={video2} kind="video" onRemove={onRemoveSecondVideo} />}
+          {videos.map((video, index) => (
+            <MediaCard key={`${video.name}-${index}`} file={video} kind="video" onRemove={() => onRemoveVideo(index)} />
+          ))}
           {images.map((image, index) => (
             <MediaCard key={`${image.name}-${index}`} file={image} kind="image" onRemove={() => onRemoveImage(index)} />
           ))}
         </div>
 
         <div className="cliponaut-media-actions">
-          {!video2 && (
+          {videos.length < 5 && (
             <button
               className="cliponaut-add-media"
               type="button"
-              onClick={video1 ? onSelectSecondVideo : onSelectPrimaryVideo}
+              onClick={onSelectVideos}
             >
               <PlusIcon />
-              {video1 ? "Add another video" : "Add a video"}
+              {videos.length ? "Add another video" : "Add a video"}
             </button>
           )}
           <button className="cliponaut-add-media" type="button" onClick={onSelectImages}>
@@ -62,7 +63,7 @@ export function Workspace({
             Add images
           </button>
         </div>
-        <p className="cliponaut-media-note">Images are kept locally for a future editing feature and are not sent to render yet.</p>
+        <p className="cliponaut-media-note">Add up to five videos. Images are kept locally for a future editing feature and are not sent to render yet.</p>
       </section>
 
       <PreviewPanel
@@ -70,6 +71,9 @@ export function Workspace({
         error={error}
         resultUrl={resultUrl}
         messages={messages}
+        exportQuality={exportQuality}
+        canExport4k={canExport4k}
+        onExportQualityChange={onExportQualityChange}
         onEditAgain={onEditAgain}
       />
     </div>
@@ -109,7 +113,7 @@ function MediaCard({ file, kind, onRemove }) {
   );
 }
 
-function PreviewPanel({ status, error, resultUrl, messages, onEditAgain }) {
+function PreviewPanel({ status, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain }) {
   const videoRef = useRef(null);
   const [playbackRate, setPlaybackRate] = useState("1");
 
@@ -131,6 +135,22 @@ function PreviewPanel({ status, error, resultUrl, messages, onEditAgain }) {
         </div>
         {status === "done" && <span className="cliponaut-status-badge">Ready</span>}
       </div>
+
+      <fieldset className="cliponaut-export-quality">
+        <legend>Export quality</legend>
+        <div className="cliponaut-export-quality-options">
+          <label>
+            <input type="radio" name="export-quality" value="standard" checked={exportQuality === "standard"} onChange={(event) => onExportQualityChange(event.target.value)} />
+            <span>Standard</span>
+          </label>
+          <label className={!canExport4k ? "is-unavailable" : ""}>
+            <input type="radio" name="export-quality" value="4k" checked={exportQuality === "4k"} disabled={!canExport4k} onChange={(event) => onExportQualityChange(event.target.value)} />
+            <span>4K</span>
+          </label>
+        </div>
+        {exportQuality === "4k" && <p>4K export takes longer to render.</p>}
+        {!canExport4k && <p>4K is available when every source video is 4K.</p>}
+      </fieldset>
 
       <div className={`cliponaut-preview-stage is-${status}`}>
         {status === "idle" && <PreviewEmptyState />}

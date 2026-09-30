@@ -74,16 +74,16 @@ function parseFallbackCapabilities(prompt = "") {
  * A future interpretation layer can produce this same shape without changing
  * the validator or executor.
  */
-export function createEditPlan({ prompt = "", hasSecondVideo = false }) {
+export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipleVideos = hasSecondVideo }) {
   const { intents } = understandPrompt(prompt);
   const operations = [];
   const colorStyle = detectColor(intents);
   const trim = parseTrim(prompt, intents);
   const title = parseTitle(prompt);
 
-  // Two uploaded clips have always been merged automatically, independent of
-  // whether the prompt mentions merging. Preserve that established behavior.
-  if (hasSecondVideo) operations.push({ type: "merge" });
+  // Uploaded clips are merged automatically, independent of whether the prompt
+  // mentions merging. Preserve the established multi-clip behavior.
+  if (hasMultipleVideos) operations.push({ type: "merge" });
   if (colorStyle) operations.push({ type: "color_grade", style: colorStyle });
   if (title) operations.push({ type: "title", ...title });
   if (trim) operations.push({ type: "trim", ...trim });

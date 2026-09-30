@@ -7,9 +7,31 @@ import { PromptComposer } from "@/components/cliponaut/PromptComposer";
 import { PromptSuggestions } from "@/components/cliponaut/PromptSuggestions";
 import { Workspace } from "@/components/cliponaut/Workspace";
 
+const MAX_VIDEO_COUNT = 5;
+
+function getBrowserVideoMetadata(file) {
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    const url = URL.createObjectURL(file);
+    const finish = (metadata) => {
+      URL.revokeObjectURL(url);
+      resolve(metadata);
+    };
+    video.preload = "metadata";
+    video.onloadedmetadata = () => finish({ width: video.videoWidth, height: video.videoHeight });
+    video.onerror = () => finish(null);
+    video.src = url;
+  });
+}
+
+function is4kCapable(metadata) {
+  return metadata && Math.min(metadata.width, metadata.height) >= 2160 && Math.max(metadata.width, metadata.height) >= 3840;
+}
+
 export default function HomePage() {
-  const [video1, setVideo1] = useState(null);
-  const [video2, setVideo2] = useState(null);
+  const [videos, setVideos] = useState([]);
+  const [videoMetadata, setVideoMetadata] = useState([]);
+  const [exportQuality, setExportQuality] = useState("standard");
   const [images, setImages] = useState([]);
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState("idle");
@@ -17,13 +39,13 @@ export default function HomePage() {
   const [resultUrl, setResultUrl] = useState(null);
   const [messages, setMessages] = useState([]);
 
-  const video1InputRef = useRef(null);
-  const video2InputRef = useRef(null);
+  const videoInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const promptRef = useRef(null);
   const requestControllerRef = useRef(null);
 
-  const hasWorkspace = Boolean(video1 || images.length);
+  const hasWorkspace = Boolean(videos.length || images.length);
+  const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
 
   useEffect(() => {
     return () => {
@@ -47,29 +69,25 @@ export default function HomePage() {
 
     const trimMatch = lowerCasePrompt.match(/from\s*(\d+:\d+)\s*to\s*(\d+:\d+)/);
     if (trimMatch) responses.push(`Video trimmed from ${trimMatch[1]} to ${trimMatch[2]}.`);
-    if (video2 || lowerCasePrompt.includes("merge")) responses.push("Videos merged.");
+    if (videos.length > 1 || lowerCasePrompt.includes("merge")) responses.push("Videos merged.");
 
     return responses.length ? responses.join(" ") : "Your edit is ready.";
   };
 
-  const handlePrimaryVideoChange = (event) => {
-    const [file] = event.target.files;
-    if (!file) return;
-
-    // The API supports two videos. Replacing the first input intentionally clears
-    // the optional second input, matching the existing editor behavior.
-    setVideo1(file);
-    setVideo2(null);
-    if (video2InputRef.current) video2InputRef.current.value = "";
+  const handleVideosChange = async (event) => {
+    const addedVideos = Array.from(event.target.files || []);
     event.target.value = "";
-  };
+    if (!addedVideos.length) return;
 
-  const handleSecondVideoChange = (event) => {
-    const [file] = event.target.files;
-    if (!file) return;
-
-    setVideo2(file);
-    event.target.value = "";
+    const acceptedVideos = addedVideos.slice(0, Math.max(0, MAX_VIDEO_COUNT - videos.length));
+    if (!acceptedVideos.length) {
+      setError(`You can upload up to ${MAX_VIDEO_COUNT} videos at a time.`);
+      return;
+    }
+    if (addedVideos.length > acceptedVideos.length) setError(`Only the first ${MAX_VIDEO_COUNT} videos can be added.`);
+    setVideos((currentVideos) => [...currentVideos, ...acceptedVideos]);
+    const metadata = await Promise.all(acceptedVideos.map(getBrowserVideoMetadata));
+    setVideoMetadata((currentMetadata) => [...currentMetadata, ...metadata]);
   };
 
   const handleImagesChange = (event) => {
@@ -80,25 +98,14 @@ export default function HomePage() {
     event.target.value = "";
   };
 
-  const handleRemovePrimaryVideo = () => {
-    if (video2) {
-      setVideo1(video2);
-      setVideo2(null);
-    } else {
-      setVideo1(null);
-    }
-
-    if (video1InputRef.current) video1InputRef.current.value = "";
-    if (video2InputRef.current) video2InputRef.current.value = "";
-  };
-
-  const handleRemoveSecondVideo = () => {
-    setVideo2(null);
-    if (video2InputRef.current) video2InputRef.current.value = "";
+  const handleRemoveVideo = (index) => {
+    setVideos((currentVideos) => currentVideos.filter((_, videoIndex) => videoIndex !== index));
+    setVideoMetadata((currentMetadata) => currentMetadata.filter((_, videoIndex) => videoIndex !== index));
+    if (videos.length <= 1) setExportQuality("standard");
   };
 
   const handleGenerate = async () => {
-    if (!video1 || !prompt.trim() || status === "processing") return;
+    if (!videos.length || !prompt.trim() || status === "processing") return;
 
     const submittedPrompt = prompt;
     const controller = new AbortController();
@@ -113,9 +120,9 @@ export default function HomePage() {
 
     try {
       const formData = new FormData();
-      formData.append("video1", video1);
-      if (video2) formData.append("video2", video2);
+      videos.forEach((video) => formData.append("videos", video));
       formData.append("prompt", submittedPrompt);
+      formData.append("exportQuality", exportQuality);
 
       const response = await fetch("/api/process-video", {
         method: "POST",
@@ -160,16 +167,16 @@ export default function HomePage() {
   const handleBackToEmptyState = () => {
     requestControllerRef.current?.abort();
     requestControllerRef.current = null;
-    setVideo1(null);
-    setVideo2(null);
+    setVideos([]);
+    setVideoMetadata([]);
+    setExportQuality("standard");
     setImages([]);
     setPrompt("");
     setStatus("idle");
     setError(null);
     setResultUrl(null);
     setMessages([]);
-    if (video1InputRef.current) video1InputRef.current.value = "";
-    if (video2InputRef.current) video2InputRef.current.value = "";
+    if (videoInputRef.current) videoInputRef.current.value = "";
     if (imageInputRef.current) imageInputRef.current.value = "";
   };
 
@@ -178,18 +185,12 @@ export default function HomePage() {
       <AppHeader />
 
       <input
-        ref={video1InputRef}
+        ref={videoInputRef}
         type="file"
         accept="video/*"
+        multiple
         className="cliponaut-visually-hidden"
-        onChange={handlePrimaryVideoChange}
-      />
-      <input
-        ref={video2InputRef}
-        type="file"
-        accept="video/*"
-        className="cliponaut-visually-hidden"
-        onChange={handleSecondVideoChange}
+        onChange={handleVideosChange}
       />
       <input
         ref={imageInputRef}
@@ -203,18 +204,18 @@ export default function HomePage() {
       {hasWorkspace ? (
         <section className="cliponaut-workspace" aria-label="Video editing workspace">
           <Workspace
-            video1={video1}
-            video2={video2}
+            videos={videos}
             images={images}
             status={status}
             error={error}
             resultUrl={resultUrl}
             messages={messages}
-            onSelectPrimaryVideo={() => video1InputRef.current?.click()}
-            onSelectSecondVideo={() => video2InputRef.current?.click()}
+            exportQuality={exportQuality}
+            canExport4k={canExport4k}
+            onExportQualityChange={setExportQuality}
+            onSelectVideos={() => videoInputRef.current?.click()}
             onSelectImages={() => imageInputRef.current?.click()}
-            onRemovePrimaryVideo={handleRemovePrimaryVideo}
-            onRemoveSecondVideo={handleRemoveSecondVideo}
+            onRemoveVideo={handleRemoveVideo}
             onRemoveImage={(index) =>
               setImages((currentImages) => currentImages.filter((_, imageIndex) => imageIndex !== index))
             }
@@ -230,7 +231,7 @@ export default function HomePage() {
                 onPromptChange={setPrompt}
                 onSubmit={handleGenerate}
                 isProcessing={status === "processing"}
-                canGenerate={Boolean(video1 && prompt.trim())}
+                canGenerate={Boolean(videos.length && prompt.trim())}
                 compact
               />
             </div>
@@ -240,7 +241,7 @@ export default function HomePage() {
         <EmptyEditorState
           prompt={prompt}
           onPromptChange={setPrompt}
-          onSelectVideo={() => video1InputRef.current?.click()}
+          onSelectVideo={() => videoInputRef.current?.click()}
           onSelectImages={() => imageInputRef.current?.click()}
           onSelectSuggestion={setPrompt}
           imageCount={images.length}

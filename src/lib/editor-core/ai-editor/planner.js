@@ -1,5 +1,3 @@
-import { writeFile } from "fs/promises";
-import path from "path";
 import { GoogleGenAI, createPartFromUri } from "@google/genai";
 import { createEditPlan } from "@/lib/editor-core/edit-plan";
 import { EDIT_PLAN_JSON_SCHEMA } from "@/lib/editor-core/ai-editor/schema";
@@ -11,8 +9,8 @@ const FILE_PROCESSING_POLL_MS = 2_000;
 
 export class UnsupportedEditRequestError extends Error {}
 
-function addAutomaticMerge(plan, hasSecondVideo) {
-  if (!hasSecondVideo) return plan;
+function addAutomaticMerge(plan, hasMultipleVideos) {
+  if (!hasMultipleVideos) return plan;
   return { ...plan, operations: [{ type: "merge" }, ...plan.operations] };
 }
 
@@ -33,23 +31,20 @@ async function waitForActiveFile(ai, uploadedFile) {
   return file;
 }
 
-async function createGeminiPlan({ file1, prompt, tempDirectory, hasSecondVideo }) {
-  const inputPath = path.join(tempDirectory, "gemini-input.mp4");
-  await writeFile(inputPath, Buffer.from(await file1.arrayBuffer()));
-
+async function createGeminiPlan({ inputPath, inputMimeType, prompt, hasMultipleVideos }) {
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   let uploadedFile;
   try {
     uploadedFile = await ai.files.upload({
       file: inputPath,
-      config: { mimeType: file1.type || "video/mp4" }
+      config: { mimeType: inputMimeType || "video/mp4" }
     });
     const activeFile = await waitForActiveFile(ai, uploadedFile);
     const response = await ai.models.generateContent({
       model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
       contents: [
         createPartFromUri(activeFile.uri, activeFile.mimeType),
-        buildAiEditorPrompt({ prompt, hasSecondVideo })
+        buildAiEditorPrompt({ prompt, hasMultipleVideos })
       ],
       config: {
         responseMimeType: "application/json",
@@ -61,7 +56,7 @@ async function createGeminiPlan({ file1, prompt, tempDirectory, hasSecondVideo }
     const plan = JSON.parse(response.text);
     if (!Array.isArray(plan.operations)) throw new Error("Gemini returned a malformed edit plan");
     if (!plan.operations.length) throw new UnsupportedEditRequestError("This edit is not supported yet");
-    return addAutomaticMerge(plan, hasSecondVideo);
+    return addAutomaticMerge(plan, hasMultipleVideos);
   } finally {
     if (uploadedFile?.name) {
       await ai.files.delete({ name: uploadedFile.name }).catch((error) => {
@@ -71,24 +66,24 @@ async function createGeminiPlan({ file1, prompt, tempDirectory, hasSecondVideo }
   }
 }
 
-export async function createAiEditPlan({ file1, prompt, tempDirectory, hasSecondVideo }) {
+export async function createAiEditPlan({ inputPath, inputMimeType, prompt, hasMultipleVideos = false }) {
   if (!process.env.GEMINI_API_KEY || !prompt.trim()) {
     return {
-      plan: createEditPlan({ prompt, hasSecondVideo }),
+      plan: createEditPlan({ prompt, hasMultipleVideos }),
       source: "deterministic"
     };
   }
 
   try {
     return {
-      plan: await createGeminiPlan({ file1, prompt, tempDirectory, hasSecondVideo }),
+      plan: await createGeminiPlan({ inputPath, inputMimeType, prompt, hasMultipleVideos }),
       source: "gemini"
     };
   } catch (error) {
     if (error instanceof UnsupportedEditRequestError) throw error;
     console.error("Gemini planning failed; using deterministic fallback:", error.message);
     return {
-      plan: createEditPlan({ prompt, hasSecondVideo }),
+      plan: createEditPlan({ prompt, hasMultipleVideos }),
       source: "deterministic"
     };
   }

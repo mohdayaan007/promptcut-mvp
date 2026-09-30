@@ -1,7 +1,7 @@
 import { getAiCapabilityContract } from "@/lib/editor-core/capability-registry";
 
-export function buildAiEditorPrompt({ prompt, hasSecondVideo }) {
-  const capabilities = JSON.stringify(getAiCapabilityContract({ hasSecondVideo }));
+export function buildAiEditorPrompt({ prompt, hasMultipleVideos = false }) {
+  const capabilities = JSON.stringify(getAiCapabilityContract({ hasMultipleVideos }));
 
   return [
     "You are Cliponaut's AI video editor.",

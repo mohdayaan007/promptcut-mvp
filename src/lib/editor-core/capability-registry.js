@@ -25,7 +25,7 @@ export function getCapability(type) {
   return CAPABILITY_REGISTRY[type] || null;
 }
 
-export function getAiCapabilityContract({ hasSecondVideo = false } = {}) {
+export function getAiCapabilityContract({ hasMultipleVideos = false } = {}) {
   return {
     color_grade: { styles: Object.keys(COLOR_PRESETS) },
     title: {
@@ -45,8 +45,8 @@ export function getAiCapabilityContract({ hasSecondVideo = false } = {}) {
     },
     fade: { requiredFields: CAPABILITY_REGISTRY.fade.requiredFields, modes: CAPABILITY_REGISTRY.fade.modes, ...CAPABILITY_REGISTRY.fade.limits },
     crop: { requiredFields: CAPABILITY_REGISTRY.crop.requiredFields, aspectRatios: CAPABILITY_REGISTRY.crop.aspectRatios },
-    merge: hasSecondVideo
-      ? "Automatically added by the server because two videos were uploaded. Do not emit it."
-      : "Unavailable without a second uploaded video. Do not emit it."
+    merge: hasMultipleVideos
+      ? "Automatically added by the server because multiple videos were uploaded. Do not emit it."
+      : "Unavailable without multiple uploaded videos. Do not emit it."
   };
 }
