@@ -20,7 +20,7 @@ async function normalize(input, output, media, profile) {
 
   await exec(FFMPEG, [
     "-y", "-hide_banner", "-loglevel", "error", "-fflags", "+genpts", "-i", input,
-    ...mappingArgs, "-vf", buildNormalizationFilter(profile), ...VIDEO_ENCODING_ARGS, output
+    ...mappingArgs, "-vf", buildNormalizationFilter(profile, media), ...VIDEO_ENCODING_ARGS, output
   ]);
 }
 
@@ -141,7 +141,8 @@ async function applyFade(input, output, fade) {
 
 /** Executes only capabilities registered in the validated edit plan. */
 export async function executeEditPlan({ inputPaths, media, plan, tempDirectory, exportQuality = "standard" }) {
-  const profile = createMediaProfile({ media, exportQuality });
+  const crop = plan.operations.find((operation) => operation.type === "crop");
+  const profile = createMediaProfile({ media, exportQuality, aspectRatio: crop?.aspect_ratio });
   const normalizedPaths = inputPaths.map((_, index) => path.join(tempDirectory, `normalized-${index}.mp4`));
   for (const [index, inputPath] of inputPaths.entries()) {
     await normalize(inputPath, normalizedPaths[index], media[index], profile);
@@ -156,7 +157,6 @@ export async function executeEditPlan({ inputPaths, media, plan, tempDirectory, 
 
   // Source-time visual phase: center crop establishes the output canvas before zoom, then
   // color and titles are composited. Trim/speed run next and can change duration; fades run last.
-  const crop = plan.operations.find((operation) => operation.type === "crop");
   const cropSettings = getCropSettings(crop, profile);
   const filters = cropSettings.filter ? [cropSettings.filter] : [];
   for (const operation of plan.operations) {
