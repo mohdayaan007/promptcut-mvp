@@ -41,6 +41,7 @@ export default function HomePage() {
   const [messages, setMessages] = useState([]);
   const [uploadProgress, setUploadProgress] = useState(null);
   const [activeJob, setActiveJob] = useState(null);
+  const [restoredSources, setRestoredSources] = useState([]);
 
   const videoInputRef = useRef(null);
   const imageInputRef = useRef(null);
@@ -65,6 +66,7 @@ export default function HomePage() {
       try {
         const job = await getJobStatus(activeJob);
         if (stopped) return;
+        setRestoredSources(job.sources || []);
         setStatus(job.status === "completed" ? "done" : job.status);
         if (job.status === "completed") {
           setResultUrl(job.outputUrl);
@@ -199,6 +201,7 @@ export default function HomePage() {
     setMessages([]);
     setUploadProgress(null);
     setActiveJob(null);
+    setRestoredSources([]);
     clearActiveJob();
     if (videoInputRef.current) videoInputRef.current.value = "";
     if (imageInputRef.current) imageInputRef.current.value = "";
@@ -229,6 +232,7 @@ export default function HomePage() {
         <section className="cliponaut-workspace" aria-label="Video editing workspace">
           <Workspace
             videos={videos}
+            restoredSources={restoredSources}
             images={images}
             status={status}
             uploadProgress={uploadProgress}

@@ -24,3 +24,9 @@ export function safeJobResponse(job, extra = {}) {
     ...extra
   };
 }
+
+export function safeSourceMetadata(sources = []) {
+  return sources
+    .map(({ index, name, type, size }) => ({ index, name, type, size }))
+    .sort((left, right) => left.index - right.index);
+}

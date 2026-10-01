@@ -5,6 +5,7 @@ import { ArrowLeftIcon, DownloadIcon, ImageIcon, PlusIcon, VideoIcon } from "@/c
 
 export function Workspace({
   videos,
+  restoredSources,
   images,
   status,
   uploadProgress,
@@ -40,9 +41,11 @@ export function Workspace({
         </div>
 
         <div className="cliponaut-media-list">
-          {videos.map((video, index) => (
-            <MediaCard key={`${video.name}-${index}`} file={video} kind="video" onRemove={() => onRemoveVideo(index)} />
-          ))}
+          {videos.length
+            ? videos.map((video, index) => (
+              <MediaCard key={`${video.name}-${index}`} file={video} kind="video" onRemove={() => onRemoveVideo(index)} />
+            ))
+            : restoredSources.map((source) => <RestoredMediaCard key={source.index} source={source} />)}
           {images.map((image, index) => (
             <MediaCard key={`${image.name}-${index}`} file={image} kind="image" onRemove={() => onRemoveImage(index)} />
           ))}
@@ -111,6 +114,21 @@ function MediaCard({ file, kind, onRemove }) {
       <button className="cliponaut-remove-media" type="button" onClick={onRemove} aria-label={`Remove ${file.name}`}>
         ×
       </button>
+    </article>
+  );
+}
+
+function RestoredMediaCard({ source }) {
+  return (
+    <article className="cliponaut-media-card">
+      <div className="cliponaut-media-thumbnail is-restored-media" aria-hidden="true">
+        <VideoIcon />
+        <span className="cliponaut-media-type"><VideoIcon /></span>
+      </div>
+      <div className="cliponaut-media-details">
+        <p title={source.name}>{source.name}</p>
+        <span>Uploaded</span>
+      </div>
     </article>
   );
 }

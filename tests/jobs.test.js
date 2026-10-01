@@ -3,6 +3,7 @@ import test from "node:test";
 import { MAX_DIRECT_UPLOAD_FILE_BYTES, validateJobRequest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
+import { safeSourceMetadata } from "@/lib/jobs/http";
 
 const video = { name: "source.mp4", type: "video/mp4", size: 1024 };
 
@@ -29,4 +30,15 @@ test("direct upload CORS permits only Cliponaut and local development", () => {
   assert.deepEqual(rule.AllowedOrigins, ["https://cliponaut.com", "http://localhost:3000"]);
   assert.deepEqual(rule.AllowedMethods, ["GET", "HEAD", "PUT"]);
   assert.deepEqual(rule.ExposeHeaders, ["ETag"]);
+});
+
+test("restored source metadata preserves order without storage keys", () => {
+  const sources = safeSourceMetadata([
+    { index: 1, name: "second.mp4", type: "video/mp4", size: 200, key: "private/second" },
+    { index: 0, name: "first.mp4", type: "video/mp4", size: 100, key: "private/first" }
+  ]);
+  assert.deepEqual(sources, [
+    { index: 0, name: "first.mp4", type: "video/mp4", size: 100 },
+    { index: 1, name: "second.mp4", type: "video/mp4", size: 200 }
+  ]);
 });
