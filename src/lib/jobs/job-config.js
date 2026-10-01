@@ -4,7 +4,7 @@ export const MAX_DIRECT_UPLOAD_FILE_BYTES = 5 * 1024 * 1024 * 1024;
 export const MAX_DIRECT_UPLOAD_JOB_BYTES = 25 * 1024 * 1024 * 1024;
 export const MULTIPART_PART_SIZE_BYTES = 16 * 1024 * 1024;
 export const UPLOAD_URL_BATCH_SIZE = 8;
-export const JOB_STATUSES = ["uploading", "queued", "analyzing", "rendering", "completed", "failed"];
+export const JOB_STATUSES = ["uploading", "queued", "analyzing", "rendering", "completed", "failed", "cancelled"];
 
 export function jobConfig() {
   return {

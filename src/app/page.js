@@ -6,7 +6,8 @@ import { EmptyEditorState } from "@/components/cliponaut/EmptyEditorState";
 import { PromptComposer } from "@/components/cliponaut/PromptComposer";
 import { PromptSuggestions } from "@/components/cliponaut/PromptSuggestions";
 import { Workspace } from "@/components/cliponaut/Workspace";
-import { clearActiveJob, getJobStatus, loadActiveJob, saveActiveJob, uploadAndQueueJob } from "@/lib/client/direct-upload";
+import { JobRecoveryModal } from "@/components/cliponaut/JobRecoveryModal";
+import { cancelJob, clearActiveJob, getJobStatus, isActiveJobStatus, isRecoverableJobStatus, loadActiveJob, saveActiveJob, uploadAndQueueJob } from "@/lib/client/direct-upload";
 
 const MAX_VIDEO_COUNT = 5;
 
@@ -42,6 +43,9 @@ export default function HomePage() {
   const [uploadProgress, setUploadProgress] = useState(null);
   const [activeJob, setActiveJob] = useState(null);
   const [restoredSources, setRestoredSources] = useState([]);
+  const [recovery, setRecovery] = useState(null);
+  const [isResolvingRecovery, setIsResolvingRecovery] = useState(false);
+  const [recoveryError, setRecoveryError] = useState(null);
 
   const videoInputRef = useRef(null);
   const imageInputRef = useRef(null);
@@ -50,17 +54,28 @@ export default function HomePage() {
 
   const hasWorkspace = Boolean(videos.length || images.length || activeJob);
   const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
-  const isProcessing = ["uploading", "queued", "analyzing", "rendering"].includes(status);
+  const isProcessing = isActiveJobStatus(status);
 
   useEffect(() => {
     const saved = loadActiveJob();
     if (!saved?.id || !saved?.accessToken) return;
-    setActiveJob(saved);
-    setStatus("queued");
+    let stopped = false;
+    const discover = async () => {
+      try {
+        const job = await getJobStatus(saved);
+        if (stopped) return;
+        if (isRecoverableJobStatus(job.status)) setRecovery({ session: saved, job });
+        else clearActiveJob();
+      } catch {
+        if (!stopped) clearActiveJob();
+      }
+    };
+    discover();
+    return () => { stopped = true; };
   }, []);
 
   useEffect(() => {
-    if (!activeJob || !["queued", "analyzing", "rendering"].includes(status)) return undefined;
+    if (!activeJob || !isActiveJobStatus(status)) return undefined;
     let stopped = false;
     const check = async () => {
       try {
@@ -71,8 +86,8 @@ export default function HomePage() {
         if (job.status === "completed") {
           setResultUrl(job.outputUrl);
           setMessages((current) => [...current, { role: "assistant", text: "Your edit is ready." }]);
-        } else if (job.status === "failed") {
-          setError(job.error || "We couldn’t complete that edit.");
+        } else if (["failed", "cancelled"].includes(job.status)) {
+          setError(job.status === "cancelled" ? "This edit was cancelled." : job.error || "We couldn’t complete that edit.");
           setStatus("error");
           clearActiveJob();
           setActiveJob(null);
@@ -187,7 +202,7 @@ export default function HomePage() {
     promptRef.current?.focus();
   };
 
-  const handleBackToEmptyState = () => {
+  const resetWorkspace = () => {
     requestControllerRef.current?.abort();
     requestControllerRef.current = null;
     setVideos([]);
@@ -202,9 +217,37 @@ export default function HomePage() {
     setUploadProgress(null);
     setActiveJob(null);
     setRestoredSources([]);
+    setRecovery(null);
+    setRecoveryError(null);
+    setIsResolvingRecovery(false);
     clearActiveJob();
+    history.replaceState(null, "", window.location.pathname);
     if (videoInputRef.current) videoInputRef.current.value = "";
     if (imageInputRef.current) imageInputRef.current.value = "";
+  };
+
+  const handleBackToEmptyState = () => { resetWorkspace(); };
+
+  const restoreJob = (session, job) => {
+    setActiveJob(session);
+    setRestoredSources(job.sources || []);
+    setStatus(job.status === "completed" ? "done" : job.status);
+    setResultUrl(job.status === "completed" ? job.outputUrl : null);
+    setRecovery(null);
+    setRecoveryError(null);
+  };
+
+  const handleRecoveryStartFresh = async () => {
+    if (!recovery || isResolvingRecovery) return;
+    setIsResolvingRecovery(true);
+    setRecoveryError(null);
+    try {
+      if (isActiveJobStatus(recovery.job.status)) await cancelJob(recovery.session);
+      resetWorkspace();
+    } catch (cancelError) {
+      setRecoveryError(cancelError.message || "We couldn’t cancel that edit. Please try again.");
+      setIsResolvingRecovery(false);
+    }
   };
 
   return (
@@ -276,6 +319,15 @@ export default function HomePage() {
           imageCount={images.length}
         />
       )}
+      {recovery ? (
+        <JobRecoveryModal
+          active={isActiveJobStatus(recovery.job.status)}
+          isResolving={isResolvingRecovery}
+          error={recoveryError}
+          onContinue={() => restoreJob(recovery.session, recovery.job)}
+          onStartFresh={handleRecoveryStartFresh}
+        />
+      ) : null}
     </main>
   );
 }

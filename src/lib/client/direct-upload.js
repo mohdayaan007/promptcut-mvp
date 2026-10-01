@@ -1,4 +1,5 @@
 const JOB_STORAGE_KEY = "cliponaut-active-job";
+export const ACTIVE_JOB_STATUSES = ["uploading", "queued", "analyzing", "rendering"];
 
 async function requestJson(url, options = {}) {
   const response = await fetch(url, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
@@ -56,6 +57,15 @@ export async function uploadAndQueueJob({ videos, prompt, exportQuality, signal,
 export async function getJobStatus(session, signal) {
   return requestJson(`/api/jobs/${session.id}`, { headers: jobHeaders(session.accessToken), signal });
 }
+
+export async function cancelJob(session, signal) {
+  return requestJson(`/api/jobs/${session.id}/cancel`, {
+    method: "POST", headers: jobHeaders(session.accessToken), signal
+  });
+}
+
+export function isActiveJobStatus(status) { return ACTIVE_JOB_STATUSES.includes(status); }
+export function isRecoverableJobStatus(status) { return isActiveJobStatus(status) || status === "completed"; }
 
 export function saveActiveJob(session) { localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(session)); }
 export function loadActiveJob() {

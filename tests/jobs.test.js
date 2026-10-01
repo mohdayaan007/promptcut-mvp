@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { MAX_DIRECT_UPLOAD_FILE_BYTES, validateJobRequest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
+import { ACTIVE_JOB_STATUSES, isActiveJobStatus, isRecoverableJobStatus } from "@/lib/client/direct-upload";
+import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 
 const video = { name: "source.mp4", type: "video/mp4", size: 1024 };
 
@@ -34,11 +36,36 @@ test("direct upload CORS permits only Cliponaut and local development", () => {
 
 test("restored source metadata preserves order without storage keys", () => {
   const sources = safeSourceMetadata([
+    { index: 4, name: "fifth.mp4", type: "video/mp4", size: 500, key: "private/fifth" },
     { index: 1, name: "second.mp4", type: "video/mp4", size: 200, key: "private/second" },
-    { index: 0, name: "first.mp4", type: "video/mp4", size: 100, key: "private/first" }
+    { index: 0, name: "first.mp4", type: "video/mp4", size: 100, key: "private/first" },
+    { index: 3, name: "fourth.mp4", type: "video/mp4", size: 400, key: "private/fourth" },
+    { index: 2, name: "third.mp4", type: "video/mp4", size: 300, key: "private/third" }
   ]);
   assert.deepEqual(sources, [
     { index: 0, name: "first.mp4", type: "video/mp4", size: 100 },
-    { index: 1, name: "second.mp4", type: "video/mp4", size: 200 }
+    { index: 1, name: "second.mp4", type: "video/mp4", size: 200 },
+    { index: 2, name: "third.mp4", type: "video/mp4", size: 300 },
+    { index: 3, name: "fourth.mp4", type: "video/mp4", size: 400 },
+    { index: 4, name: "fifth.mp4", type: "video/mp4", size: 500 }
   ]);
+});
+
+test("cancelled is a terminal durable-job status and is eligible for source cleanup", () => {
+  assert.ok(JOB_STATUSES.includes("cancelled"));
+  assert.match(EDIT_JOBS_SCHEMA, /'cancelled'/);
+  assert.match(EDIT_JOBS_SCHEMA, /'completed','failed','cancelled'/);
+  assert.ok(!ACTIVE_JOB_STATUSES.includes("cancelled"));
+});
+
+test("only active and completed jobs trigger recovery", () => {
+  for (const status of ["uploading", "queued", "analyzing", "rendering"]) {
+    assert.equal(isActiveJobStatus(status), true);
+    assert.equal(isRecoverableJobStatus(status), true);
+  }
+  assert.equal(isRecoverableJobStatus("completed"), true);
+  for (const status of ["failed", "cancelled"]) {
+    assert.equal(isActiveJobStatus(status), false);
+    assert.equal(isRecoverableJobStatus(status), false);
+  }
 });

@@ -24,6 +24,84 @@ body {
   color: #171717;
 }
 
+.cliponaut-recovery-backdrop {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(23 23 23 / 34%);
+}
+
+.cliponaut-recovery-modal {
+  width: min(100%, 410px);
+  padding: 30px;
+  border: 1px solid #dedbd6;
+  border-radius: 20px;
+  background: #faf8f5;
+  box-shadow: 0 24px 70px rgb(23 23 23 / 20%);
+}
+
+.cliponaut-recovery-kicker {
+  margin: 0 0 10px;
+  color: #77736e;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.cliponaut-recovery-modal h2 {
+  margin: 0;
+  font-size: 1.55rem;
+  line-height: 1.15;
+}
+
+.cliponaut-recovery-modal > p:not(.cliponaut-recovery-kicker, .cliponaut-recovery-error) {
+  margin: 12px 0 0;
+  color: #6d6d6d;
+  line-height: 1.5;
+}
+
+.cliponaut-recovery-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 25px;
+}
+
+.cliponaut-recovery-actions button {
+  min-height: 43px;
+  flex: 1;
+  border-radius: 10px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cliponaut-recovery-primary {
+  border: 1px solid #171717;
+  background: #171717;
+  color: #faf8f5;
+}
+
+.cliponaut-recovery-secondary {
+  border: 1px solid #d2cec8;
+  background: transparent;
+  color: #171717;
+}
+
+.cliponaut-recovery-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.cliponaut-recovery-error {
+  margin: 16px 0 0;
+  color: #b42318;
+  font-size: 0.875rem;
+}
+
 .cliponaut-header {
   display: flex;
   align-items: center;
