@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import path from "path";
 import os from "os";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
+import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { executeEditPlan } from "@/lib/editor-core/edit-executor";
 import { createAiEditPlan, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import {
@@ -88,22 +89,27 @@ export async function POST(req) {
     const media = [];
     for (const inputPath of inputPaths) media.push(await probeVideoFile(inputPath));
     const exportQuality = validateExportQuality(formData.get("exportQuality"), media);
+    const sourceCatalog = createSourceCatalog(
+      videos.map((file, index) => ({ index, name: file.name, type: file.type, size: file.size })),
+      media
+    );
 
     const { plan } = await createAiEditPlan({
       inputPath: inputPaths[0],
       inputMimeType: videos[0].type,
       prompt,
-      hasMultipleVideos: videos.length > 1
+      hasMultipleVideos: videos.length > 1,
+      sourceCatalog
     });
     let editPlan;
     try {
-      editPlan = validateEditPlan(plan);
+      editPlan = validateEditPlan(plan, { sourceCatalog });
     } catch (error) {
       console.error("Edit plan validation failed:", error.message);
       return Response.json({ error: "This edit is not currently supported" }, { status: 422 });
     }
 
-    const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, tempDirectory, exportQuality });
+    const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory, exportQuality });
     const buffer = await readFile(outputPath);
     return new Response(buffer, {
       headers: {

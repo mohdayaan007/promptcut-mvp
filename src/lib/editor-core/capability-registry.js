@@ -10,6 +10,7 @@ export const CAPABILITY_LIMITS = {
 
 export const CAPABILITY_REGISTRY = {
   merge: { requiredFields: [] },
+  sequence: { requiredFields: ["clips"] },
   color_grade: { requiredFields: ["style"], supportedValues: COLOR_PRESETS },
   title: {
     requiredFields: ["text", "start", "end", "position", "size", "color", "weight", "font"]
@@ -47,6 +48,9 @@ export function getAiCapabilityContract({ hasMultipleVideos = false } = {}) {
     crop: { requiredFields: CAPABILITY_REGISTRY.crop.requiredFields, aspectRatios: CAPABILITY_REGISTRY.crop.aspectRatios },
     merge: hasMultipleVideos
       ? "Automatically added by the server because multiple videos were uploaded. Do not emit it."
-      : "Unavailable without multiple uploaded videos. Do not emit it."
+      : "Unavailable without multiple uploaded videos. Do not emit it.",
+    sequence: hasMultipleVideos
+      ? "Available only in a version 2 source-aware plan. It arranges validated source-local clips."
+      : "Unavailable without multiple uploaded videos."
   };
 }

@@ -69,17 +69,72 @@ function parseFallbackCapabilities(prompt = "") {
   return operations;
 }
 
+const ORDINALS = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
+
+function sourceIdForOrdinal(ordinal) { return `source-${ordinal}`; }
+
+function fullSourceClips(sourceCatalog) {
+  return sourceCatalog.map((source) => ({ sourceId: source.sourceId, start: 0, end: source.duration }));
+}
+
+function sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle) {
+  if (!sourceCatalog.length) return null;
+  const timedClips = [];
+  const rangePattern = /seconds?\s+(\d+(?:\.\d+)?)\s*(?:to|-)\s*(\d+(?:\.\d+)?)\s+of\s+(?:video\s*|source[-\s]?)(\d+)/gi;
+  const firstSecondsPattern = /first\s+(\d+(?:\.\d+)?)\s+seconds?\s+of\s+(?:video\s*|source[-\s]?)(\d+)/gi;
+  for (const match of prompt.matchAll(firstSecondsPattern)) {
+    timedClips.push({ index: match.index, sourceId: sourceIdForOrdinal(Number(match[2])), start: 0, end: Number(match[1]) });
+  }
+  for (const match of prompt.matchAll(rangePattern)) {
+    timedClips.push({ index: match.index, sourceId: sourceIdForOrdinal(Number(match[3])), start: Number(match[1]), end: Number(match[2]) });
+  }
+  if (timedClips.length) {
+    return { version: "2", operations: [{ type: "sequence", clips: timedClips.sort((left, right) => left.index - right.index).map(({ index, ...clip }) => clip) }] };
+  }
+
+  const references = [];
+  const referencePattern = /\b(?:video\s*|source[-\s]?)(\d+)\b|\b(first|second|third|fourth|fifth)\s+video\b|\bthen\s+(?:the\s+)?(first|second|third|fourth|fifth)\b/gi;
+  for (const match of prompt.matchAll(referencePattern)) {
+    const ordinal = Number(match[1]) || ORDINALS[match[2]] || ORDINALS[match[3]];
+    if (ordinal) references.push({ index: match.index, sourceId: sourceIdForOrdinal(ordinal) });
+  }
+
+  const sourceOnlyMatch = prompt.match(/\bonly\s+(?:video\s*|source[-\s]?)(\d+)\b/i);
+  if (sourceOnlyMatch && colorStyle) {
+    return {
+      version: "2",
+      operations: [
+        { type: "sequence", clips: fullSourceClips(sourceCatalog) },
+        { type: "color_grade", sourceId: sourceIdForOrdinal(Number(sourceOnlyMatch[1])), style: colorStyle }
+      ]
+    };
+  }
+
+  if (references.length) {
+    return {
+      version: "2",
+      operations: [{ type: "sequence", clips: references.sort((left, right) => left.index - right.index).map((reference) => {
+        const source = sourceCatalog.find((entry) => entry.sourceId === reference.sourceId);
+        return { sourceId: reference.sourceId, start: 0, end: source?.duration || 1 };
+      }) }]
+    };
+  }
+  return null;
+}
+
 /**
  * Converts the current deterministic prompt parser into the edit-plan format.
  * A future interpretation layer can produce this same shape without changing
  * the validator or executor.
  */
-export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipleVideos = hasSecondVideo }) {
+export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipleVideos = hasSecondVideo, sourceCatalog = [] }) {
   const { intents } = understandPrompt(prompt);
   const operations = [];
   const colorStyle = detectColor(intents);
   const trim = parseTrim(prompt, intents);
   const title = parseTitle(prompt);
+  const sourceAwarePlan = sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle);
+  if (sourceAwarePlan) return sourceAwarePlan;
 
   // Uploaded clips are merged automatically, independent of whether the prompt
   // mentions merging. Preserve the established multi-clip behavior.

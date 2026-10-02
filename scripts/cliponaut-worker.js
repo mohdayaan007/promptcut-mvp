@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { createAiEditPlan, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import { executeEditPlan } from "@/lib/editor-core/edit-executor";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
+import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { is4kCapableMedia } from "@/lib/media/media-config";
 import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
 import { jobConfig } from "@/lib/jobs/job-config";
@@ -58,26 +59,28 @@ async function processJob(job) {
     await mkdir(config.scratchDirectory, { recursive: true });
     scratch = await mkdtemp(path.join(config.scratchDirectory, `${job.id}-`));
     heartbeat = setInterval(() => heartbeatJob(job.id, workerId).catch(() => {}), 30_000);
+    const sources = [...job.sources].sort((left, right) => left.index - right.index);
     const inputPaths = [];
-    for (const source of job.sources) {
+    for (const source of sources) {
       const inputPath = path.join(scratch, `source-${source.index}.mp4`);
       await downloadObject(source.key, inputPath);
       inputPaths.push(inputPath);
     }
     const media = [];
     for (const inputPath of inputPaths) media.push(await probeVideoFile(inputPath));
+    const sourceCatalog = createSourceCatalog(sources, media);
     await throwIfCancelled(job.id);
     if (job.exportQuality === "4k" && !media.every(is4kCapableMedia)) {
       throw new Error("4K export requires every uploaded video to be 4K-capable");
     }
     const { plan } = await createAiEditPlan({
-      inputPath: inputPaths[0], inputMimeType: job.sources[0].type, prompt: job.prompt,
-      hasMultipleVideos: inputPaths.length > 1
+      inputPath: inputPaths[0], inputMimeType: sources[0].type, prompt: job.prompt,
+      hasMultipleVideos: inputPaths.length > 1, sourceCatalog
     });
-    const editPlan = validateEditPlan(plan);
+    const editPlan = validateEditPlan(plan, { sourceCatalog });
     await throwIfCancelled(job.id);
     if (!await setJobStatus(job.id, workerId, "rendering")) throw new JobCancelledError();
-    const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, tempDirectory: scratch, exportQuality: job.exportQuality });
+    const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality });
     await throwIfCancelled(job.id);
     outputKey = outputObjectKey(job.id);
     await uploadOutput(outputKey, outputPath);

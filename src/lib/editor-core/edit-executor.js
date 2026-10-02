@@ -33,6 +33,20 @@ async function mergeVideos(inputs, output) {
   ]);
 }
 
+async function applyColorGrade(input, output, style) {
+  await exec(FFMPEG, [
+    "-y", "-hide_banner", "-loglevel", "error", "-i", input,
+    "-vf", COLOR_PRESETS[style].join(","), ...VIDEO_ENCODING_ARGS, output
+  ]);
+}
+
+async function cutClip(input, output, start, end) {
+  await exec(FFMPEG, [
+    "-y", "-hide_banner", "-loglevel", "error", "-ss", start.toString(), "-to", end.toString(), "-i", input,
+    ...VIDEO_ENCODING_ARGS, output
+  ]);
+}
+
 function buildZoomFilter(operation, { width, height }) {
   // The cosine envelope enters and exits at 1x, avoiding an abrupt crop at either boundary.
   const envelope = `if(between(t\\,${operation.start}\\,${operation.end})\\,1+(${operation.amount - 1})*(0.5-0.5*cos(2*PI*(t-${operation.start})/(${operation.end - operation.start})))\\,1)`;
@@ -140,18 +154,51 @@ async function applyFade(input, output, fade) {
 }
 
 /** Executes only capabilities registered in the validated edit plan. */
-export async function executeEditPlan({ inputPaths, media, plan, tempDirectory, exportQuality = "standard" }) {
+export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog = [], tempDirectory, exportQuality = "standard" }) {
+  const sequence = plan.operations.find((operation) => operation.type === "sequence");
   const crop = plan.operations.find((operation) => operation.type === "crop");
-  const profile = createMediaProfile({ media, exportQuality, aspectRatio: crop?.aspect_ratio });
-  const normalizedPaths = inputPaths.map((_, index) => path.join(tempDirectory, `normalized-${index}.mp4`));
-  for (const [index, inputPath] of inputPaths.entries()) {
-    await normalize(inputPath, normalizedPaths[index], media[index], profile);
+  const sourceById = new Map(sourceCatalog.map((source) => [source.sourceId, source]));
+  const selectedSourceIndexes = sequence
+    ? [...new Set(sequence.clips.map((clip) => sourceById.get(clip.sourceId).index))]
+    : inputPaths.map((_, index) => index);
+  const selectedMedia = selectedSourceIndexes.map((index) => media[index]);
+  const profile = createMediaProfile({ media: selectedMedia, exportQuality, aspectRatio: crop?.aspect_ratio });
+  const normalizedPaths = new Map();
+  for (const index of selectedSourceIndexes) {
+    const normalizedPath = path.join(tempDirectory, `normalized-${index}.mp4`);
+    await normalize(inputPaths[index], normalizedPath, media[index], profile);
+    normalizedPaths.set(index, normalizedPath);
   }
 
-  let baseVideo = normalizedPaths[0];
-  if (plan.operations.some((operation) => operation.type === "merge")) {
+  if (sequence) {
+    for (const operation of plan.operations) {
+      if (operation.type !== "color_grade" || !operation.sourceId) continue;
+      const source = sourceById.get(operation.sourceId);
+      const gradedPath = path.join(tempDirectory, `graded-${source.index}.mp4`);
+      await applyColorGrade(normalizedPaths.get(source.index), gradedPath, operation.style);
+      normalizedPaths.set(source.index, gradedPath);
+    }
+  }
+
+  let baseVideo = normalizedPaths.get(selectedSourceIndexes[0]);
+  if (sequence) {
+    const clipPaths = [];
+    for (const [index, clip] of sequence.clips.entries()) {
+      const source = sourceById.get(clip.sourceId);
+      const clipPath = path.join(tempDirectory, `sequence-${index}.mp4`);
+      await cutClip(normalizedPaths.get(source.index), clipPath, clip.start, clip.end);
+      clipPaths.push(clipPath);
+    }
+    if (clipPaths.length > 1) {
+      const sequencePath = path.join(tempDirectory, "sequence.mp4");
+      await mergeVideos(clipPaths, sequencePath);
+      baseVideo = sequencePath;
+    } else {
+      [baseVideo] = clipPaths;
+    }
+  } else if (plan.operations.some((operation) => operation.type === "merge")) {
     const mergedPath = path.join(tempDirectory, "merged.mp4");
-    await mergeVideos(normalizedPaths, mergedPath);
+    await mergeVideos(selectedSourceIndexes.map((index) => normalizedPaths.get(index)), mergedPath);
     baseVideo = mergedPath;
   }
 
@@ -161,7 +208,7 @@ export async function executeEditPlan({ inputPaths, media, plan, tempDirectory, 
   const filters = cropSettings.filter ? [cropSettings.filter] : [];
   for (const operation of plan.operations) {
     if (operation.type === "zoom") filters.push(buildZoomFilter(operation, cropSettings));
-    if (operation.type === "color_grade") filters.push(...COLOR_PRESETS[operation.style]);
+    if (operation.type === "color_grade" && !operation.sourceId) filters.push(...COLOR_PRESETS[operation.style]);
     if (operation.type === "title") filters.push(buildTitleFilter(operation));
   }
 

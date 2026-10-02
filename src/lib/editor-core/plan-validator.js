@@ -30,16 +30,54 @@ function validateTimedOperation(operation, name) {
   }
 }
 
-export function validateEditPlan(plan) {
-  if (!plan || plan.version !== "1" || !Array.isArray(plan.operations)) {
-    throw validationError("version 1 with an operations array is required");
+function sourceCatalogById(sourceCatalog) {
+  return new Map(sourceCatalog.map((source) => [source.sourceId, source]));
+}
+
+function validateSequence(operation, sources) {
+  if (!Array.isArray(operation.clips) || !operation.clips.length) {
+    throw validationError("sequence requires at least one clip");
+  }
+  if (operation.clips.length > 20) throw validationError("sequence supports at most 20 clips");
+  for (const clip of operation.clips) {
+    const source = sources.get(clip?.sourceId);
+    if (!source) throw validationError(`unknown source: ${clip?.sourceId || "unknown"}`);
+    validateTimedOperation(clip, "sequence clip");
+    if (clip.end > source.duration + 0.01) {
+      throw validationError(`sequence clip exceeds ${clip.sourceId} duration`);
+    }
+  }
+}
+
+export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
+  if (!plan || !["1", "2"].includes(plan.version) || !Array.isArray(plan.operations)) {
+    throw validationError("version 1 or 2 with an operations array is required");
   }
 
+  const sourceAware = plan.version === "2";
+  const sources = sourceCatalogById(sourceCatalog);
+  if (sourceAware && !sources.size) throw validationError("version 2 requires a source catalog");
   const seenSingletons = new Set();
   const zoomRanges = [];
+  let sequenceCount = 0;
   for (const operation of plan.operations) {
     const capability = getCapability(operation?.type);
     if (!capability) throw validationError(`unsupported operation type: ${operation?.type || "unknown"}`);
+
+    if (operation.type === "sequence") {
+      if (!sourceAware) throw validationError("sequence requires version 2");
+      sequenceCount += 1;
+      if (sequenceCount > 1) throw validationError("only one sequence operation is allowed");
+      validateSequence(operation, sources);
+      continue;
+    }
+
+    if (operation.sourceId !== undefined) {
+      if (!sourceAware || operation.type !== "color_grade") {
+        throw validationError("sourceId is supported only for version 2 color_grade operations");
+      }
+      if (!sources.has(operation.sourceId)) throw validationError(`unknown source: ${operation.sourceId}`);
+    }
 
     for (const field of capability.requiredFields) {
       if (operation[field] === undefined || operation[field] === null) {
@@ -82,6 +120,11 @@ export function validateEditPlan(plan) {
     if (operation.type === "crop" && !CAPABILITY_LIMITS.aspectRatios.includes(operation.aspect_ratio)) {
       throw validationError("crop aspect ratio is unsupported");
     }
+  }
+
+  if (sourceAware) {
+    if (seenSingletons.has("merge")) throw validationError("version 2 sequence cannot include merge");
+    if (sequenceCount !== 1) throw validationError("version 2 requires exactly one sequence operation");
   }
 
   zoomRanges.sort((first, second) => first.start - second.start);
