@@ -1129,18 +1129,3 @@ Cliponaut's goal is:
 > correctly understand what the user asked for and produce that edit reliably.
 
 When testing, prioritize correctness and predictable behavior over merely obtaining a completed job status.
-
-After creating the file:
-
-- run `git diff --check`
-- run `git status`
-- do not modify any other file
-- do not commit
-- do not push
-- do not deploy
-
-Report:
-1. whether PRODUCTION_TESTS.md was created successfully
-2. whether any other files changed
-3. git diff --check result
-4. git status
