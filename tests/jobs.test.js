@@ -235,12 +235,21 @@ test("source-aware fallback creates source-local trim clips", () => {
 
 test("source-specific color grade is scoped before sequence assembly", () => {
   const plan = createEditPlan({ prompt: "Make only video 2 black and white.", hasMultipleVideos: true, sourceCatalog });
+  assert.deepEqual(plan.operations[0], {
+    type: "sequence",
+    clips: [
+      { sourceId: "source-1", start: 0, end: 20 },
+      { sourceId: "source-2", start: 0, end: 30 },
+      { sourceId: "source-3", start: 0, end: 40 }
+    ]
+  });
   assert.deepEqual(plan.operations[1], { type: "color_grade", sourceId: "source-2", style: "bw" });
   assert.doesNotThrow(() => validateEditPlan(plan, { sourceCatalog }));
 });
 
 test("global multi-video color grades remain a single unscoped operation", () => {
   for (const prompt of ["Make both videos black and white.", "Make all videos black and white."]) {
+    assert.equal(requiresVisualSourceUnderstanding(prompt, sourceCatalog), false);
     const plan = createEditPlan({ prompt, hasMultipleVideos: true, sourceCatalog });
     const colorGrades = plan.operations.filter((operation) => operation.type === "color_grade");
     assert.deepEqual(colorGrades, [{ type: "color_grade", style: "bw" }]);
@@ -351,6 +360,28 @@ test("retry exhaustion still cleans every uploaded Gemini file", async () => {
   assert.equal(aiClient.deletes.length, 3);
 });
 
+test("explicit source-only color grading does not require visual understanding and falls back safely", async () => {
+  const prompt = "Make only video 2 black and white.";
+  assert.equal(requiresVisualSourceUnderstanding(prompt, sourceCatalog), false);
+
+  const unavailable = await withGeminiKey(async () => {
+    delete process.env.GEMINI_API_KEY;
+    return createAiEditPlan({ prompt, hasMultipleVideos: true, sourceCatalog, sourceInputs: plannerSources() });
+  });
+  assert.equal(unavailable.source, "deterministic");
+  assert.deepEqual(unavailable.plan, createEditPlan({ prompt, hasMultipleVideos: true, sourceCatalog }));
+  assert.doesNotThrow(() => validateEditPlan(unavailable.plan, { sourceCatalog }));
+
+  const transientFailure = Object.assign(new Error("high demand"), { status: 503 });
+  const transient = await withGeminiKey(() => createAiEditPlan({
+    prompt, hasMultipleVideos: true, sourceCatalog, sourceInputs: plannerSources(),
+    aiClient: createMockGemini({ failures: [transientFailure, transientFailure, transientFailure] }),
+    retryOptions: { sleepFn: async () => {}, random: () => 0 }
+  }));
+  assert.equal(transient.source, "deterministic");
+  assert.deepEqual(transient.plan, unavailable.plan);
+});
+
 test("Gemini-unavailable explicit source requests retain fallback while semantic requests fail safely", async () => {
   const explicit = await withGeminiKey(async () => {
     delete process.env.GEMINI_API_KEY;
@@ -364,5 +395,6 @@ test("Gemini-unavailable explicit source requests retain fallback while semantic
       /needs Gemini video understanding/
     );
   });
+  assert.equal(requiresVisualSourceUnderstanding("Use the talking clip first, then the greenery footage.", sourceCatalog), true);
   assert.equal(requiresVisualSourceUnderstanding("Use video 2 first, then the greenery clip.", sourceCatalog), true);
 });

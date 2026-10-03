@@ -72,6 +72,7 @@ function parseFallbackCapabilities(prompt = "") {
 const ORDINALS = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
 
 const ORDINAL_SOURCE_WORDS = /\b(?:first|second|third|fourth|fifth|video\s*\d+|source[-\s]?\d+)\b/i;
+const NON_SEMANTIC_SOURCE_DESCRIPTORS = /^(?:this|that|uploaded|selected|use|then|put|start|finish|append|followed|with|make|turn|change|only|both|all|every|each|(?:make|turn|change)\s+(?:only|both|all|every|each))$/;
 
 /**
  * Identifies a semantic source description that deterministic parsing must not
@@ -83,7 +84,7 @@ export function requiresVisualSourceUnderstanding(prompt = "", sourceCatalog = [
   const semanticPhrase = /\b(?:the\s+)?([a-z][a-z\s-]{1,48})\s+(?:video|clip|footage|shot)\b/g;
   for (const match of normalized.matchAll(semanticPhrase)) {
     const description = match[1].trim();
-    if (!ORDINAL_SOURCE_WORDS.test(description) && !/^(this|that|uploaded|selected|use|then|put|start|finish|append|followed|with)$/.test(description)) return true;
+    if (!ORDINAL_SOURCE_WORDS.test(description) && !NON_SEMANTIC_SOURCE_DESCRIPTORS.test(description)) return true;
   }
   return /\bvideo\s+(?:showing|with|of)\b/i.test(normalized);
 }
