@@ -16,7 +16,7 @@ export function buildAiEditorPrompt({ prompt, hasMultipleVideos = false, sourceC
         "Use sourceId only from the authoritative catalog: video 1, first video, and source-1 all mean source-1. Explicit ordinal/source references are authoritative. " +
         "For semantic descriptions such as house, road, indoor, outdoor, or greenery, identify the matching supplied video visually and emit its sourceId. " +
         "If a semantic description does not identify exactly one source with confidence, return an empty operations array. Filenames are descriptive only and must never be identifiers. " +
-        "Source-scoped color_grade is allowed; title, zoom, speed, crop, and fade remain global after sequence assembly."
+        "Use exactly one color_grade operation per plan. For a request to grade both, all, or every video, use one unscoped color_grade without sourceId so it applies after sequence assembly; never emit one color_grade per source. Use sourceId only when the request explicitly limits the grade to one source, such as 'only video 2'. Title, zoom, speed, crop, and fade remain global after sequence assembly."
       : "No source catalog is available; do not emit source-aware operations.",
     "If the request is unsupported, return an empty operations array.",
     "Return only JSON matching the supplied schema.",
