@@ -71,6 +71,23 @@ function parseFallbackCapabilities(prompt = "") {
 
 const ORDINALS = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
 
+const ORDINAL_SOURCE_WORDS = /\b(?:first|second|third|fourth|fifth|video\s*\d+|source[-\s]?\d+)\b/i;
+
+/**
+ * Identifies a semantic source description that deterministic parsing must not
+ * guess when Gemini visual analysis is unavailable.
+ */
+export function requiresVisualSourceUnderstanding(prompt = "", sourceCatalog = []) {
+  if (sourceCatalog.length < 2) return false;
+  const normalized = prompt.toLowerCase();
+  const semanticPhrase = /\b(?:the\s+)?([a-z][a-z\s-]{1,48})\s+(?:video|clip|footage|shot)\b/g;
+  for (const match of normalized.matchAll(semanticPhrase)) {
+    const description = match[1].trim();
+    if (!ORDINAL_SOURCE_WORDS.test(description) && !/^(this|that|uploaded|selected|use|then|put|start|finish|append|followed|with)$/.test(description)) return true;
+  }
+  return /\bvideo\s+(?:showing|with|of)\b/i.test(normalized);
+}
+
 function sourceIdForOrdinal(ordinal) { return `source-${ordinal}`; }
 
 function fullSourceClips(sourceCatalog) {

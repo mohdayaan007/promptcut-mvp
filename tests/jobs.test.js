@@ -10,6 +10,8 @@ import { createEditPlan } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createEditPlanJsonSchema } from "@/lib/editor-core/ai-editor/schema";
+import { createAiEditPlan } from "@/lib/editor-core/ai-editor/planner";
+import { requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 
 const video = { name: "source.mp4", type: "video/mp4", size: 1024 };
 const sourceCatalog = createSourceCatalog(
@@ -24,6 +26,46 @@ const sourceCatalog = createSourceCatalog(
     { duration: 40, width: 1080, height: 1920 }
   ]
 );
+
+function plannerSources(catalog = sourceCatalog) {
+  return catalog.map((source) => ({ inputPath: `/tmp/${source.sourceId}.mp4`, inputMimeType: "video/mp4", source }));
+}
+
+function createMockGemini({ responseText, failures = [] } = {}) {
+  const uploads = [];
+  const deletes = [];
+  const requests = [];
+  let generateCalls = 0;
+  return {
+    uploads, deletes, requests,
+    files: {
+      upload: async ({ file }) => {
+        const uploaded = { name: `files/${uploads.length + 1}`, uri: `gemini://${file}`, mimeType: "video/mp4", state: "ACTIVE" };
+        uploads.push(uploaded);
+        return uploaded;
+      },
+      get: async ({ name }) => uploads.find((file) => file.name === name),
+      delete: async ({ name }) => { deletes.push(name); }
+    },
+    models: {
+      generateContent: async (request) => {
+        requests.push(request);
+        const failure = failures[generateCalls++];
+        if (failure) throw failure;
+        return { text: responseText };
+      }
+    }
+  };
+}
+
+async function withGeminiKey(callback) {
+  const previous = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = "test-key";
+  try { return await callback(); } finally {
+    if (previous === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previous;
+  }
+}
 
 test("direct-upload manifest accepts five bounded video files", () => {
   assert.equal(validateUploadManifest(Array.from({ length: 5 }, (_, index) => ({ ...video, name: `${index}.mp4` }))), 5120);
@@ -159,4 +201,82 @@ test("source-aware JSON schema limits source IDs to the supplied catalog", () =>
   const serialized = JSON.stringify(schema);
   assert.match(serialized, /source-1/);
   assert.doesNotMatch(serialized, /source-4/);
+});
+
+test("semantic multi-source planning pairs each Gemini video with its source ID", async () => {
+  const aiClient = createMockGemini({ responseText: JSON.stringify({ version: "2", operations: [{ type: "sequence", clips: [
+    { sourceId: "source-2", start: 0, end: 30 }, { sourceId: "source-1", start: 0, end: 20 }
+  ] }] }) });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Put the homestay video first, then the greenery video.", hasMultipleVideos: true,
+    sourceCatalog, sourceInputs: plannerSources(), aiClient, retryOptions: { sleepFn: async () => {}, random: () => 0 }
+  }));
+  assert.equal(result.source, "gemini");
+  assert.deepEqual(result.plan.operations[0].clips.map((clip) => clip.sourceId), ["source-2", "source-1"]);
+  assert.equal(aiClient.uploads.length, 3);
+  assert.equal(aiClient.deletes.length, 3);
+  const labels = aiClient.requests[0].contents.filter((part) => typeof part === "string" && part.startsWith("SOURCE "));
+  assert.match(labels[0], /SOURCE source-1/);
+  assert.match(labels[1], /SOURCE source-2/);
+  assert.match(labels[2], /SOURCE source-3/);
+});
+
+test("semantic source requests reject ambiguity and do not use deterministic fallback", async () => {
+  const aiClient = createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [{ type: "merge" }] }) });
+  await withGeminiKey(async () => {
+    await assert.rejects(
+      () => createAiEditPlan({ prompt: "Use the greenery clip.", hasMultipleVideos: true, sourceCatalog, sourceInputs: plannerSources(), aiClient }),
+      /identified confidently/
+    );
+  });
+  assert.equal(aiClient.deletes.length, 3);
+});
+
+test("transient planning retries reuse uploaded Gemini files", async () => {
+  const error = Object.assign(new Error("high demand"), { status: 503 });
+  const aiClient = createMockGemini({
+    failures: [error],
+    responseText: JSON.stringify({ version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-2", start: 0, end: 2 }] }] })
+  });
+  await withGeminiKey(() => createAiEditPlan({
+    prompt: "Use the house video first.", hasMultipleVideos: true, sourceCatalog, sourceInputs: plannerSources(), aiClient,
+    retryOptions: { sleepFn: async () => {}, random: () => 0 }
+  }));
+  assert.equal(aiClient.uploads.length, 3);
+  assert.equal(aiClient.requests.length, 2);
+  assert.equal(aiClient.deletes.length, 3);
+  assert.equal(aiClient.requests[0].contents[1].fileData.fileUri, aiClient.requests[1].contents[1].fileData.fileUri);
+});
+
+test("retry exhaustion still cleans every uploaded Gemini file", async () => {
+  const error = Object.assign(new Error("high demand"), { status: 503 });
+  const aiClient = createMockGemini({ failures: [error, error, error] });
+  await withGeminiKey(async () => {
+    await assert.rejects(
+      () => createAiEditPlan({
+        prompt: "Use the house video first.", hasMultipleVideos: true, sourceCatalog, sourceInputs: plannerSources(), aiClient,
+        retryOptions: { sleepFn: async () => {}, random: () => 0 }
+      }),
+      /needs Gemini video understanding/
+    );
+  });
+  assert.equal(aiClient.uploads.length, 3);
+  assert.equal(aiClient.requests.length, 3);
+  assert.equal(aiClient.deletes.length, 3);
+});
+
+test("Gemini-unavailable explicit source requests retain fallback while semantic requests fail safely", async () => {
+  const explicit = await withGeminiKey(async () => {
+    delete process.env.GEMINI_API_KEY;
+    return createAiEditPlan({ prompt: "Use video 2 then video 1.", hasMultipleVideos: true, sourceCatalog, sourceInputs: plannerSources() });
+  });
+  assert.equal(explicit.source, "deterministic");
+  await withGeminiKey(async () => {
+    delete process.env.GEMINI_API_KEY;
+    await assert.rejects(
+      () => createAiEditPlan({ prompt: "Use the beach clip first.", hasMultipleVideos: true, sourceCatalog, sourceInputs: plannerSources() }),
+      /needs Gemini video understanding/
+    );
+  });
+  assert.equal(requiresVisualSourceUnderstanding("Use video 2 first, then the greenery clip.", sourceCatalog), true);
 });

@@ -97,6 +97,7 @@ export async function POST(req) {
     const { plan } = await createAiEditPlan({
       inputPath: inputPaths[0],
       inputMimeType: videos[0].type,
+      sourceInputs: videos.map((file, index) => ({ inputPath: inputPaths[index], inputMimeType: file.type, source: sourceCatalog[index] })),
       prompt,
       hasMultipleVideos: videos.length > 1,
       sourceCatalog

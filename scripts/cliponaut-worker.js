@@ -74,8 +74,9 @@ async function processJob(job) {
       throw new Error("4K export requires every uploaded video to be 4K-capable");
     }
     const { plan } = await createAiEditPlan({
-      inputPath: inputPaths[0], inputMimeType: sources[0].type, prompt: job.prompt,
-      hasMultipleVideos: inputPaths.length > 1, sourceCatalog
+      inputPath: inputPaths[0], inputMimeType: sources[0].type,
+      sourceInputs: sources.map((source) => ({ inputPath: inputPaths[source.index], inputMimeType: source.type, source: sourceCatalog.find((entry) => entry.index === source.index) })),
+      prompt: job.prompt, hasMultipleVideos: inputPaths.length > 1, sourceCatalog
     });
     const editPlan = validateEditPlan(plan, { sourceCatalog });
     await throwIfCancelled(job.id);
