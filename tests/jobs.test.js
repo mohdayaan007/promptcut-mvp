@@ -12,6 +12,7 @@ import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createEditPlanJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { createAiEditPlan } from "@/lib/editor-core/ai-editor/planner";
+import { buildAiEditorPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { createExecutionController, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 
@@ -236,6 +237,23 @@ test("source-specific color grade is scoped before sequence assembly", () => {
   const plan = createEditPlan({ prompt: "Make only video 2 black and white.", hasMultipleVideos: true, sourceCatalog });
   assert.deepEqual(plan.operations[1], { type: "color_grade", sourceId: "source-2", style: "bw" });
   assert.doesNotThrow(() => validateEditPlan(plan, { sourceCatalog }));
+});
+
+test("global multi-video color grades remain a single unscoped operation", () => {
+  for (const prompt of ["Make both videos black and white.", "Make all videos black and white."]) {
+    const plan = createEditPlan({ prompt, hasMultipleVideos: true, sourceCatalog });
+    const colorGrades = plan.operations.filter((operation) => operation.type === "color_grade");
+    assert.deepEqual(colorGrades, [{ type: "color_grade", style: "bw" }]);
+    assert.doesNotThrow(() => validateEditPlan(plan, { sourceCatalog }));
+  }
+});
+
+test("Gemini prompt distinguishes global and source-scoped color grades", () => {
+  const prompt = buildAiEditorPrompt({ prompt: "Make both videos black and white.", hasMultipleVideos: true, sourceCatalog });
+  assert.match(prompt, /exactly one color_grade operation per plan/);
+  assert.match(prompt, /both, all, or every video, use one unscoped color_grade without sourceId/);
+  assert.match(prompt, /never emit one color_grade per source/);
+  assert.match(prompt, /Use sourceId only when the request explicitly limits the grade to one source/);
 });
 
 test("source-aware validation allows repeats but rejects bad sources and ranges", () => {
