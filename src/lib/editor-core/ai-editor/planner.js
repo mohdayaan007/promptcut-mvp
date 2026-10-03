@@ -14,13 +14,22 @@ export class GeminiSourceUploadError extends UnsupportedEditRequestError {}
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
+function safePlanningErrorMessage(error) {
+  if (typeof error?.message !== "string") return null;
+
+  return error.message
+    .replace(/(?:https?|s3|gs):\/\/[^\s'"`]+/gi, "[redacted-url]")
+    .replace(/\bfiles\/[A-Za-z0-9_-]+/gi, "[redacted-gemini-file]")
+    .replace(/\b(api[_-]?key|access[_-]?token|authorization|credential|secret|signature)=?[^\s,;]+/gi, "$1=[redacted]");
+}
+
 function sourceLabel({ sourceId = "source-1", ordinal = 1, filename = "unknown", duration = "unknown", width = "unknown", height = "unknown" } = {}) {
   return [
-    `SOURCE ${source.sourceId}`,
-    `ordinal: ${source.ordinal}`,
-    `filename: ${source.filename}`,
-    `duration: ${source.duration}`,
-    `dimensions: ${source.width}x${source.height}`
+    `SOURCE ${sourceId}`,
+    `ordinal: ${ordinal}`,
+    `filename: ${filename}`,
+    `duration: ${duration}`,
+    `dimensions: ${width}x${height}`
   ].join("\n");
 }
 
@@ -146,7 +155,15 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
     };
   } catch (error) {
     if (error instanceof UnsupportedEditRequestError) throw error;
-    if (requiresVisualUnderstanding) throw new UnsupportedEditRequestError("This edit needs Gemini video understanding");
+    if (requiresVisualUnderstanding) {
+      console.error("Gemini visual planning failed:", {
+        name: error?.name || null,
+        message: safePlanningErrorMessage(error),
+        status: error?.status ?? error?.statusCode ?? error?.code ?? error?.$metadata?.httpStatusCode ?? null,
+        apiStatus: error?.statusText ?? null
+      });
+      throw new UnsupportedEditRequestError("This edit needs Gemini video understanding");
+    }
     console.error("Gemini planning failed; using deterministic fallback:", error.message);
     return {
       plan: createEditPlan({ prompt, hasMultipleVideos, sourceCatalog }),
