@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
@@ -12,6 +13,7 @@ import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createEditPlanJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { createAiEditPlan } from "@/lib/editor-core/ai-editor/planner";
 import { requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { createExecutionController, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 
 const video = { name: "source.mp4", type: "video/mp4", size: 1024 };
 const sourceCatalog = createSourceCatalog(
@@ -65,6 +67,18 @@ async function withGeminiKey(callback) {
     if (previous === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = previous;
   }
+}
+
+function createMockChild() {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.signals = [];
+  child.kill = (signal) => {
+    child.signals.push(signal);
+    return true;
+  };
+  return child;
 }
 
 test("direct-upload manifest accepts five bounded video files", () => {
@@ -126,6 +140,60 @@ test("only active and completed jobs trigger recovery", () => {
     assert.equal(isActiveJobStatus(status), false);
     assert.equal(isRecoverableJobStatus(status), false);
   }
+});
+
+test("normal execution controller leaves its active child unchanged", () => {
+  const controller = createExecutionController();
+  const child = createMockChild();
+  controller.attach(child);
+  assert.equal(controller.isCancelled(), false);
+  assert.doesNotThrow(() => controller.throwIfCancelled());
+  assert.deepEqual(child.signals, []);
+  controller.detach(child);
+});
+
+test("cancelling an active execution gracefully terminates only its child", () => {
+  const timers = [];
+  const controller = createExecutionController({
+    setTimeoutFn: (callback) => { timers.push(callback); return callback; },
+    clearTimeoutFn: () => {}
+  });
+  const child = createMockChild();
+  controller.attach(child);
+
+  assert.equal(controller.cancel(), true);
+  assert.deepEqual(child.signals, ["SIGTERM"]);
+  assert.throws(() => controller.throwIfCancelled(), EditExecutionCancelledError);
+
+  child.exitCode = 0;
+  controller.detach(child);
+  timers[0]();
+  assert.deepEqual(child.signals, ["SIGTERM"]);
+});
+
+test("a non-exiting cancelled execution receives one bounded force kill", () => {
+  const timers = [];
+  const controller = createExecutionController({
+    setTimeoutFn: (callback) => { timers.push(callback); return callback; },
+    clearTimeoutFn: () => {}
+  });
+  const child = createMockChild();
+  controller.attach(child);
+
+  controller.cancel();
+  controller.cancel();
+  assert.deepEqual(child.signals, ["SIGTERM"]);
+  timers[0]();
+  assert.deepEqual(child.signals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("a cancellation observed before execution starts prevents the next child from running", () => {
+  const controller = createExecutionController({ setTimeoutFn: () => null });
+  const child = createMockChild();
+  controller.cancel();
+  controller.attach(child);
+  assert.deepEqual(child.signals, ["SIGTERM"]);
+  assert.equal(controller.cancel(), false);
 });
 
 test("source catalog has stable human-facing IDs at one, two, and five source scale", () => {

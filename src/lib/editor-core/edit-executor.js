@@ -1,19 +1,103 @@
-import { execFile } from "child_process";
-import { promisify } from "util";
+import { spawn } from "child_process";
 import path from "path";
 import { COLOR_PRESETS } from "@/lib/color-presets";
 import { buildTitleFilter } from "@/lib/title-renderer";
 import { buildNormalizationFilter, createMediaProfile, getCropSettings } from "@/lib/editor-core/media-profile";
 
-const exec = (cmd, args) => promisify(execFile)(cmd, args, { maxBuffer: 1024 * 1024 * 20 });
 const FFMPEG = "ffmpeg";
 const FFPROBE = "ffprobe";
+const FFMPEG_TERMINATION_GRACE_MS = 5_000;
 const VIDEO_ENCODING_ARGS = [
   "-threads", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
   "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2"
 ];
 
-async function normalize(input, output, media, profile) {
+export class EditExecutionCancelledError extends Error {
+  constructor() {
+    super("Edit execution was cancelled");
+    this.name = "EditExecutionCancelledError";
+  }
+}
+
+/** Tracks only the FFmpeg/FFprobe child currently owned by one edit execution. */
+export function createExecutionController({ gracePeriodMs = FFMPEG_TERMINATION_GRACE_MS, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout } = {}) {
+  let activeChild = null;
+  let gracefulChild = null;
+  let forceKillTimer = null;
+  let cancelled = false;
+
+  function clearForceKillTimer() {
+    if (forceKillTimer) clearTimeoutFn(forceKillTimer);
+    forceKillTimer = null;
+  }
+
+  function terminate(child) {
+    if (!child || child.exitCode !== null || child.signalCode !== null || gracefulChild === child) return false;
+    gracefulChild = child;
+    child.kill("SIGTERM");
+    forceKillTimer = setTimeoutFn(() => {
+      if (activeChild === child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }, gracePeriodMs);
+    return true;
+  }
+
+  return {
+    isCancelled: () => cancelled,
+    throwIfCancelled() {
+      if (cancelled) throw new EditExecutionCancelledError();
+    },
+    attach(child) {
+      activeChild = child;
+      if (cancelled) terminate(child);
+    },
+    detach(child) {
+      if (activeChild !== child) return;
+      activeChild = null;
+      if (gracefulChild === child) gracefulChild = null;
+      clearForceKillTimer();
+    },
+    cancel() {
+      cancelled = true;
+      return terminate(activeChild);
+    },
+    dispose() {
+      clearForceKillTimer();
+      activeChild = null;
+      gracefulChild = null;
+    }
+  };
+}
+
+function exec(cmd, args, { executionController } = {}) {
+  executionController?.throwIfCancelled();
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      executionController?.detach(child);
+      if (error) reject(error);
+      else resolve(result);
+    };
+
+    executionController?.attach(child);
+    child.stdout?.on("data", (chunk) => { stdout += chunk; });
+    child.stderr?.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", (error) => {
+      finish(executionController?.isCancelled() ? new EditExecutionCancelledError() : error);
+    });
+    child.once("close", (code, signal) => {
+      if (executionController?.isCancelled()) return finish(new EditExecutionCancelledError());
+      if (code === 0) return finish(null, { stdout, stderr });
+      return finish(new Error(stderr.trim() || `${cmd} exited with ${signal || `code ${code}`}`));
+    });
+  });
+}
+
+async function normalize(input, output, media, profile, executionController) {
   const mappingArgs = media.hasAudio
     ? ["-map", "0:v:0", "-map", "0:a:0", "-af", "aresample=async=1:first_pts=0"]
     : ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000", "-map", "0:v:0", "-map", "1:a:0", "-shortest"];
@@ -21,30 +105,30 @@ async function normalize(input, output, media, profile) {
   await exec(FFMPEG, [
     "-y", "-hide_banner", "-loglevel", "error", "-fflags", "+genpts", "-i", input,
     ...mappingArgs, "-vf", buildNormalizationFilter(profile, media), ...VIDEO_ENCODING_ARGS, output
-  ]);
+  ], { executionController });
 }
 
-async function mergeVideos(inputs, output) {
+async function mergeVideos(inputs, output, executionController) {
   const filterInputs = inputs.map((_, index) => `[${index}:v][${index}:a]`).join("");
   await exec(FFMPEG, [
     "-y", "-hide_banner", "-loglevel", "error", ...inputs.flatMap((input) => ["-i", input]), "-filter_complex",
     `${filterInputs}concat=n=${inputs.length}:v=1:a=1[v][a]`, "-map", "[v]", "-map", "[a]",
     ...VIDEO_ENCODING_ARGS, output
-  ]);
+  ], { executionController });
 }
 
-async function applyColorGrade(input, output, style) {
+async function applyColorGrade(input, output, style, executionController) {
   await exec(FFMPEG, [
     "-y", "-hide_banner", "-loglevel", "error", "-i", input,
     "-vf", COLOR_PRESETS[style].join(","), ...VIDEO_ENCODING_ARGS, output
-  ]);
+  ], { executionController });
 }
 
-async function cutClip(input, output, start, end) {
+async function cutClip(input, output, start, end, executionController) {
   await exec(FFMPEG, [
     "-y", "-hide_banner", "-loglevel", "error", "-ss", start.toString(), "-to", end.toString(), "-i", input,
     ...VIDEO_ENCODING_ARGS, output
-  ]);
+  ], { executionController });
 }
 
 function buildZoomFilter(operation, { width, height }) {
@@ -72,7 +156,7 @@ function trimArguments(start, end) {
   return [start !== undefined ? `start=${start}` : null, end !== undefined ? `end=${end}` : null].filter(Boolean).join(":");
 }
 
-async function applyTemporalOperations(input, output, trim, speed) {
+async function applyTemporalOperations(input, output, trim, speed, executionController) {
   const trimStart = trim?.start ?? 0;
   const trimEnd = trim?.end;
 
@@ -81,7 +165,7 @@ async function applyTemporalOperations(input, output, trim, speed) {
     await exec(FFMPEG, [
       "-y", "-hide_banner", "-loglevel", "error", "-ss", trim.start.toString(), "-to", trim.end.toString(), "-i", input,
       ...VIDEO_ENCODING_ARGS, output
-    ]);
+    ], { executionController });
     return output;
   }
 
@@ -91,13 +175,13 @@ async function applyTemporalOperations(input, output, trim, speed) {
       "-y", "-hide_banner", "-loglevel", "error", "-i", input, "-filter_complex",
       `[0:v]trim=${window},setpts=(PTS-STARTPTS)/${speed.factor}[v];[0:a]atrim=${window},asetpts=PTS-STARTPTS,${atempoFilters(speed.factor)}[a]`,
       "-map", "[v]", "-map", "[a]", ...VIDEO_ENCODING_ARGS, output
-    ]);
+    ], { executionController });
     return output;
   }
 
   const speedStart = Math.max(trimStart, speed.start);
   const speedEnd = trimEnd === undefined ? speed.end : Math.min(trimEnd, speed.end);
-  if (speedEnd <= speedStart) return applyTemporalOperations(input, output, trim, null);
+  if (speedEnd <= speedStart) return applyTemporalOperations(input, output, trim, null, executionController);
 
   const segments = [];
   if (speedStart > trimStart) segments.push({ start: trimStart, end: speedStart, factor: 1 });
@@ -117,20 +201,20 @@ async function applyTemporalOperations(input, output, trim, speed) {
   await exec(FFMPEG, [
     "-y", "-hide_banner", "-loglevel", "error", "-i", input, "-filter_complex", filters.join(";"),
     "-map", "[v]", "-map", "[a]", ...VIDEO_ENCODING_ARGS, output
-  ]);
+  ], { executionController });
   return output;
 }
 
-async function getDuration(input) {
-  const { stdout } = await exec(FFPROBE, ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input]);
+async function getDuration(input, executionController) {
+  const { stdout } = await exec(FFPROBE, ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input], { executionController });
   const duration = Number.parseFloat(stdout);
   if (!Number.isFinite(duration) || duration <= 0) throw new Error("Unable to determine processed video duration");
   return duration;
 }
 
-async function applyFade(input, output, fade) {
+async function applyFade(input, output, fade, executionController) {
   if (!fade) return input;
-  const duration = await getDuration(input);
+  const duration = await getDuration(input, executionController);
   const requestedDuration = fade.mode === "both" ? fade.duration * 2 : fade.duration;
   if (requestedDuration > duration) throw new Error("Fade duration exceeds the resulting video duration");
 
@@ -149,12 +233,12 @@ async function applyFade(input, output, fade) {
   await exec(FFMPEG, [
     "-y", "-hide_banner", "-loglevel", "error", "-i", input, "-vf", videoFilters.join(","), "-af", audioFilters.join(","),
     ...VIDEO_ENCODING_ARGS, output
-  ]);
+  ], { executionController });
   return output;
 }
 
 /** Executes only capabilities registered in the validated edit plan. */
-export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog = [], tempDirectory, exportQuality = "standard" }) {
+export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog = [], tempDirectory, exportQuality = "standard", executionController }) {
   const sequence = plan.operations.find((operation) => operation.type === "sequence");
   const crop = plan.operations.find((operation) => operation.type === "crop");
   const sourceById = new Map(sourceCatalog.map((source) => [source.sourceId, source]));
@@ -166,7 +250,7 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
   const normalizedPaths = new Map();
   for (const index of selectedSourceIndexes) {
     const normalizedPath = path.join(tempDirectory, `normalized-${index}.mp4`);
-    await normalize(inputPaths[index], normalizedPath, media[index], profile);
+    await normalize(inputPaths[index], normalizedPath, media[index], profile, executionController);
     normalizedPaths.set(index, normalizedPath);
   }
 
@@ -175,7 +259,7 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
       if (operation.type !== "color_grade" || !operation.sourceId) continue;
       const source = sourceById.get(operation.sourceId);
       const gradedPath = path.join(tempDirectory, `graded-${source.index}.mp4`);
-      await applyColorGrade(normalizedPaths.get(source.index), gradedPath, operation.style);
+      await applyColorGrade(normalizedPaths.get(source.index), gradedPath, operation.style, executionController);
       normalizedPaths.set(source.index, gradedPath);
     }
   }
@@ -186,19 +270,19 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
     for (const [index, clip] of sequence.clips.entries()) {
       const source = sourceById.get(clip.sourceId);
       const clipPath = path.join(tempDirectory, `sequence-${index}.mp4`);
-      await cutClip(normalizedPaths.get(source.index), clipPath, clip.start, clip.end);
+      await cutClip(normalizedPaths.get(source.index), clipPath, clip.start, clip.end, executionController);
       clipPaths.push(clipPath);
     }
     if (clipPaths.length > 1) {
       const sequencePath = path.join(tempDirectory, "sequence.mp4");
-      await mergeVideos(clipPaths, sequencePath);
+      await mergeVideos(clipPaths, sequencePath, executionController);
       baseVideo = sequencePath;
     } else {
       [baseVideo] = clipPaths;
     }
   } else if (plan.operations.some((operation) => operation.type === "merge")) {
     const mergedPath = path.join(tempDirectory, "merged.mp4");
-    await mergeVideos(selectedSourceIndexes.map((index) => normalizedPaths.get(index)), mergedPath);
+    await mergeVideos(selectedSourceIndexes.map((index) => normalizedPaths.get(index)), mergedPath, executionController);
     baseVideo = mergedPath;
   }
 
@@ -218,13 +302,13 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
     await exec(FFMPEG, [
       "-y", "-hide_banner", "-loglevel", "error", "-i", baseVideo, "-vf", filters.join(","),
       ...VIDEO_ENCODING_ARGS, processedPath
-    ]);
+    ], { executionController });
     processed = processedPath;
   }
 
   const trim = plan.operations.find((operation) => operation.type === "trim");
   const speed = plan.operations.find((operation) => operation.type === "speed");
   const fade = plan.operations.find((operation) => operation.type === "fade");
-  const timedVideo = await applyTemporalOperations(processed, path.join(tempDirectory, "timed.mp4"), trim, speed);
-  return applyFade(timedVideo, path.join(tempDirectory, "faded.mp4"), fade);
+  const timedVideo = await applyTemporalOperations(processed, path.join(tempDirectory, "timed.mp4"), trim, speed, executionController);
+  return applyFade(timedVideo, path.join(tempDirectory, "faded.mp4"), fade, executionController);
 }

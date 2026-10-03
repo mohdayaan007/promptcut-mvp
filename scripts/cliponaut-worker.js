@@ -3,7 +3,7 @@ import os from "os";
 import path from "path";
 import crypto from "crypto";
 import { createAiEditPlan, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
-import { executeEditPlan } from "@/lib/editor-core/edit-executor";
+import { createExecutionController, EditExecutionCancelledError, executeEditPlan } from "@/lib/editor-core/edit-executor";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { is4kCapableMedia } from "@/lib/media/media-config";
@@ -54,6 +54,8 @@ async function cleanExpiredObjects() {
 async function processJob(job) {
   let scratch;
   let heartbeat;
+  let cancellationMonitor;
+  let executionController;
   let outputKey;
   try {
     await mkdir(config.scratchDirectory, { recursive: true });
@@ -81,7 +83,13 @@ async function processJob(job) {
     const editPlan = validateEditPlan(plan, { sourceCatalog });
     await throwIfCancelled(job.id);
     if (!await setJobStatus(job.id, workerId, "rendering")) throw new JobCancelledError();
-    const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality });
+    executionController = createExecutionController();
+    const cancelExecutionIfNeeded = async () => {
+      if (await isJobCancelled(job.id, workerId)) executionController.cancel();
+    };
+    await cancelExecutionIfNeeded();
+    cancellationMonitor = setInterval(() => cancelExecutionIfNeeded().catch(() => {}), 1_000);
+    const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality, executionController });
     await throwIfCancelled(job.id);
     outputKey = outputObjectKey(job.id);
     await uploadOutput(outputKey, outputPath);
@@ -90,7 +98,7 @@ async function processJob(job) {
       await deleteObjects([outputKey]);
     }
   } catch (error) {
-    if (error instanceof JobCancelledError) {
+    if (error instanceof JobCancelledError || error instanceof EditExecutionCancelledError) {
       if (outputKey) await deleteObjects([outputKey]).catch(() => {});
       return;
     }
@@ -98,6 +106,8 @@ async function processJob(job) {
     await failJob(job.id, workerId, safeError(error)).catch(() => {});
   } finally {
     if (heartbeat) clearInterval(heartbeat);
+    if (cancellationMonitor) clearInterval(cancellationMonitor);
+    executionController?.dispose();
     if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => {});
   }
 }
