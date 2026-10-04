@@ -265,6 +265,21 @@ test("Gemini prompt distinguishes global and source-scoped color grades", () => 
   assert.match(prompt, /Use sourceId only when the request explicitly limits the grade to one source/);
 });
 
+test("single-video black and white keeps the version 1 global color grade", () => {
+  const plan = createEditPlan({ prompt: "Make this video black and white." });
+  assert.deepEqual(plan, { version: "1", operations: [{ type: "color_grade", style: "bw" }] });
+  assert.doesNotThrow(() => validateEditPlan(plan));
+});
+
+test("validator still rejects duplicate source color grades", () => {
+  const twoSourceCatalog = sourceCatalog.slice(0, 2);
+  assert.throws(() => validateEditPlan({ version: "2", operations: [
+    { type: "sequence", clips: twoSourceCatalog.map((source) => ({ sourceId: source.sourceId, start: 0, end: source.duration })) },
+    { type: "color_grade", sourceId: "source-1", style: "bw" },
+    { type: "color_grade", sourceId: "source-2", style: "bw" }
+  ] }, { sourceCatalog: twoSourceCatalog }), /only one color_grade operation is allowed/);
+});
+
 test("source-aware validation allows repeats but rejects bad sources and ranges", () => {
   const repeated = {
     version: "2", operations: [{ type: "sequence", clips: [

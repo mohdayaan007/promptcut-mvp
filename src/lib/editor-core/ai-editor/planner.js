@@ -70,6 +70,31 @@ function addAutomaticMerge(plan, hasMultipleVideos) {
   return { ...plan, operations: [{ type: "merge" }, ...plan.operations] };
 }
 
+function collapseGlobalSourceColorGrades(plan) {
+  if (plan.version !== "2") return plan;
+  const sequence = plan.operations.find((operation) => operation.type === "sequence");
+  const sourceIds = new Set(sequence?.clips?.map((clip) => clip.sourceId));
+  const sourceGrades = plan.operations.filter((operation) => operation.type === "color_grade" && operation.sourceId);
+
+  if (sourceIds.size < 2 || sourceGrades.length !== sourceIds.size || new Set(sourceGrades.map((operation) => operation.style)).size !== 1) {
+    return plan;
+  }
+  if (new Set(sourceGrades.map((operation) => operation.sourceId)).size !== sourceIds.size || ![...sourceIds].every((sourceId) => sourceGrades.some((operation) => operation.sourceId === sourceId))) {
+    return plan;
+  }
+
+  let addedGlobalGrade = false;
+  return {
+    ...plan,
+    operations: plan.operations.flatMap((operation) => {
+      if (!sourceGrades.includes(operation)) return [operation];
+      if (addedGlobalGrade) return [];
+      addedGlobalGrade = true;
+      return [{ type: "color_grade", style: sourceGrades[0].style }];
+    })
+  };
+}
+
 async function waitForActiveFile(ai, uploadedFile) {
   const deadline = Date.now() + FILE_PROCESSING_TIMEOUT_MS;
   let file = uploadedFile;
@@ -125,7 +150,7 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     if (requiresVisualUnderstanding && plan.version !== "2") {
       throw new UnsupportedEditRequestError("This source description could not be identified confidently");
     }
-    return addAutomaticMerge(plan, hasMultipleVideos);
+    return addAutomaticMerge(collapseGlobalSourceColorGrades(plan), hasMultipleVideos);
   } finally {
     await Promise.all(uploadedFiles.filter((file) => file?.name).map((file) =>
       ai.files.delete({ name: file.name }).catch((error) => {
