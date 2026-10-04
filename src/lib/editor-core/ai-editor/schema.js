@@ -136,28 +136,25 @@ export function createEditPlanJsonSchema({ sourceIds = [] } = {}) {
   };
 }
 
-export function createSemanticSourceSelectionJsonSchema({ sourceIds = [], referenceIds = [] } = {}) {
+export function createSemanticSourceClassificationJsonSchema({ sourceId, referenceIds = [] } = {}) {
   return {
     type: "object",
     properties: {
-      selections: {
+      sourceId: { type: "string", enum: [sourceId] },
+      matches: {
         type: "array",
         items: {
           type: "object",
           properties: {
             referenceId: { type: "string", enum: referenceIds },
-            candidateSourceIds: {
-              type: "array",
-              items: { type: "string", enum: sourceIds },
-              uniqueItems: true
-            }
+            plausibleMatch: { type: "boolean" }
           },
-          required: ["referenceId", "candidateSourceIds"],
+          required: ["referenceId", "plausibleMatch"],
           additionalProperties: false
         }
       }
     },
-    required: ["selections"],
+    required: ["sourceId", "matches"],
     additionalProperties: false
   };
 }

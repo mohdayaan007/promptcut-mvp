@@ -10,8 +10,8 @@ import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractSemanticSourceReferences, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
-import { createEditPlanJsonSchema, createSemanticSourceSelectionJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { createAiEditPlan, resolveSemanticSourceSelections } from "@/lib/editor-core/ai-editor/planner";
+import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
+import { createAiEditPlan, resolveSemanticSourceClassifications } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { createExecutionController, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 
@@ -61,8 +61,8 @@ function createMockGemini({ responseText, responses = [], failures = [] } = {}) 
   };
 }
 
-function selectionResponse(selections) {
-  return JSON.stringify({ selections });
+function classificationResponse(sourceId, matches) {
+  return JSON.stringify({ sourceId, matches });
 }
 
 function fullSequence(catalog = sourceCatalog, sourceIds = catalog.map((source) => source.sourceId)) {
@@ -341,20 +341,20 @@ test("semantic source extraction preserves order and skips explicit ordinals", (
   assert.deepEqual(extractSemanticSourceReferences("Use video 2, then video 1.", sourceCatalog), []);
 });
 
-test("semantic selection schema constrains references and source IDs", () => {
-  const schema = createSemanticSourceSelectionJsonSchema({ sourceIds: ["source-1", "source-2"], referenceIds: ["semantic-1"] });
+test("semantic source classification schema constrains the assigned source and references", () => {
+  const schema = createSemanticSourceClassificationJsonSchema({ sourceId: "source-1", referenceIds: ["semantic-1"] });
   const serialized = JSON.stringify(schema);
-  assert.match(serialized, /candidateSourceIds/);
+  assert.match(serialized, /plausibleMatch/);
   assert.match(serialized, /semantic-1/);
-  assert.doesNotMatch(serialized, /source-3/);
+  assert.match(serialized, /source-1/);
+  assert.doesNotMatch(serialized, /source-2/);
 });
 
-test("semantic multi-source planning pairs each Gemini video with its source ID", async () => {
+test("semantic multi-source planning classifies each Gemini video independently before planning", async () => {
   const aiClient = createMockGemini({ responses: [
-    selectionResponse([
-      { referenceId: "semantic-1", candidateSourceIds: ["source-2"] },
-      { referenceId: "semantic-2", candidateSourceIds: ["source-1"] }
-    ]),
+    classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: false }, { referenceId: "semantic-2", plausibleMatch: true }]),
+    classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: true }, { referenceId: "semantic-2", plausibleMatch: false }]),
+    classificationResponse("source-3", [{ referenceId: "semantic-1", plausibleMatch: false }, { referenceId: "semantic-2", plausibleMatch: false }]),
     JSON.stringify(fullSequence(sourceCatalog, ["source-2", "source-1"]))
   ] });
   const result = await withGeminiKey(() => createAiEditPlan({
@@ -365,75 +365,82 @@ test("semantic multi-source planning pairs each Gemini video with its source ID"
   assert.deepEqual(result.plan.operations[0].clips.map((clip) => clip.sourceId), ["source-2", "source-1"]);
   assert.equal(aiClient.uploads.length, 3);
   assert.equal(aiClient.deletes.length, 3);
-  const labels = aiClient.requests[0].contents.filter((part) => typeof part === "string" && part.startsWith("SOURCE "));
-  assert.match(labels[0], /SOURCE source-1/);
-  assert.match(labels[1], /SOURCE source-2/);
-  assert.match(labels[2], /SOURCE source-3/);
-  assert.match(aiClient.requests[1].contents.at(-1), /Authoritative resolved semantic sources/);
+  for (const [index, source] of sourceCatalog.entries()) {
+    const request = aiClient.requests[index];
+    assert.equal(request.contents.filter((part) => part?.fileData).length, 1);
+    assert.match(request.contents[0], new RegExp(`SOURCE ${source.sourceId}`));
+    assert.equal(request.contents[1].fileData.fileUri, aiClient.uploads[index].uri);
+  }
+  assert.equal(aiClient.requests[3].contents.filter((part) => part?.fileData).length, 3);
+  assert.match(aiClient.requests[3].contents.at(-1), /Authoritative resolved semantic sources/);
 });
 
 test("ambiguous semantic sources reject safely without calling the final planner", async () => {
-  const aiClient = createMockGemini({ responseText: selectionResponse([
-    { referenceId: "semantic-1", candidateSourceIds: ["source-1", "source-2"] }
-  ]) });
-  await withGeminiKey(async () => {
-    await assert.rejects(
-      () => createAiEditPlan({ prompt: "Use the greenery clip.", hasMultipleVideos: true, sourceCatalog, sourceInputs: plannerSources(), aiClient }),
-      /needs Gemini video understanding/
-    );
-  });
-  assert.equal(aiClient.requests.length, 1);
-  assert.equal(aiClient.deletes.length, 3);
+  const catalog = sourceCatalog.slice(0, 2);
+  const aiClient = createMockGemini({ responses: [
+    classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: true }]),
+    classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: true }])
+  ] });
+  await withGeminiKey(() => assert.rejects(
+    () => createAiEditPlan({ prompt: "Use the greenery clip.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient }),
+    /needs Gemini video understanding/
+  ));
+  assert.equal(aiClient.requests.length, 2);
+  assert.equal(aiClient.deletes.length, 2);
 });
 
 test("no-match semantic sources reject safely without calling the final planner", async () => {
-  const aiClient = createMockGemini({ responseText: selectionResponse([
-    { referenceId: "semantic-1", candidateSourceIds: [] }
-  ]) });
+  const catalog = sourceCatalog.slice(0, 2);
+  const aiClient = createMockGemini({ responses: [
+    classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: false }]),
+    classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: false }])
+  ] });
   await withGeminiKey(() => assert.rejects(
-    () => createAiEditPlan({ prompt: "Use the beach clip.", hasMultipleVideos: true, sourceCatalog, sourceInputs: plannerSources(), aiClient }),
+    () => createAiEditPlan({ prompt: "Use the beach clip.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient }),
     /needs Gemini video understanding/
   ));
-  assert.equal(aiClient.requests.length, 1);
-  assert.equal(aiClient.deletes.length, 3);
+  assert.equal(aiClient.requests.length, 2);
+  assert.equal(aiClient.deletes.length, 2);
 });
 
-test("semantic selection rejects malformed evidence", () => {
+test("semantic source classification rejects malformed evidence", () => {
   const references = [{ referenceId: "semantic-1", description: "greenery clip" }];
+  const valid = { sourceId: "source-2", matches: [{ referenceId: "semantic-1", plausibleMatch: false }] };
   const cases = [
-    { selections: [] },
-    { selections: [{ referenceId: "semantic-1", candidateSourceIds: ["source-1"] }, { referenceId: "semantic-1", candidateSourceIds: ["source-1"] }] },
-    { selections: [{ referenceId: "semantic-2", candidateSourceIds: ["source-1"] }] },
-    { selections: [{ referenceId: "semantic-1", candidateSourceIds: ["source-4"] }] },
-    { selections: [{ referenceId: "semantic-1", candidateSourceIds: [] }] },
-    { selections: [{ referenceId: "semantic-1", candidateSourceIds: ["source-1", "source-2"] }] },
-    { selections: [{ referenceId: "semantic-1", candidateSourceIds: ["source-1", "source-1"] }] }
+    [],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-2", matches: [] } }, { expectedSourceId: "source-2", response: valid }],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-1", matches: [{ referenceId: "semantic-1", plausibleMatch: true }] } }],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-1", matches: [{ referenceId: "semantic-1", plausibleMatch: true }] } }, { expectedSourceId: "source-1", response: { sourceId: "source-1", matches: [{ referenceId: "semantic-1", plausibleMatch: true }] } }],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-1", matches: [] } }, { expectedSourceId: "source-2", response: valid }],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-1", matches: [{ referenceId: "semantic-1", plausibleMatch: true }, { referenceId: "semantic-1", plausibleMatch: false }] } }, { expectedSourceId: "source-2", response: valid }],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-1", matches: [{ referenceId: "semantic-2", plausibleMatch: true }] } }, { expectedSourceId: "source-2", response: valid }],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-1", matches: [{ referenceId: "semantic-1", plausibleMatch: "true" }] } }, { expectedSourceId: "source-2", response: valid }]
   ];
-  for (const response of cases) {
-    assert.throws(() => resolveSemanticSourceSelections(response, references, sourceCatalog), /needs Gemini video understanding/);
+  for (const classifications of cases) {
+    assert.throws(() => resolveSemanticSourceClassifications(classifications, references, sourceCatalog.slice(0, 2)), /needs Gemini video understanding/);
   }
 });
 
-test("mixed explicit and semantic references use one selection call and preserve V2 order", async () => {
+test("mixed explicit and semantic references classify only the semantic reference and preserve V2 order", async () => {
   const aiClient = createMockGemini({ responses: [
-    selectionResponse([{ referenceId: "semantic-1", candidateSourceIds: ["source-1"] }]),
+    classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: true }]),
+    classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: false }]),
+    classificationResponse("source-3", [{ referenceId: "semantic-1", plausibleMatch: false }]),
     JSON.stringify(fullSequence(sourceCatalog, ["source-2", "source-1"]))
   ] });
   const result = await withGeminiKey(() => createAiEditPlan({
     prompt: "Use video 2 first, then the greenery clip.", hasMultipleVideos: true, sourceCatalog, sourceInputs: plannerSources(), aiClient
   }));
-  assert.equal(aiClient.requests.length, 2);
+  assert.equal(aiClient.requests.length, 4);
   assert.deepEqual(result.plan.operations[0].clips.map((clip) => clip.sourceId), ["source-2", "source-1"]);
   assert.doesNotThrow(() => validateEditPlan(result.plan, { sourceCatalog }));
 });
 
-test("three-source semantic ordering remains valid after unique selection", async () => {
+test("three-source semantic ordering remains valid after unique independent classification", async () => {
   const aiClient = createMockGemini({ responses: [
-    selectionResponse([
-      { referenceId: "semantic-1", candidateSourceIds: ["source-3"] },
-      { referenceId: "semantic-2", candidateSourceIds: ["source-2"] },
-      { referenceId: "semantic-3", candidateSourceIds: ["source-1"] }
-    ]),
+    classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: false }, { referenceId: "semantic-2", plausibleMatch: false }, { referenceId: "semantic-3", plausibleMatch: true }]),
+    classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: false }, { referenceId: "semantic-2", plausibleMatch: true }, { referenceId: "semantic-3", plausibleMatch: false }]),
+    classificationResponse("source-3", [{ referenceId: "semantic-1", plausibleMatch: true }, { referenceId: "semantic-2", plausibleMatch: false }, { referenceId: "semantic-3", plausibleMatch: false }]),
     JSON.stringify(fullSequence(sourceCatalog, ["source-3", "source-2", "source-1"]))
   ] });
   const result = await withGeminiKey(() => createAiEditPlan({
@@ -446,43 +453,79 @@ test("three-source semantic ordering remains valid after unique selection", asyn
 
 test("transient planning retries reuse uploaded Gemini files", async () => {
   const error = Object.assign(new Error("high demand"), { status: 503 });
+  const catalog = sourceCatalog.slice(0, 2);
   const aiClient = createMockGemini({
-    failures: [null, error],
+    failures: [null, error, null, null],
     responses: [
-      selectionResponse([{ referenceId: "semantic-1", candidateSourceIds: ["source-2"] }]),
+      classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: false }]),
       null,
-      JSON.stringify(fullSequence(sourceCatalog, ["source-2"]))
+      classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: true }]),
+      JSON.stringify(fullSequence(catalog, ["source-2"]))
     ]
   });
   await withGeminiKey(() => createAiEditPlan({
-    prompt: "Use the house video first.", hasMultipleVideos: true, sourceCatalog, sourceInputs: plannerSources(), aiClient,
+    prompt: "Use the house video first.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
     retryOptions: { sleepFn: async () => {}, random: () => 0 }
   }));
-  assert.equal(aiClient.uploads.length, 3);
-  assert.equal(aiClient.requests.length, 3);
-  assert.equal(aiClient.deletes.length, 3);
-  assert.equal(aiClient.requests[0].contents[1].fileData.fileUri, aiClient.requests[1].contents[1].fileData.fileUri);
+  assert.equal(aiClient.uploads.length, 2);
+  assert.equal(aiClient.requests.length, 4);
+  assert.equal(aiClient.deletes.length, 2);
   assert.equal(aiClient.requests[1].contents[1].fileData.fileUri, aiClient.requests[2].contents[1].fileData.fileUri);
 });
 
 test("retry exhaustion still cleans every uploaded Gemini file", async () => {
   const error = Object.assign(new Error("high demand"), { status: 503 });
+  const catalog = sourceCatalog.slice(0, 2);
   const aiClient = createMockGemini({
     failures: [null, error, error, error],
-    responses: [selectionResponse([{ referenceId: "semantic-1", candidateSourceIds: ["source-2"] }])]
+    responses: [classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: false }])]
   });
   await withGeminiKey(async () => {
     await assert.rejects(
       () => createAiEditPlan({
-        prompt: "Use the house video first.", hasMultipleVideos: true, sourceCatalog, sourceInputs: plannerSources(), aiClient,
+        prompt: "Use the house video first.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
         retryOptions: { sleepFn: async () => {}, random: () => 0 }
       }),
       /needs Gemini video understanding/
     );
   });
-  assert.equal(aiClient.uploads.length, 3);
+  assert.equal(aiClient.uploads.length, 2);
   assert.equal(aiClient.requests.length, 4);
-  assert.equal(aiClient.deletes.length, 3);
+  assert.equal(aiClient.deletes.length, 2);
+});
+
+test("malformed classification responses reject safely and clean uploaded Gemini files", async () => {
+  const catalog = sourceCatalog.slice(0, 2);
+  const aiClient = createMockGemini({ responseText: "not-json" });
+  await withGeminiKey(() => assert.rejects(
+    () => createAiEditPlan({
+      prompt: "Use the greenery clip.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient
+    }),
+    /needs Gemini video understanding/
+  ));
+  assert.equal(aiClient.requests.length, 1);
+  assert.equal(aiClient.deletes.length, 2);
+});
+
+test("final planner failure after classification still cleans uploaded Gemini files", async () => {
+  const catalog = sourceCatalog.slice(0, 2);
+  const error = Object.assign(new Error("high demand"), { status: 503 });
+  const aiClient = createMockGemini({
+    failures: [null, null, error, error, error],
+    responses: [
+      classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: true }]),
+      classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: false }])
+    ]
+  });
+  await withGeminiKey(() => assert.rejects(
+    () => createAiEditPlan({
+      prompt: "Use the greenery clip.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+      retryOptions: { sleepFn: async () => {}, random: () => 0 }
+    }),
+    /needs Gemini video understanding/
+  ));
+  assert.equal(aiClient.requests.length, 5);
+  assert.equal(aiClient.deletes.length, 2);
 });
 
 test("explicit-only requests do not invoke semantic selection", async () => {

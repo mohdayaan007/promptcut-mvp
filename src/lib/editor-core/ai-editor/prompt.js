@@ -1,13 +1,13 @@
 import { getAiCapabilityContract } from "@/lib/editor-core/capability-registry";
 
-export function buildSemanticSourceSelectionPrompt({ semanticReferences, sourceCatalog = [] }) {
+export function buildSemanticSourceClassificationPrompt({ source, semanticReferences }) {
   return [
-    "You identify which supplied videos visually match each requested source description. You do not create an edit plan.",
-    "For every reference, return ALL visually plausible source IDs. Do not return only your best guess.",
-    "If no source plausibly matches, return an empty candidateSourceIds array. If more than one source plausibly matches, include every plausible source ID.",
+    "You classify whether this one supplied video plausibly matches each requested source description. You do not create an edit plan.",
+    "Judge only THIS source independently. Do not compare it with other sources, choose a best source, or infer a winner.",
+    "For every semantic reference, set plausibleMatch to true only when this source plausibly matches that visual description; otherwise set it to false.",
     "Do not use filenames as visual evidence. Return only JSON matching the supplied schema.",
-    `Semantic references: ${JSON.stringify(semanticReferences)}`,
-    `Authoritative source catalog: ${JSON.stringify(sourceCatalog)}`
+    `Authoritative source: ${JSON.stringify(source)}`,
+    `Semantic references: ${JSON.stringify(semanticReferences)}`
   ].join("\n\n");
 }
 

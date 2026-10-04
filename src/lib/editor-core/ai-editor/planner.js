@@ -1,7 +1,7 @@
 import { GoogleGenAI, createPartFromUri } from "@google/genai";
 import { createEditPlan, extractSemanticSourceReferences, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
-import { createEditPlanJsonSchema, createSemanticSourceSelectionJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { buildAiEditorPrompt, buildSemanticSourceSelectionPrompt } from "@/lib/editor-core/ai-editor/prompt";
+import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
+import { buildAiEditorPrompt, buildSemanticSourceClassificationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
 const FILE_PROCESSING_TIMEOUT_MS = 60_000;
@@ -38,6 +38,10 @@ export function buildMultiSourceContents(activeSources, prompt) {
     ...activeSources.flatMap(({ source, file }) => [sourceLabel(source), createPartFromUri(file.uri, file.mimeType)]),
     prompt
   ];
+}
+
+export function buildSingleSourceContents({ source, file }, prompt) {
+  return [sourceLabel(source), createPartFromUri(file.uri, file.mimeType), prompt];
 }
 
 export function isTransientPlanningError(error) {
@@ -99,27 +103,40 @@ function semanticSelectionError() {
   return new UnsupportedEditRequestError("This edit needs Gemini video understanding");
 }
 
-export function resolveSemanticSourceSelections(selectionResponse, semanticReferences, sourceCatalog) {
-  if (!Array.isArray(selectionResponse?.selections) || selectionResponse.selections.length !== semanticReferences.length) {
+export function resolveSemanticSourceClassifications(classifications, semanticReferences, sourceCatalog) {
+  if (!Array.isArray(classifications) || classifications.length !== sourceCatalog.length) {
     throw semanticSelectionError();
   }
 
   const expectedReferenceIds = new Set(semanticReferences.map((reference) => reference.referenceId));
   const sourceIds = new Set(sourceCatalog.map((source) => source.sourceId));
-  const selectionsByReference = new Map();
-  for (const selection of selectionResponse.selections) {
-    if (!expectedReferenceIds.has(selection?.referenceId) || selectionsByReference.has(selection.referenceId) || !Array.isArray(selection.candidateSourceIds)) {
+  const classifiedSources = new Set();
+  const candidatesByReference = new Map(semanticReferences.map((reference) => [reference.referenceId, []]));
+
+  for (const classification of classifications) {
+    const { expectedSourceId, response } = classification || {};
+    if (!sourceIds.has(expectedSourceId) || classifiedSources.has(expectedSourceId) || response?.sourceId !== expectedSourceId || !Array.isArray(response.matches) || response.matches.length !== semanticReferences.length) {
       throw semanticSelectionError();
     }
-    const candidates = selection.candidateSourceIds;
-    if (new Set(candidates).size !== candidates.length || candidates.some((sourceId) => !sourceIds.has(sourceId)) || candidates.length !== 1) {
-      throw semanticSelectionError();
+
+    const matchesByReference = new Set();
+    for (const match of response.matches) {
+      if (!expectedReferenceIds.has(match?.referenceId) || matchesByReference.has(match.referenceId) || typeof match.plausibleMatch !== "boolean") {
+        throw semanticSelectionError();
+      }
+      matchesByReference.add(match.referenceId);
+      if (match.plausibleMatch) candidatesByReference.get(match.referenceId).push(expectedSourceId);
     }
-    selectionsByReference.set(selection.referenceId, candidates[0]);
+    if (matchesByReference.size !== expectedReferenceIds.size) throw semanticSelectionError();
+    classifiedSources.add(expectedSourceId);
   }
 
-  if (selectionsByReference.size !== expectedReferenceIds.size) throw semanticSelectionError();
-  return semanticReferences.map((reference) => ({ ...reference, sourceId: selectionsByReference.get(reference.referenceId) }));
+  if (classifiedSources.size !== sourceIds.size) throw semanticSelectionError();
+  return semanticReferences.map((reference) => {
+    const candidates = candidatesByReference.get(reference.referenceId);
+    if (candidates.length !== 1) throw semanticSelectionError();
+    return { ...reference, sourceId: candidates[0] };
+  });
 }
 
 function validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources) {
@@ -177,20 +194,30 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     }
     let resolvedSemanticSources = [];
     if (semanticReferences.length) {
-      const selectionResponse = await generateWithRetries(ai, {
-        model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
-        contents: buildMultiSourceContents(activeSources, buildSemanticSourceSelectionPrompt({ semanticReferences, sourceCatalog })),
-        config: {
-          responseMimeType: "application/json",
-          responseJsonSchema: createSemanticSourceSelectionJsonSchema({
-            sourceIds: sourceCatalog.map((source) => source.sourceId),
-            referenceIds: semanticReferences.map((reference) => reference.referenceId)
-          })
-        }
-      }, retryOptions);
-      if (!selectionResponse.text) throw semanticSelectionError();
       try {
-        resolvedSemanticSources = resolveSemanticSourceSelections(JSON.parse(selectionResponse.text), semanticReferences, sourceCatalog);
+        const classifications = [];
+        for (const activeSource of activeSources) {
+          const classificationResponse = await generateWithRetries(ai, {
+            model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
+            contents: buildSingleSourceContents(activeSource, buildSemanticSourceClassificationPrompt({
+              source: activeSource.source,
+              semanticReferences
+            })),
+            config: {
+              responseMimeType: "application/json",
+              responseJsonSchema: createSemanticSourceClassificationJsonSchema({
+                sourceId: activeSource.source.sourceId,
+                referenceIds: semanticReferences.map((reference) => reference.referenceId)
+              })
+            }
+          }, retryOptions);
+          if (!classificationResponse.text) throw semanticSelectionError();
+          classifications.push({
+            expectedSourceId: activeSource.source.sourceId,
+            response: JSON.parse(classificationResponse.text)
+          });
+        }
+        resolvedSemanticSources = resolveSemanticSourceClassifications(classifications, semanticReferences, sourceCatalog);
       } catch (error) {
         if (error instanceof UnsupportedEditRequestError) throw error;
         throw semanticSelectionError();
