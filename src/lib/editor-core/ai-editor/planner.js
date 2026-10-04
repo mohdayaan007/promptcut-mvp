@@ -1,7 +1,7 @@
 import { GoogleGenAI, createPartFromUri } from "@google/genai";
-import { createEditPlan, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
-import { createEditPlanJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { buildAiEditorPrompt } from "@/lib/editor-core/ai-editor/prompt";
+import { createEditPlan, extractSemanticSourceReferences, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { createEditPlanJsonSchema, createSemanticSourceSelectionJsonSchema } from "@/lib/editor-core/ai-editor/schema";
+import { buildAiEditorPrompt, buildSemanticSourceSelectionPrompt } from "@/lib/editor-core/ai-editor/prompt";
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
 const FILE_PROCESSING_TIMEOUT_MS = 60_000;
@@ -95,6 +95,46 @@ function collapseGlobalSourceColorGrades(plan) {
   };
 }
 
+function semanticSelectionError() {
+  return new UnsupportedEditRequestError("This edit needs Gemini video understanding");
+}
+
+export function resolveSemanticSourceSelections(selectionResponse, semanticReferences, sourceCatalog) {
+  if (!Array.isArray(selectionResponse?.selections) || selectionResponse.selections.length !== semanticReferences.length) {
+    throw semanticSelectionError();
+  }
+
+  const expectedReferenceIds = new Set(semanticReferences.map((reference) => reference.referenceId));
+  const sourceIds = new Set(sourceCatalog.map((source) => source.sourceId));
+  const selectionsByReference = new Map();
+  for (const selection of selectionResponse.selections) {
+    if (!expectedReferenceIds.has(selection?.referenceId) || selectionsByReference.has(selection.referenceId) || !Array.isArray(selection.candidateSourceIds)) {
+      throw semanticSelectionError();
+    }
+    const candidates = selection.candidateSourceIds;
+    if (new Set(candidates).size !== candidates.length || candidates.some((sourceId) => !sourceIds.has(sourceId)) || candidates.length !== 1) {
+      throw semanticSelectionError();
+    }
+    selectionsByReference.set(selection.referenceId, candidates[0]);
+  }
+
+  if (selectionsByReference.size !== expectedReferenceIds.size) throw semanticSelectionError();
+  return semanticReferences.map((reference) => ({ ...reference, sourceId: selectionsByReference.get(reference.referenceId) }));
+}
+
+function validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources) {
+  if (!resolvedSemanticSources.length) return;
+  const sequence = plan.version === "2" && plan.operations.find((operation) => operation.type === "sequence");
+  if (!sequence || !Array.isArray(sequence.clips)) throw semanticSelectionError();
+
+  let clipIndex = 0;
+  for (const { sourceId } of resolvedSemanticSources) {
+    clipIndex = sequence.clips.findIndex((clip, index) => index >= clipIndex && clip.sourceId === sourceId);
+    if (clipIndex === -1) throw semanticSelectionError();
+    clipIndex += 1;
+  }
+}
+
 async function waitForActiveFile(ai, uploadedFile) {
   const deadline = Date.now() + FILE_PROCESSING_TIMEOUT_MS;
   let file = uploadedFile;
@@ -115,7 +155,8 @@ async function waitForActiveFile(ai, uploadedFile) {
 async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions }) {
   const ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const uploadedFiles = [];
-  const requiresVisualUnderstanding = requiresVisualSourceUnderstanding(prompt, sourceCatalog);
+  const semanticReferences = extractSemanticSourceReferences(prompt, sourceCatalog);
+  const requiresVisualUnderstanding = semanticReferences.length > 0;
   try {
     const activeSources = [];
     for (const input of sourceInputs) {
@@ -134,9 +175,31 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
         throw error;
       }
     }
+    let resolvedSemanticSources = [];
+    if (semanticReferences.length) {
+      const selectionResponse = await generateWithRetries(ai, {
+        model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
+        contents: buildMultiSourceContents(activeSources, buildSemanticSourceSelectionPrompt({ semanticReferences, sourceCatalog })),
+        config: {
+          responseMimeType: "application/json",
+          responseJsonSchema: createSemanticSourceSelectionJsonSchema({
+            sourceIds: sourceCatalog.map((source) => source.sourceId),
+            referenceIds: semanticReferences.map((reference) => reference.referenceId)
+          })
+        }
+      }, retryOptions);
+      if (!selectionResponse.text) throw semanticSelectionError();
+      try {
+        resolvedSemanticSources = resolveSemanticSourceSelections(JSON.parse(selectionResponse.text), semanticReferences, sourceCatalog);
+      } catch (error) {
+        if (error instanceof UnsupportedEditRequestError) throw error;
+        throw semanticSelectionError();
+      }
+    }
+
     const response = await generateWithRetries(ai, {
       model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
-      contents: buildMultiSourceContents(activeSources, buildAiEditorPrompt({ prompt, hasMultipleVideos, sourceCatalog })),
+      contents: buildMultiSourceContents(activeSources, buildAiEditorPrompt({ prompt, hasMultipleVideos, sourceCatalog, resolvedSemanticSources })),
       config: {
         responseMimeType: "application/json",
         responseJsonSchema: createEditPlanJsonSchema({ sourceIds: sourceCatalog.map((source) => source.sourceId) })
@@ -150,6 +213,7 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     if (requiresVisualUnderstanding && plan.version !== "2") {
       throw new UnsupportedEditRequestError("This source description could not be identified confidently");
     }
+    validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources);
     return addAutomaticMerge(collapseGlobalSourceColorGrades(plan), hasMultipleVideos);
   } finally {
     await Promise.all(uploadedFiles.filter((file) => file?.name).map((file) =>

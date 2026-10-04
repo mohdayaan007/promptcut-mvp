@@ -136,4 +136,30 @@ export function createEditPlanJsonSchema({ sourceIds = [] } = {}) {
   };
 }
 
+export function createSemanticSourceSelectionJsonSchema({ sourceIds = [], referenceIds = [] } = {}) {
+  return {
+    type: "object",
+    properties: {
+      selections: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            referenceId: { type: "string", enum: referenceIds },
+            candidateSourceIds: {
+              type: "array",
+              items: { type: "string", enum: sourceIds },
+              uniqueItems: true
+            }
+          },
+          required: ["referenceId", "candidateSourceIds"],
+          additionalProperties: false
+        }
+      }
+    },
+    required: ["selections"],
+    additionalProperties: false
+  };
+}
+
 export const EDIT_PLAN_JSON_SCHEMA = createEditPlanJsonSchema();
