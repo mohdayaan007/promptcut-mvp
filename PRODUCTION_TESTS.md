@@ -404,7 +404,7 @@ Pass:
 - semantic `greenery clip` resolves correctly
 - no source is silently guessed incorrectly
 
-This test remains part of Phase 3A.5B-B production verification.
+Final production result: PASS — Talking → Greenery, job `86399578-d8ef-4d79-a59c-ae0db5d0cd5f`.
 
 ---
 
@@ -431,6 +431,8 @@ Road → Indoor/Talking → Greenery
 Pass:
 
 All three semantic descriptions map to the intended source IDs and sequence correctly.
+
+Final production result: PASS — Road → Talking/Indoor → Greenery, job `b9a4bbaa-42f5-435d-98b9-7e85e6fcc82e`.
 
 ---
 
@@ -462,6 +464,8 @@ No arbitrary source is silently chosen when the instruction is genuinely ambiguo
 Fail:
 
 Cliponaut selects one source without sufficient basis.
+
+Final production result: PASS — with Kerala Greenery and Forest Path, `Use the greenery video.` safely rejected without selecting a source or producing output. The final UI did not expose a job ID.
 
 ---
 
@@ -533,7 +537,7 @@ The instruction remains atomic rather than partially executed.
 
 Status:
 
-Current active regression test.
+Resolved production regression.
 
 Upload:
 
@@ -559,13 +563,14 @@ Expected user result:
 - entire assembled output is black and white
 - no duplicate `color_grade` operations are generated
 
-Previous production failure:
+Historical production failure:
 
 `Invalid edit plan: only one color_grade operation is allowed`
 
-The intended fix is planner-focused.
+Final production results:
 
-Pass only after this behavior works in production.
+- `Make both videos black and white.` — PASS, job `c50942dc-149a-46ac-b289-9cae1d56877e`
+- `Make all videos black and white.` — PASS, job `76563941-6c6e-4f4d-a369-7141b0ae141e`
 
 ---
 
@@ -596,6 +601,8 @@ Both videos become black and white through one global operation.
 Pass:
 
 Both behaviors work without loosening validation unsafely.
+
+Final production result: PASS — `Make only video 2 black and white.` used one source-specific color grade, job `295085c2-d4e6-42f4-8b38-917f76a1ba60`.
 
 ---
 
@@ -807,6 +814,8 @@ Record:
 - any API limit errors
 
 Do not interpret size/quota failures as FFmpeg failures.
+
+Final controlled production result: PASS — five sources were accepted and the explicit order `5 → 2 → 1 → 4 → 3` was preserved. Output was playable, approximately 19.13 seconds, with approximately 60 seconds turnaround; job `29805a23-7d8c-47a8-b307-cedfe9f9a1ca`. An earlier long-media five-source run was cancelled as a performance/operational observation, not a semantic ordering failure.
 
 ---
 
@@ -1077,25 +1086,31 @@ Do not propose a broad rewrite unless the evidence requires it.
 
 ---
 
-# 36. Current Phase Sign-Off — Phase 3A.5B-B
+# 36. Final Phase Sign-Off — Phase 3A.5B-B
 
-Phase 3A.5B-B must NOT be marked complete until the remaining production checks in `PHASES.md` are satisfied.
+Final status: `✅ COMPLETE`
 
-At minimum confirm:
+Implementation, automated verification, deployment, and production acceptance testing are complete.
 
-- semantic two-source understanding
-- mixed explicit + semantic source selection
-- three-source semantic ordering
-- ambiguity safety
-- global multi-video black-and-white
-- source-specific black-and-white regression
-- single-video V1 regression
-- cancellation/worker queue remains healthy
-- controlled five-source sanity where practical
+## Accepted Production Evidence
 
-Only then update `PHASES.md` to:
+- Natural-content ordering passed for Homestay → Greenery and Talking → Greenery prompts.
+- Mixed explicit plus semantic selection passed: `Use video 2 first, then the greenery clip.` produced Talking → Greenery; job `86399578-d8ef-4d79-a59c-ae0db5d0cd5f`.
+- Three-source semantic ordering passed: Road → Talking/Indoor → Greenery; job `b9a4bbaa-42f5-435d-98b9-7e85e6fcc82e`.
+- Ambiguous greenery sources safely rejected without selecting an arbitrary source or producing output.
+- Unique semantic selection passed after Gemini quota was available: `Use the talking clip first, then the greenery footage.` produced Talking → Greenery; job `e4dc93e9-4b89-45f5-bd72-b23b4ebf7242`, approximately 22 seconds playable output.
+- Global black and white passed for both/all-source prompts; jobs `c50942dc-149a-46ac-b289-9cae1d56877e` and `76563941-6c6e-4f4d-a369-7141b0ae141e`.
+- Source-specific black and white passed for `only video 2`; job `295085c2-d4e6-42f4-8b38-917f76a1ba60`.
+- V1 single-video black-and-white regression passed; job `f4355fa7-2b27-4982-880e-0f212d7930a6`.
+- Controlled five-source explicit ordering passed with all five sources retained; job `29805a23-7d8c-47a8-b307-cedfe9f9a1ca`.
 
-`Phase 3A.5B-B — ✅ COMPLETE`
+## Recorded Incidents
+
+The earlier global multi-video black-and-white failure was an application planner bug and is resolved. The validator was not loosened; both/all-source color requests now use one global unscoped operation, while explicit single-source color uses one source-specific operation.
+
+The temporary unique-semantic-selection failure was an external Gemini free-tier `429 RESOURCE_EXHAUSTED` generate-content quota exhaustion for `gemini-3.6-flash`, not a planner or classification regression. The same acceptance test passed once quota was available.
+
+The earlier long-running five-source render was cancelled as a performance/operational observation. It was not a semantic/source-ordering failure.
 
 ---
 

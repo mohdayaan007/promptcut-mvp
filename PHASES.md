@@ -303,7 +303,7 @@ Do not assume title, zoom, speed, crop, fade, or other operations are source-sco
 
 # Phase 3A.5B-B — Multi-Source Visual Understanding
 
-Status: `🧪 PRODUCTION VERIFICATION`
+Status: `✅ COMPLETE`
 
 Purpose:
 
@@ -321,7 +321,7 @@ instead of requiring:
 
 ## Implementation
 
-Gemini now receives all available source videos visually for 1–5 source jobs through the Gemini Files API.
+Gemini receives source videos through the Gemini Files API for 1–5 source jobs.
 
 Each source is paired with an explicit label containing information such as:
 
@@ -332,6 +332,8 @@ Each source is paired with an explicit label containing information such as:
 - dimensions
 
 Stable `sourceId` remains authoritative.
+
+Semantic source references are classified independently per source. The server aggregates the resulting plausible matches and proceeds only when each semantic reference resolves to exactly one source. Ambiguous or unmatched descriptions reject safely rather than selecting an arbitrary source.
 
 The existing V2 plan schema, validator, and executor remain the execution foundation.
 
@@ -426,9 +428,21 @@ Automated verification after the fix:
 
 ---
 
-## Production Semantic Tests Passed
+## Completed Production Verification
 
-The following natural-content tests successfully produced the correct ordering:
+Production acceptance testing verified:
+
+- natural-content semantic identification, including Homestay → Greenery and Talking → Greenery
+- mixed explicit plus semantic sequencing: `Use video 2 first, then the greenery clip.`
+- three-source semantic ordering: Road → Talking/Indoor → Greenery
+- ambiguity-safe rejection when two sources plausibly match `Use the greenery video.`
+- unique semantic selection: Talking → Greenery
+- global multi-video black and white using one unscoped color grade
+- source-specific black and white for `only video 2`
+- V1 single-video black-and-white regression coverage
+- controlled five-source explicit ordering, with all sources retained in the requested order
+
+Historical production prompts that demonstrated natural-content ordering include:
 
 > Put the homestay video first, then the greenery video.
 
@@ -452,118 +466,11 @@ Talking video → Greenery
 
 These tests provide production evidence that Gemini can visually distinguish different uploaded sources and map semantic descriptions to the correct V2 source IDs.
 
----
+## Resolved Production History
 
-# Current Active Issue — Global Multi-Video Color Grade Planning
+The former global multi-video black-and-white planner regression is resolved. Both/all-source requests now use one global unscoped `color_grade`; an `only video 2` request uses one source-specific `color_grade`. Validator constraints remain unchanged.
 
-Status: `🚧 IN PROGRESS`
-
-Production prompt:
-
-> Make both videos black and white.
-
-failed with:
-
-`Invalid edit plan: only one color_grade operation is allowed`
-
-Observed planner behavior likely generated multiple source-scoped color-grade operations.
-
-Current validator deliberately allows only one color-grade operation.
-
-Desired behavior:
-
-Source-specific request:
-
-> Make only video 2 black and white.
-
-should produce one source-scoped color grade:
-
-```json
-{
-  "type": "color_grade",
-  "sourceId": "source-2",
-  "style": "bw"
-}
-```
-
-All-source request:
-
-> Make both videos black and white.
-
-or:
-
-> Make all videos black and white.
-
-should produce one global unscoped color grade:
-
-```json
-{
-  "type": "color_grade",
-  "style": "bw"
-}
-```
-
-The intended fix should be planner-focused.
-
-Do not loosen the validator to allow arbitrary duplicate `color_grade` operations unless a future product requirement genuinely requires that.
-
-This issue should be fixed and regression-tested before declaring Phase 3A.5B-B complete.
-
----
-
-# Remaining Phase 3A.5B-B Production Verification
-
-Before Phase 3A.5B-B is marked complete, verify at minimum:
-
-Mixed explicit + semantic source selection:
-
-> Use video 2 first, then the greenery clip.
-
-Expected:
-
-Explicit source-2 followed by the visually identified greenery source.
-
-Three-source semantic ordering:
-
-Example source set:
-
-- greenery
-- indoor/talking
-- road/driving
-
-Prompt:
-
-> Start with the road footage, then the indoor clip, then the greenery.
-
-Expected:
-
-Road → Indoor → Greenery
-
-Ambiguity behavior:
-
-Use two visually similar source videos.
-
-Prompt:
-
-> Use the greenery video.
-
-Cliponaut should not silently choose one arbitrarily if the semantic description is genuinely ambiguous.
-
-Global multi-video color:
-
-> Make both videos black and white.
-
-Expected:
-
-Both videos appear in the intended assembled output with one global black-and-white operation.
-
-One-source regression:
-
-Existing single-video edits must continue to work.
-
-Five-source sanity:
-
-Confirm the visual planner can accept the supported maximum source count in a controlled production test, subject to Gemini production account/file-size limits.
+An apparent unique-semantic-selection regression was diagnosed as Gemini free-tier `429 RESOURCE_EXHAUSTED` quota exhaustion, not a classification regression. Once quota was available, the same Talking → Greenery production acceptance test passed.
 
 ---
 
@@ -635,56 +542,6 @@ Before changing concurrency, consider:
 - queue fairness
 
 Concurrency is a capacity/scaling decision, not a substitute for fixing hanging jobs.
-
----
-
-# Next Immediate Engineering Task
-
-Fix the global multi-video color-grade planner behavior.
-
-Target prompts:
-
-> Make both videos black and white.
-
-> Make all videos black and white.
-
-Expected behavior:
-
-one global unscoped `color_grade` operation.
-
-Preserve:
-
-- `Make only video 2 black and white.` source-specific behavior
-- V1 compatibility
-- V2 sequencing
-- current validator constraints
-- current executor architecture
-
-After implementation:
-
-- add regression tests
-- run `git diff --check`
-- run lint
-- run job tests
-- run production build
-- deploy only after approval
-- production-test both global and source-specific color behavior
-
----
-
-# After Phase 3A.5B-B
-
-Once all Phase 3A.5B-B acceptance tests pass, mark:
-
-`Phase 3A.5B-B — ✅ COMPLETE`
-
-Only then move to the next major product phase.
-
-The next major phase is expected to move beyond basic multi-source identification toward broader Cliponaut editing capabilities.
-
-Do not invent the detailed scope of later phases inside an engineering task.
-
-Later-phase scope should be defined by the product owner before implementation begins.
 
 ---
 
