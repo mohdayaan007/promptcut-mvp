@@ -99,13 +99,56 @@ function collapseGlobalSourceColorGrades(plan) {
   };
 }
 
-function semanticSelectionError() {
+function semanticSelectionError(reason, details = {}) {
+  if (reason) {
+    console.error("Semantic source resolution rejected:", { reason, ...details });
+  }
   return new UnsupportedEditRequestError("This edit needs Gemini video understanding");
+}
+
+function safeClassificationMatches(response, semanticReferences) {
+  if (!Array.isArray(response?.matches)) return [];
+  const referenceIds = new Set(semanticReferences.map((reference) => reference.referenceId));
+  return response.matches.map((match) => ({
+    referenceId: referenceIds.has(match?.referenceId) ? match.referenceId : null,
+    plausibleMatch: typeof match?.plausibleMatch === "boolean" ? match.plausibleMatch : null
+  }));
+}
+
+function logClassificationResponse(sourceId, response, semanticReferences) {
+  console.info("Gemini semantic source classification:", {
+    sourceId,
+    matches: safeClassificationMatches(response, semanticReferences)
+  });
+}
+
+function logClassificationRequestFailure(sourceId, error) {
+  const transient = isTransientPlanningError(error);
+  console.error("Gemini semantic source classification request failed:", {
+    reason: transient ? "SEMANTIC_CLASSIFICATION_RETRIES_EXHAUSTED" : "SEMANTIC_CLASSIFICATION_REQUEST_FAILED",
+    sourceId,
+    name: error?.name || null,
+    message: safePlanningErrorMessage(error),
+    status: error?.status ?? error?.statusCode ?? error?.code ?? error?.$metadata?.httpStatusCode ?? null,
+    apiStatus: error?.statusText ?? null,
+    transient
+  });
+}
+
+function logSemanticFinalPlanMismatch(plan) {
+  console.error("Semantic final plan rejected:", {
+    reason: "SEMANTIC_FINAL_PLAN_MISMATCH",
+    planVersion: typeof plan?.version === "string" ? plan.version : null,
+    operationCount: Array.isArray(plan?.operations) ? plan.operations.length : null
+  });
 }
 
 export function resolveSemanticSourceClassifications(classifications, semanticReferences, sourceCatalog) {
   if (!Array.isArray(classifications) || classifications.length !== sourceCatalog.length) {
-    throw semanticSelectionError();
+    throw semanticSelectionError("SEMANTIC_MISSING_SOURCE_CLASSIFICATION", {
+      expectedSourceCount: sourceCatalog.length,
+      receivedClassificationCount: Array.isArray(classifications) ? classifications.length : null
+    });
   }
 
   const expectedReferenceIds = new Set(semanticReferences.map((reference) => reference.referenceId));
@@ -115,26 +158,69 @@ export function resolveSemanticSourceClassifications(classifications, semanticRe
 
   for (const classification of classifications) {
     const { expectedSourceId, response } = classification || {};
-    if (!sourceIds.has(expectedSourceId) || classifiedSources.has(expectedSourceId) || response?.sourceId !== expectedSourceId || !Array.isArray(response.matches) || response.matches.length !== semanticReferences.length) {
-      throw semanticSelectionError();
+    if (!sourceIds.has(expectedSourceId) || response?.sourceId !== expectedSourceId) {
+      throw semanticSelectionError("SEMANTIC_WRONG_SOURCE_ID", {
+        expectedSourceId: sourceIds.has(expectedSourceId) ? expectedSourceId : null,
+        responseSourceId: sourceIds.has(response?.sourceId) ? response.sourceId : null
+      });
+    }
+    if (classifiedSources.has(expectedSourceId)) {
+      throw semanticSelectionError("SEMANTIC_DUPLICATE_SOURCE_CLASSIFICATION", { sourceId: expectedSourceId });
+    }
+    if (!Array.isArray(response.matches)) {
+      throw semanticSelectionError("SEMANTIC_MALFORMED_RESPONSE", { sourceId: expectedSourceId });
+    }
+    if (response.matches.length !== semanticReferences.length) {
+      throw semanticSelectionError("SEMANTIC_MISSING_REFERENCE", {
+        sourceId: expectedSourceId,
+        expectedReferenceCount: semanticReferences.length,
+        receivedReferenceCount: response.matches.length
+      });
     }
 
     const matchesByReference = new Set();
     for (const match of response.matches) {
       if (!expectedReferenceIds.has(match?.referenceId) || matchesByReference.has(match.referenceId) || typeof match.plausibleMatch !== "boolean") {
-        throw semanticSelectionError();
+        const reason = !expectedReferenceIds.has(match?.referenceId)
+          ? "SEMANTIC_UNKNOWN_REFERENCE"
+          : matchesByReference.has(match.referenceId)
+            ? "SEMANTIC_DUPLICATE_REFERENCE"
+            : "SEMANTIC_INVALID_BOOLEAN";
+        throw semanticSelectionError(reason, {
+          sourceId: expectedSourceId,
+          referenceId: expectedReferenceIds.has(match?.referenceId) ? match.referenceId : null
+        });
       }
       matchesByReference.add(match.referenceId);
       if (match.plausibleMatch) candidatesByReference.get(match.referenceId).push(expectedSourceId);
     }
-    if (matchesByReference.size !== expectedReferenceIds.size) throw semanticSelectionError();
+    if (matchesByReference.size !== expectedReferenceIds.size) {
+      throw semanticSelectionError("SEMANTIC_MISSING_REFERENCE", {
+        sourceId: expectedSourceId,
+        expectedReferenceCount: expectedReferenceIds.size,
+        receivedReferenceCount: matchesByReference.size
+      });
+    }
     classifiedSources.add(expectedSourceId);
   }
 
-  if (classifiedSources.size !== sourceIds.size) throw semanticSelectionError();
+  if (classifiedSources.size !== sourceIds.size) {
+    throw semanticSelectionError("SEMANTIC_MISSING_SOURCE_CLASSIFICATION", {
+      expectedSourceCount: sourceIds.size,
+      receivedClassificationCount: classifiedSources.size
+    });
+  }
+  console.info("Semantic source candidate sets:", {
+    candidatesByReference: Object.fromEntries(candidatesByReference)
+  });
   return semanticReferences.map((reference) => {
     const candidates = candidatesByReference.get(reference.referenceId);
-    if (candidates.length !== 1) throw semanticSelectionError();
+    if (candidates.length !== 1) {
+      throw semanticSelectionError(candidates.length === 0 ? "SEMANTIC_NO_CANDIDATE" : "SEMANTIC_AMBIGUOUS", {
+        referenceId: reference.referenceId,
+        candidateSourceIds: candidates
+      });
+    }
     return { ...reference, sourceId: candidates[0] };
   });
 }
@@ -142,12 +228,22 @@ export function resolveSemanticSourceClassifications(classifications, semanticRe
 function validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources) {
   if (!resolvedSemanticSources.length) return;
   const sequence = plan.version === "2" && plan.operations.find((operation) => operation.type === "sequence");
-  if (!sequence || !Array.isArray(sequence.clips)) throw semanticSelectionError();
+  if (!sequence || !Array.isArray(sequence.clips)) {
+    throw semanticSelectionError("SEMANTIC_FINAL_PLAN_MISMATCH", {
+      expectedSourceIds: resolvedSemanticSources.map(({ sourceId }) => sourceId),
+      sequencePresent: Boolean(sequence)
+    });
+  }
 
   let clipIndex = 0;
   for (const { sourceId } of resolvedSemanticSources) {
     clipIndex = sequence.clips.findIndex((clip, index) => index >= clipIndex && clip.sourceId === sourceId);
-    if (clipIndex === -1) throw semanticSelectionError();
+    if (clipIndex === -1) {
+      throw semanticSelectionError("SEMANTIC_FINAL_PLAN_MISMATCH", {
+        expectedSourceId: sourceId,
+        sequenceClipCount: sequence.clips.length
+      });
+    }
     clipIndex += 1;
   }
 }
@@ -174,6 +270,9 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
   const uploadedFiles = [];
   const semanticReferences = extractSemanticSourceReferences(prompt, sourceCatalog);
   const requiresVisualUnderstanding = semanticReferences.length > 0;
+  if (requiresVisualUnderstanding) {
+    console.info("Gemini semantic source references extracted:", { semanticReferences });
+  }
   try {
     const activeSources = [];
     for (const input of sourceInputs) {
@@ -197,24 +296,39 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
       try {
         const classifications = [];
         for (const activeSource of activeSources) {
-          const classificationResponse = await generateWithRetries(ai, {
-            model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
-            contents: buildSingleSourceContents(activeSource, buildSemanticSourceClassificationPrompt({
-              source: activeSource.source,
-              semanticReferences
-            })),
-            config: {
-              responseMimeType: "application/json",
-              responseJsonSchema: createSemanticSourceClassificationJsonSchema({
-                sourceId: activeSource.source.sourceId,
-                referenceIds: semanticReferences.map((reference) => reference.referenceId)
-              })
-            }
-          }, retryOptions);
-          if (!classificationResponse.text) throw semanticSelectionError();
+          let classificationResponse;
+          try {
+            classificationResponse = await generateWithRetries(ai, {
+              model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
+              contents: buildSingleSourceContents(activeSource, buildSemanticSourceClassificationPrompt({
+                source: activeSource.source,
+                semanticReferences
+              })),
+              config: {
+                responseMimeType: "application/json",
+                responseJsonSchema: createSemanticSourceClassificationJsonSchema({
+                  sourceId: activeSource.source.sourceId,
+                  referenceIds: semanticReferences.map((reference) => reference.referenceId)
+                })
+              }
+            }, retryOptions);
+          } catch (error) {
+            logClassificationRequestFailure(activeSource.source.sourceId, error);
+            throw semanticSelectionError();
+          }
+          if (!classificationResponse.text) {
+            throw semanticSelectionError("SEMANTIC_MALFORMED_RESPONSE", { sourceId: activeSource.source.sourceId });
+          }
+          let parsedResponse;
+          try {
+            parsedResponse = JSON.parse(classificationResponse.text);
+          } catch {
+            throw semanticSelectionError("SEMANTIC_MALFORMED_RESPONSE", { sourceId: activeSource.source.sourceId });
+          }
+          logClassificationResponse(activeSource.source.sourceId, parsedResponse, semanticReferences);
           classifications.push({
             expectedSourceId: activeSource.source.sourceId,
-            response: JSON.parse(classificationResponse.text)
+            response: parsedResponse
           });
         }
         resolvedSemanticSources = resolveSemanticSourceClassifications(classifications, semanticReferences, sourceCatalog);
@@ -236,8 +350,12 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     if (!response.text) throw new Error("Gemini returned no edit plan");
     const plan = JSON.parse(response.text);
     if (!Array.isArray(plan.operations)) throw new Error("Gemini returned a malformed edit plan");
-    if (!plan.operations.length) throw new UnsupportedEditRequestError("This edit is not supported yet");
+    if (!plan.operations.length) {
+      if (requiresVisualUnderstanding) logSemanticFinalPlanMismatch(plan);
+      throw new UnsupportedEditRequestError("This edit is not supported yet");
+    }
     if (requiresVisualUnderstanding && plan.version !== "2") {
+      logSemanticFinalPlanMismatch(plan);
       throw new UnsupportedEditRequestError("This source description could not be identified confidently");
     }
     validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources);
