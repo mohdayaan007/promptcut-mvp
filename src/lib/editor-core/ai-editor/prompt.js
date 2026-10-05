@@ -11,8 +11,22 @@ export function buildSemanticSourceClassificationPrompt({ source, semanticRefere
   ].join("\n\n");
 }
 
-export function buildAiEditorPrompt({ prompt, hasMultipleVideos = false, sourceCatalog = [], resolvedSemanticSources = [] }) {
-  const capabilities = JSON.stringify(getAiCapabilityContract({ hasMultipleVideos }));
+export function buildVisualMomentLocalizationPrompt({ source, moment }) {
+  return [
+    "You localize visually observable moments inside this one supplied video. You do not create an edit plan.",
+    "Judge only THIS source. Return every genuinely plausible occurrence of the requested moment; do not choose a best occurrence and do not compare other sources.",
+    "Each candidate must be a bounded visual occurrence with start and end timestamps in seconds. For paired boundaries, each candidate must pair the requested start and end events from the same plausible range.",
+    "If the event does not occur in this source, return an empty candidates array. Do not use filenames as visual evidence. Return only JSON matching the supplied schema.",
+    `Authoritative source: ${JSON.stringify(source)}`,
+    `Moment request: ${JSON.stringify(moment)}`
+  ].join("\n\n");
+}
+
+export function buildAiEditorPrompt({ prompt, hasMultipleVideos = false, sourceCatalog = [], resolvedSemanticSources = [], authoritativeMomentSequence = null }) {
+  const capabilities = JSON.stringify(getAiCapabilityContract({
+    hasMultipleVideos,
+    supportsSequence: hasMultipleVideos || Boolean(authoritativeMomentSequence)
+  }));
 
   return [
     "You are Cliponaut's AI video editor.",
@@ -31,6 +45,9 @@ export function buildAiEditorPrompt({ prompt, hasMultipleVideos = false, sourceC
       : "No source catalog is available; do not emit source-aware operations.",
     resolvedSemanticSources.length
       ? `Authoritative resolved semantic sources: ${JSON.stringify(resolvedSemanticSources)}. Use these source IDs for their matching descriptions; do not reinterpret them.`
+      : null,
+    authoritativeMomentSequence
+      ? `Authoritative localized sequence: ${JSON.stringify(authoritativeMomentSequence)}. Include it exactly; its source IDs, order, and timestamps are server-resolved and must not be changed.`
       : null,
     "If the request is unsupported, return an empty operations array.",
     "Return only JSON matching the supplied schema.",

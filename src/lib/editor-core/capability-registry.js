@@ -26,7 +26,7 @@ export function getCapability(type) {
   return CAPABILITY_REGISTRY[type] || null;
 }
 
-export function getAiCapabilityContract({ hasMultipleVideos = false } = {}) {
+export function getAiCapabilityContract({ hasMultipleVideos = false, supportsSequence = hasMultipleVideos } = {}) {
   return {
     color_grade: { styles: Object.keys(COLOR_PRESETS) },
     title: {
@@ -49,7 +49,7 @@ export function getAiCapabilityContract({ hasMultipleVideos = false } = {}) {
     merge: hasMultipleVideos
       ? "Automatically added by the server because multiple videos were uploaded. Do not emit it."
       : "Unavailable without multiple uploaded videos. Do not emit it.",
-    sequence: hasMultipleVideos
+    sequence: supportsSequence
       ? "Available only in a version 2 source-aware plan. It arranges validated source-local clips."
       : "Unavailable without multiple uploaded videos."
   };

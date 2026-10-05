@@ -1,7 +1,7 @@
 import { GoogleGenAI, createPartFromUri } from "@google/genai";
-import { createEditPlan, extractSemanticSourceReferences, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
-import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { buildAiEditorPrompt, buildSemanticSourceClassificationPrompt } from "@/lib/editor-core/ai-editor/prompt";
+import { createEditPlan, extractSemanticSourceReferences, extractVisualMomentRequest, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
+import { buildAiEditorPrompt, buildSemanticSourceClassificationPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
 const FILE_PROCESSING_TIMEOUT_MS = 60_000;
@@ -106,6 +106,11 @@ function semanticSelectionError(reason, details = {}) {
   return new UnsupportedEditRequestError("This edit needs Gemini video understanding");
 }
 
+function visualMomentError(reason, details = {}) {
+  if (reason) console.error("Visual moment localization rejected:", { reason, ...details });
+  return new UnsupportedEditRequestError("This edit needs Gemini video understanding");
+}
+
 function safeClassificationMatches(response, semanticReferences) {
   if (!Array.isArray(response?.matches)) return [];
   const referenceIds = new Set(semanticReferences.map((reference) => reference.referenceId));
@@ -126,6 +131,19 @@ function logClassificationRequestFailure(sourceId, error) {
   const transient = isTransientPlanningError(error);
   console.error("Gemini semantic source classification request failed:", {
     reason: transient ? "SEMANTIC_CLASSIFICATION_RETRIES_EXHAUSTED" : "SEMANTIC_CLASSIFICATION_REQUEST_FAILED",
+    sourceId,
+    name: error?.name || null,
+    message: safePlanningErrorMessage(error),
+    status: error?.status ?? error?.statusCode ?? error?.code ?? error?.$metadata?.httpStatusCode ?? null,
+    apiStatus: error?.statusText ?? null,
+    transient
+  });
+}
+
+function logMomentLocalizationRequestFailure(sourceId, error) {
+  const transient = isTransientPlanningError(error);
+  console.error("Gemini visual moment localization request failed:", {
+    reason: transient ? "MOMENT_LOCALIZATION_RETRIES_EXHAUSTED" : "MOMENT_LOCALIZATION_REQUEST_FAILED",
     sourceId,
     name: error?.name || null,
     message: safePlanningErrorMessage(error),
@@ -225,6 +243,113 @@ export function resolveSemanticSourceClassifications(classifications, semanticRe
   });
 }
 
+function localizationSourcesForMoment(momentRequest, sourceCatalog, resolvedSemanticSources) {
+  const scope = momentRequest.sourceScope;
+  if (scope.type === "explicit" || scope.type === "single") {
+    const source = sourceCatalog.find((entry) => entry.sourceId === scope.sourceId);
+    if (!source) throw visualMomentError("MOMENT_UNKNOWN_SOURCE", { sourceId: scope.sourceId || null });
+    return [source];
+  }
+  if (scope.type === "semantic") {
+    const resolved = resolvedSemanticSources.find((entry) => entry.referenceId === scope.referenceId);
+    const source = sourceCatalog.find((entry) => entry.sourceId === resolved?.sourceId);
+    if (!source) throw visualMomentError("MOMENT_MISSING_SOURCE_RESOLUTION", { referenceId: scope.referenceId });
+    return [source];
+  }
+  return sourceCatalog;
+}
+
+function validMomentCandidate(candidate, source) {
+  return candidate && typeof candidate.start === "number" && Number.isFinite(candidate.start) &&
+    typeof candidate.end === "number" && Number.isFinite(candidate.end) &&
+    candidate.start >= 0 && candidate.end > candidate.start && candidate.end <= source.duration;
+}
+
+function deriveMomentRange(candidate, momentRequest, source) {
+  const range = momentRequest.mode === "START_BOUNDARY"
+    ? { start: candidate.start, end: source.duration }
+    : momentRequest.mode === "END_BOUNDARY"
+      ? { start: 0, end: candidate.end }
+      : { start: candidate.start, end: candidate.end };
+  if (!Number.isFinite(range.start) || !Number.isFinite(range.end) || range.start < 0 || range.end <= range.start || range.end > source.duration) {
+    throw visualMomentError("MOMENT_INVALID_DERIVED_RANGE", { sourceId: source.sourceId });
+  }
+  return range;
+}
+
+export function resolveVisualMomentLocalizations(localizations, momentRequest, sourceCatalog, expectedSourceIds) {
+  if (!Array.isArray(localizations) || localizations.length !== expectedSourceIds.length) {
+    throw visualMomentError("MOMENT_MISSING_SOURCE_LOCALIZATION", {
+      expectedSourceCount: expectedSourceIds.length,
+      receivedLocalizationCount: Array.isArray(localizations) ? localizations.length : null
+    });
+  }
+
+  const sourceById = new Map(sourceCatalog.map((source) => [source.sourceId, source]));
+  const expected = new Set(expectedSourceIds);
+  const localized = new Set();
+  const candidates = [];
+  for (const localization of localizations) {
+    const { expectedSourceId, response } = localization || {};
+    if (!expected.has(expectedSourceId) || !sourceById.has(expectedSourceId) || response?.sourceId !== expectedSourceId) {
+      throw visualMomentError("MOMENT_SOURCE_MISMATCH", {
+        expectedSourceId: expected.has(expectedSourceId) ? expectedSourceId : null,
+        responseSourceId: expected.has(response?.sourceId) ? response.sourceId : null
+      });
+    }
+    if (localized.has(expectedSourceId)) throw visualMomentError("MOMENT_DUPLICATE_SOURCE_LOCALIZATION", { sourceId: expectedSourceId });
+    if (!Array.isArray(response.moments)) throw visualMomentError("MOMENT_MALFORMED_RESPONSE", { sourceId: expectedSourceId });
+    if (response.moments.length !== 1) {
+      const returnedMomentIds = response.moments.map((moment) => moment?.momentId).filter(Boolean);
+      const requestedCount = returnedMomentIds.filter((momentId) => momentId === momentRequest.momentId).length;
+      throw visualMomentError(
+        requestedCount > 1 ? "MOMENT_DUPLICATE_MOMENT" : returnedMomentIds.some((momentId) => momentId !== momentRequest.momentId) ? "MOMENT_UNKNOWN_MOMENT" : "MOMENT_MISSING_MOMENT",
+        { sourceId: expectedSourceId, receivedMomentCount: response.moments.length }
+      );
+    }
+
+    const [moment] = response.moments;
+    if (moment?.momentId !== momentRequest.momentId) {
+      throw visualMomentError(moment?.momentId ? "MOMENT_UNKNOWN_MOMENT" : "MOMENT_MISSING_MOMENT", { sourceId: expectedSourceId });
+    }
+    if (!Array.isArray(moment.candidates)) throw visualMomentError("MOMENT_MISSING_CANDIDATES", { sourceId: expectedSourceId });
+
+    const source = sourceById.get(expectedSourceId);
+    for (const candidate of moment.candidates) {
+      if (!validMomentCandidate(candidate, source)) throw visualMomentError("MOMENT_INVALID_TIMESTAMP_RANGE", { sourceId: expectedSourceId });
+      candidates.push({ sourceId: expectedSourceId, ...deriveMomentRange(candidate, momentRequest, source) });
+    }
+    localized.add(expectedSourceId);
+  }
+
+  if (localized.size !== expected.size) {
+    throw visualMomentError("MOMENT_MISSING_SOURCE_LOCALIZATION", {
+      expectedSourceCount: expected.size,
+      receivedLocalizationCount: localized.size
+    });
+  }
+  console.info("Visual moment candidate set:", {
+    momentId: momentRequest.momentId,
+    sourceIds: candidates.map((candidate) => candidate.sourceId),
+    candidateCount: candidates.length
+  });
+  if (!candidates.length) throw visualMomentError("MOMENT_NO_CANDIDATE", { momentId: momentRequest.momentId });
+  if (candidates.length > 1) throw visualMomentError("MOMENT_AMBIGUOUS", { momentId: momentRequest.momentId, candidateCount: candidates.length });
+  return candidates[0];
+}
+
+function applyAuthoritativeMomentSequence(plan, localizedMoment) {
+  const authoritativeSequence = {
+    type: "sequence",
+    clips: [{ sourceId: localizedMoment.sourceId, start: localizedMoment.start, end: localizedMoment.end }]
+  };
+  const nonSequenceOperations = plan.operations.filter((operation) => operation.type !== "sequence");
+  if (nonSequenceOperations.some((operation) => operation.sourceId && operation.sourceId !== localizedMoment.sourceId)) {
+    throw visualMomentError("MOMENT_FINAL_PLAN_SOURCE_MISMATCH", { sourceId: localizedMoment.sourceId });
+  }
+  return { ...plan, version: "2", operations: [authoritativeSequence, ...nonSequenceOperations] };
+}
+
 function validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources) {
   if (!resolvedSemanticSources.length) return;
   const sequence = plan.version === "2" && plan.operations.find((operation) => operation.type === "sequence");
@@ -269,6 +394,7 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
   const ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const uploadedFiles = [];
   const semanticReferences = extractSemanticSourceReferences(prompt, sourceCatalog);
+  const momentRequest = extractVisualMomentRequest(prompt, sourceCatalog);
   const requiresVisualUnderstanding = semanticReferences.length > 0;
   if (requiresVisualUnderstanding) {
     console.info("Gemini semantic source references extracted:", { semanticReferences });
@@ -338,9 +464,54 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
       }
     }
 
+    let localizedMoment;
+    if (momentRequest) {
+      const targetSources = localizationSourcesForMoment(momentRequest, sourceCatalog, resolvedSemanticSources);
+      const activeSourceById = new Map(activeSources.map((activeSource) => [activeSource.source.sourceId, activeSource]));
+      const localizations = [];
+      for (const source of targetSources) {
+        const activeSource = activeSourceById.get(source.sourceId);
+        if (!activeSource) throw visualMomentError("MOMENT_MISSING_SOURCE_LOCALIZATION", { sourceId: source.sourceId });
+        let localizationResponse;
+        try {
+          localizationResponse = await generateWithRetries(ai, {
+            model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
+            contents: buildSingleSourceContents(activeSource, buildVisualMomentLocalizationPrompt({ source, moment: momentRequest })),
+            config: {
+              responseMimeType: "application/json",
+              responseJsonSchema: createVisualMomentLocalizationJsonSchema({
+                sourceId: source.sourceId,
+                momentIds: [momentRequest.momentId]
+              })
+            }
+          }, retryOptions);
+        } catch (error) {
+          logMomentLocalizationRequestFailure(source.sourceId, error);
+          throw visualMomentError();
+        }
+        if (!localizationResponse.text) throw visualMomentError("MOMENT_MALFORMED_RESPONSE", { sourceId: source.sourceId });
+        let parsedResponse;
+        try {
+          parsedResponse = JSON.parse(localizationResponse.text);
+        } catch {
+          throw visualMomentError("MOMENT_MALFORMED_RESPONSE", { sourceId: source.sourceId });
+        }
+        console.info("Gemini visual moment localization:", {
+          sourceId: source.sourceId,
+          momentId: momentRequest.momentId,
+          candidateCount: Array.isArray(parsedResponse?.moments?.[0]?.candidates) ? parsedResponse.moments[0].candidates.length : null
+        });
+        localizations.push({ expectedSourceId: source.sourceId, response: parsedResponse });
+      }
+      localizedMoment = resolveVisualMomentLocalizations(localizations, momentRequest, sourceCatalog, targetSources.map((source) => source.sourceId));
+    }
+
     const response = await generateWithRetries(ai, {
       model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
-      contents: buildMultiSourceContents(activeSources, buildAiEditorPrompt({ prompt, hasMultipleVideos, sourceCatalog, resolvedSemanticSources })),
+      contents: buildMultiSourceContents(activeSources, buildAiEditorPrompt({
+        prompt, hasMultipleVideos, sourceCatalog, resolvedSemanticSources,
+        authoritativeMomentSequence: localizedMoment ? [{ sourceId: localizedMoment.sourceId, start: localizedMoment.start, end: localizedMoment.end }] : null
+      })),
       config: {
         responseMimeType: "application/json",
         responseJsonSchema: createEditPlanJsonSchema({ sourceIds: sourceCatalog.map((source) => source.sourceId) })
@@ -348,8 +519,9 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     }, retryOptions);
 
     if (!response.text) throw new Error("Gemini returned no edit plan");
-    const plan = JSON.parse(response.text);
+    let plan = JSON.parse(response.text);
     if (!Array.isArray(plan.operations)) throw new Error("Gemini returned a malformed edit plan");
+    if (localizedMoment) plan = applyAuthoritativeMomentSequence(plan, localizedMoment);
     if (!plan.operations.length) {
       if (requiresVisualUnderstanding) logSemanticFinalPlanMismatch(plan);
       throw new UnsupportedEditRequestError("This edit is not supported yet");
@@ -373,7 +545,7 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
   const planningSources = sourceInputs?.length
     ? sourceInputs
     : inputPath ? [{ inputPath, inputMimeType, source: sourceCatalog[0] }] : [];
-  const requiresVisualUnderstanding = requiresVisualSourceUnderstanding(prompt, sourceCatalog);
+  const requiresVisualUnderstanding = requiresVisualSourceUnderstanding(prompt, sourceCatalog) || requiresVisualMomentUnderstanding(prompt, sourceCatalog);
   if (!process.env.GEMINI_API_KEY || !prompt.trim()) {
     if (requiresVisualUnderstanding) throw new UnsupportedEditRequestError("This edit needs Gemini video understanding");
     return {

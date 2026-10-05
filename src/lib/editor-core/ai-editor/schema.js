@@ -159,4 +159,38 @@ export function createSemanticSourceClassificationJsonSchema({ sourceId, referen
   };
 }
 
+export function createVisualMomentLocalizationJsonSchema({ sourceId, momentIds = [] } = {}) {
+  return {
+    type: "object",
+    properties: {
+      sourceId: { type: "string", enum: [sourceId] },
+      moments: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            momentId: { type: "string", enum: momentIds },
+            candidates: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  start: { type: "number" },
+                  end: { type: "number" }
+                },
+                required: ["start", "end"],
+                additionalProperties: false
+              }
+            }
+          },
+          required: ["momentId", "candidates"],
+          additionalProperties: false
+        }
+      }
+    },
+    required: ["sourceId", "moments"],
+    additionalProperties: false
+  };
+}
+
 export const EDIT_PLAN_JSON_SCHEMA = createEditPlanJsonSchema();

@@ -72,11 +72,11 @@ function parseFallbackCapabilities(prompt = "") {
 const ORDINALS = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
 
 const ORDINAL_SOURCE_WORDS = /\b(?:first|second|third|fourth|fifth|video\s*\d+|source[-\s]?\d+)\b/i;
-const NON_SEMANTIC_SOURCE_DESCRIPTORS = /^(?:this|that|the|a|an|video|uploaded|selected|use|then|put|start|finish|append|followed|with|make|turn|change|only|both|all|every|each|(?:make|turn|change)\s+(?:only|both|all|every|each))$/;
+const NON_SEMANTIC_SOURCE_DESCRIPTORS = /^(?:this|that|the|a|an|video|uploaded|selected|from|use|then|put|start|finish|append|followed|with|make|turn|change|only|both|all|every|each|(?:make|turn|change)\s+(?:only|both|all|every|each))$/;
 
 function normalizeSemanticDescription(description = "") {
   return description
-    .replace(/^(?:(?:use|show|start\s+with|then|and|followed\s+by|put)\s+)*(?:(?:the|a|an)\s+)*/i, "")
+    .replace(/^(?:(?:use|show|start\s+with|then|and|followed\s+by|put|from)\s+)*(?:(?:the|a|an)\s+)*/i, "")
     .trim();
 }
 
@@ -110,6 +110,77 @@ export function extractSemanticSourceReferences(prompt = "", sourceCatalog = [])
  */
 export function requiresVisualSourceUnderstanding(prompt = "", sourceCatalog = []) {
   return extractSemanticSourceReferences(prompt, sourceCatalog).length > 0;
+}
+
+const MOMENT_MODES = {
+  EVENT_SEGMENT: "EVENT_SEGMENT",
+  START_BOUNDARY: "START_BOUNDARY",
+  END_BOUNDARY: "END_BOUNDARY",
+  START_END_BOUNDARY: "START_END_BOUNDARY"
+};
+
+function cleanMomentDescription(description = "") {
+  return description
+    .replace(/\s*(?:[,.!?;:]|\b(?:please|thanks?)\b).*$/i, "")
+    .trim();
+}
+
+function explicitSourceScope(prompt = "") {
+  const match = prompt.match(/\bfrom\s+(?:video\s*|source[-\s]?)(\d+)\b/i);
+  return match ? { type: "explicit", sourceId: sourceIdForOrdinal(Number(match[1])) } : null;
+}
+
+/**
+ * Extracts one visual localization request without interpreting the visual event.
+ * The event description is deliberately passed to Gemini rather than keyword-matched.
+ */
+export function extractVisualMomentRequest(prompt = "", sourceCatalog = []) {
+  if (!prompt.trim() || /\d+:\d+\s*(?:to|until|through)\s*\d+:\d+/i.test(prompt)) return null;
+
+  const paired = prompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(.+?)\s+(?:and|then)\s+(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once))?\s+(.+?)(?=[.!?]|$)/i);
+  const start = paired ? null : prompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(.+?)(?=[.!?]|$)/i);
+  const end = paired ? null : prompt.match(/\b(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once))?\s+(.+?)(?=[.!?]|$)/i);
+  const segment = paired || start || end ? null : prompt.match(/\b(?:use|show|keep|trim(?:\s+to)?)(?:\s+(?:me|this|the\s+video))?\s+(?:the\s+)?(?:part|bit|section|moment|clip)\s+(?:where|when)\s+(.+?)(?=[.!?]|$)|\bshow\s+(?:me\s+)?(?:where|when)\s+(.+?)(?=[.!?]|$)/i);
+
+  let mode;
+  let startEventDescription;
+  let endEventDescription;
+  if (paired) {
+    mode = MOMENT_MODES.START_END_BOUNDARY;
+    startEventDescription = cleanMomentDescription(paired[1]);
+    endEventDescription = cleanMomentDescription(paired[2]);
+  } else if (start) {
+    mode = MOMENT_MODES.START_BOUNDARY;
+    startEventDescription = cleanMomentDescription(start[1]);
+  } else if (end) {
+    mode = MOMENT_MODES.END_BOUNDARY;
+    endEventDescription = cleanMomentDescription(end[1]);
+  } else if (segment) {
+    mode = MOMENT_MODES.EVENT_SEGMENT;
+    startEventDescription = cleanMomentDescription(segment[1] || segment[2]);
+  } else {
+    return null;
+  }
+
+  if ((startEventDescription !== undefined && !startEventDescription) || (endEventDescription !== undefined && !endEventDescription)) return null;
+
+  const semanticReferences = extractSemanticSourceReferences(prompt, sourceCatalog);
+  const explicitScope = explicitSourceScope(prompt);
+  const semanticScope = !explicitScope && sourceCatalog.length > 1 && /\bfrom\s+(?:the\s+)?[a-z]/i.test(prompt) && semanticReferences.length === 1
+    ? { type: "semantic", referenceId: semanticReferences[0].referenceId }
+    : null;
+
+  return {
+    momentId: "moment-1",
+    mode,
+    ...(startEventDescription ? { startEventDescription } : {}),
+    ...(endEventDescription ? { endEventDescription } : {}),
+    sourceScope: explicitScope || semanticScope || (sourceCatalog.length === 1 ? { type: "single", sourceId: sourceCatalog[0]?.sourceId } : { type: "unscoped" })
+  };
+}
+
+export function requiresVisualMomentUnderstanding(prompt = "", sourceCatalog = []) {
+  return Boolean(extractVisualMomentRequest(prompt, sourceCatalog));
 }
 
 function sourceIdForOrdinal(ordinal) { return `source-${ordinal}`; }

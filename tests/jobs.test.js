@@ -7,11 +7,11 @@ import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
 import { ACTIVE_JOB_STATUSES, isActiveJobStatus, isRecoverableJobStatus } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
-import { createEditPlan, extractSemanticSourceReferences, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { createEditPlan, extractSemanticSourceReferences, extractVisualMomentRequest, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
-import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { createAiEditPlan, resolveSemanticSourceClassifications } from "@/lib/editor-core/ai-editor/planner";
+import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
+import { createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { createExecutionController, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 
@@ -63,6 +63,10 @@ function createMockGemini({ responseText, responses = [], failures = [] } = {}) 
 
 function classificationResponse(sourceId, matches) {
   return JSON.stringify({ sourceId, matches });
+}
+
+function momentLocalizationResponse(sourceId, candidates, momentId = "moment-1") {
+  return JSON.stringify({ sourceId, moments: [{ momentId, candidates }] });
 }
 
 function fullSequence(catalog = sourceCatalog, sourceIds = catalog.map((source) => source.sourceId)) {
@@ -348,6 +352,222 @@ test("semantic source classification schema constrains the assigned source and r
   assert.match(serialized, /semantic-1/);
   assert.match(serialized, /source-1/);
   assert.doesNotMatch(serialized, /source-2/);
+});
+
+test("visual moment extraction recognizes structural event and boundary requests without timestamp parsing", () => {
+  const oneSource = sourceCatalog.slice(0, 1);
+  assert.deepEqual(extractVisualMomentRequest("Use the part where the car enters the driveway.", oneSource), {
+    momentId: "moment-1",
+    mode: "EVENT_SEGMENT",
+    startEventDescription: "the car enters the driveway",
+    sourceScope: { type: "single", sourceId: "source-1" }
+  });
+  assert.deepEqual(extractVisualMomentRequest("Keep the section where the cyclist reaches the bridge.", oneSource), {
+    momentId: "moment-1",
+    mode: "EVENT_SEGMENT",
+    startEventDescription: "the cyclist reaches the bridge",
+    sourceScope: { type: "single", sourceId: "source-1" }
+  });
+  assert.deepEqual(extractVisualMomentRequest("Start when the house appears.", oneSource), {
+    momentId: "moment-1",
+    mode: "START_BOUNDARY",
+    startEventDescription: "the house appears",
+    sourceScope: { type: "single", sourceId: "source-1" }
+  });
+  assert.deepEqual(extractVisualMomentRequest("Stop once she sits down.", oneSource), {
+    momentId: "moment-1",
+    mode: "END_BOUNDARY",
+    endEventDescription: "she sits down",
+    sourceScope: { type: "single", sourceId: "source-1" }
+  });
+  assert.deepEqual(extractVisualMomentRequest("Cut everything after she reaches the bridge.", oneSource), {
+    momentId: "moment-1",
+    mode: "END_BOUNDARY",
+    endEventDescription: "she reaches the bridge",
+    sourceScope: { type: "single", sourceId: "source-1" }
+  });
+  assert.deepEqual(extractVisualMomentRequest("Start when the door opens and end when she leaves.", oneSource), {
+    momentId: "moment-1",
+    mode: "START_END_BOUNDARY",
+    startEventDescription: "the door opens",
+    endEventDescription: "she leaves",
+    sourceScope: { type: "single", sourceId: "source-1" }
+  });
+  assert.equal(extractVisualMomentRequest("Trim from 0:05 to 0:10.", oneSource), null);
+  assert.equal(requiresVisualMomentUnderstanding("Use the part where the car enters the driveway.", oneSource), true);
+  assert.equal(requiresVisualMomentUnderstanding("Make this cinematic.", oneSource), false);
+});
+
+test("visual moment extraction scopes explicit and semantic source requests", () => {
+  assert.deepEqual(extractVisualMomentRequest("From video 2, use the part where the person waves.", sourceCatalog), {
+    momentId: "moment-1",
+    mode: "EVENT_SEGMENT",
+    startEventDescription: "the person waves",
+    sourceScope: { type: "explicit", sourceId: "source-2" }
+  });
+  assert.deepEqual(extractVisualMomentRequest("From the greenery clip, use the part where the path appears.", sourceCatalog), {
+    momentId: "moment-1",
+    mode: "EVENT_SEGMENT",
+    startEventDescription: "the path appears",
+    sourceScope: { type: "semantic", referenceId: "semantic-1" }
+  });
+});
+
+test("visual moment localization schema constrains the source, moment ID, and bounded candidates", () => {
+  const schema = createVisualMomentLocalizationJsonSchema({ sourceId: "source-2", momentIds: ["moment-1"] });
+  const serialized = JSON.stringify(schema);
+  assert.match(serialized, /source-2/);
+  assert.match(serialized, /moment-1/);
+  assert.match(serialized, /candidates/);
+  assert.doesNotMatch(serialized, /source-1/);
+});
+
+test("visual moment localizations derive source-time ranges and reject ambiguous or malformed evidence", () => {
+  const single = sourceCatalog.slice(0, 1);
+  const eventRequest = extractVisualMomentRequest("Use the part where the car enters.", single);
+  const startRequest = extractVisualMomentRequest("Start when the car enters.", single);
+  const endRequest = extractVisualMomentRequest("End when the car leaves.", single);
+  assert.deepEqual(resolveVisualMomentLocalizations([
+    { expectedSourceId: "source-1", response: JSON.parse(momentLocalizationResponse("source-1", [{ start: 3, end: 7 }])) }
+  ], eventRequest, single, ["source-1"]), { sourceId: "source-1", start: 3, end: 7 });
+  assert.deepEqual(resolveVisualMomentLocalizations([
+    { expectedSourceId: "source-1", response: JSON.parse(momentLocalizationResponse("source-1", [{ start: 3, end: 7 }])) }
+  ], startRequest, single, ["source-1"]), { sourceId: "source-1", start: 3, end: 20 });
+  assert.deepEqual(resolveVisualMomentLocalizations([
+    { expectedSourceId: "source-1", response: JSON.parse(momentLocalizationResponse("source-1", [{ start: 3, end: 7 }])) }
+  ], endRequest, single, ["source-1"]), { sourceId: "source-1", start: 0, end: 7 });
+
+  const malformed = [
+    [],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-2", moments: [] } }],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-1", moments: [] } }],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-1", moments: [{ momentId: "other", candidates: [] }] } }],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-1", moments: [{ momentId: "moment-1", candidates: [{ start: -1, end: 1 }] }] } }],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-1", moments: [{ momentId: "moment-1", candidates: [{ start: 3, end: 21 }] }] } }],
+    [{ expectedSourceId: "source-1", response: { sourceId: "source-1", moments: [{ momentId: "moment-1", candidates: [{ start: 3, end: 7 }, { start: 8, end: 9 }] }] } }]
+  ];
+  for (const localizations of malformed) {
+    assert.throws(() => resolveVisualMomentLocalizations(localizations, eventRequest, single, ["source-1"]), /needs Gemini video understanding/);
+  }
+});
+
+test("a unique single-source visual moment creates an authoritative V2 sequence", async () => {
+  const catalog = sourceCatalog.slice(0, 1);
+  const finalPlan = { version: "1", operations: [{ type: "color_grade", style: "bw" }] };
+  const aiClient = createMockGemini({ responses: [
+    momentLocalizationResponse("source-1", [{ start: 3, end: 7 }]),
+    JSON.stringify(finalPlan)
+  ] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Use the part where the car enters, and make it black and white.", hasMultipleVideos: false,
+    sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient
+  }));
+  assert.deepEqual(result.plan, {
+    version: "2",
+    operations: [
+      { type: "sequence", clips: [{ sourceId: "source-1", start: 3, end: 7 }] },
+      { type: "color_grade", style: "bw" }
+    ]
+  });
+  assert.equal(aiClient.requests.length, 2);
+  assert.equal(aiClient.requests[0].contents.filter((part) => part?.fileData).length, 1);
+  assert.equal(aiClient.requests[1].contents.filter((part) => part?.fileData).length, 1);
+  assert.match(aiClient.requests[1].contents.at(-1), /Authoritative localized sequence/);
+  assert.doesNotThrow(() => validateEditPlan(result.plan, { sourceCatalog: catalog }));
+});
+
+test("visual start, end, and paired boundaries derive exact V2 source ranges", async () => {
+  const catalog = sourceCatalog.slice(0, 1);
+  const cases = [
+    ["Start when the house appears.", { start: 4, end: 20 }],
+    ["End when the person sits down.", { start: 0, end: 8 }],
+    ["Start when the door opens and end when she leaves.", { start: 4, end: 8 }]
+  ];
+  for (const [prompt, expectedRange] of cases) {
+    const aiClient = createMockGemini({ responses: [
+      momentLocalizationResponse("source-1", [{ start: 4, end: 8 }]),
+      JSON.stringify({ version: "1", operations: [] })
+    ] });
+    const result = await withGeminiKey(() => createAiEditPlan({
+      prompt, hasMultipleVideos: false, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient
+    }));
+    assert.deepEqual(result.plan.operations[0].clips, [{ sourceId: "source-1", ...expectedRange }]);
+  }
+});
+
+test("visual moment localization confines explicit source scope and resolves semantic source scope first", async () => {
+  const catalog = sourceCatalog.slice(0, 2);
+  const explicitAi = createMockGemini({ responses: [
+    momentLocalizationResponse("source-2", [{ start: 5, end: 10 }]),
+    JSON.stringify(fullSequence(catalog, ["source-1", "source-2"]))
+  ] });
+  const explicit = await withGeminiKey(() => createAiEditPlan({
+    prompt: "From video 2, use the part where the person waves.", hasMultipleVideos: true,
+    sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: explicitAi
+  }));
+  assert.deepEqual(explicit.plan.operations[0].clips, [{ sourceId: "source-2", start: 5, end: 10 }]);
+  assert.equal(explicitAi.requests.length, 2);
+  assert.equal(explicitAi.requests[0].contents[1].fileData.fileUri, explicitAi.uploads[1].uri);
+
+  const semanticAi = createMockGemini({ responses: [
+    classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: false }]),
+    classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: true }]),
+    momentLocalizationResponse("source-2", [{ start: 6, end: 11 }]),
+    JSON.stringify(fullSequence(catalog, ["source-1", "source-2"]))
+  ] });
+  const semantic = await withGeminiKey(() => createAiEditPlan({
+    prompt: "From the greenery clip, use the part where the path appears.", hasMultipleVideos: true,
+    sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: semanticAi
+  }));
+  assert.deepEqual(semantic.plan.operations[0].clips, [{ sourceId: "source-2", start: 6, end: 11 }]);
+  assert.equal(semanticAi.requests.length, 4);
+  assert.equal(semanticAi.requests[2].contents[1].fileData.fileUri, semanticAi.uploads[1].uri);
+});
+
+test("unscoped visual moment requires exactly one candidate across all sources", async () => {
+  const catalog = sourceCatalog.slice(0, 2);
+  const uniqueAi = createMockGemini({ responses: [
+    momentLocalizationResponse("source-1", []),
+    momentLocalizationResponse("source-2", [{ start: 2, end: 6 }]),
+    JSON.stringify(fullSequence(catalog))
+  ] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Use the part where the bird takes off.", hasMultipleVideos: true,
+    sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: uniqueAi
+  }));
+  assert.deepEqual(result.plan.operations[0].clips, [{ sourceId: "source-2", start: 2, end: 6 }]);
+  assert.equal(uniqueAi.requests.length, 3);
+
+  for (const responses of [
+    [momentLocalizationResponse("source-1", []), momentLocalizationResponse("source-2", [])],
+    [momentLocalizationResponse("source-1", [{ start: 1, end: 3 }]), momentLocalizationResponse("source-2", [{ start: 2, end: 4 }])],
+    [momentLocalizationResponse("source-1", [{ start: 1, end: 3 }, { start: 4, end: 6 }]), momentLocalizationResponse("source-2", [])]
+  ]) {
+    const aiClient = createMockGemini({ responses });
+    await withGeminiKey(() => assert.rejects(
+      () => createAiEditPlan({ prompt: "Use the part where the bird takes off.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient }),
+      /needs Gemini video understanding/
+    ));
+    assert.equal(aiClient.requests.length, 2);
+  }
+});
+
+test("visual localization retries reuse the existing Gemini file and always cleans uploads", async () => {
+  const catalog = sourceCatalog.slice(0, 1);
+  const transient = Object.assign(new Error("high demand"), { status: 503 });
+  const aiClient = createMockGemini({
+    failures: [transient, null, null],
+    responses: [null, momentLocalizationResponse("source-1", [{ start: 2, end: 5 }]), JSON.stringify({ version: "1", operations: [] })]
+  });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Use the part where the car enters.", hasMultipleVideos: false, sourceCatalog: catalog,
+    sourceInputs: plannerSources(catalog), aiClient, retryOptions: { sleepFn: async () => {}, random: () => 0 }
+  }));
+  assert.equal(result.plan.version, "2");
+  assert.equal(aiClient.uploads.length, 1);
+  assert.equal(aiClient.requests.length, 3);
+  assert.equal(aiClient.requests[0].contents[1].fileData.fileUri, aiClient.requests[1].contents[1].fileData.fileUri);
+  assert.deepEqual(aiClient.deletes, ["files/1"]);
 });
 
 test("semantic multi-source planning classifies each Gemini video independently before planning", async () => {
