@@ -499,7 +499,10 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
         console.info("Gemini visual moment localization:", {
           sourceId: source.sourceId,
           momentId: momentRequest.momentId,
-          candidateCount: Array.isArray(parsedResponse?.moments?.[0]?.candidates) ? parsedResponse.moments[0].candidates.length : null
+          candidateCount: Array.isArray(parsedResponse?.moments?.[0]?.candidates) ? parsedResponse.moments[0].candidates.length : null,
+          candidates: Array.isArray(parsedResponse?.moments?.[0]?.candidates)
+            ? parsedResponse.moments[0].candidates.map((candidate) => ({ start: candidate?.start ?? null, end: candidate?.end ?? null }))
+            : null
         });
         localizations.push({ expectedSourceId: source.sourceId, response: parsedResponse });
       }

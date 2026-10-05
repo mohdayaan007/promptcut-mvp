@@ -15,8 +15,11 @@ export function buildVisualMomentLocalizationPrompt({ source, moment }) {
   return [
     "You localize visually observable moments inside this one supplied video. You do not create an edit plan.",
     "Judge only THIS source. Return every genuinely plausible occurrence of the requested moment; do not choose a best occurrence and do not compare other sources.",
+    "Treat the requested moment as a conjunction of all meaningful visible constraints. A candidate is valid only when every essential subject, object, action, setting, direction, relationship, and state in the request is visibly supported together in that same occurrence.",
+    "Never return a partial semantic match: generic action similarity is insufficient. If any essential concrete detail is absent, not visibly supported, or uncertain, return an empty candidates array. Prefer a false negative over stretching or inventing a partial match.",
+    "For example: 'person walks through the temple' is valid only when a person visibly walks through a temple or temple structure, not when they walk through a forest or generic path. 'car enters the frame' requires a car moving from outside or not visible into frame, not a stationary car already present. 'person sits on the chair' requires the person visibly performing the sitting action onto a chair, not merely a nearby chair.",
     "Each candidate must be a bounded visual occurrence with start and end timestamps in seconds. For paired boundaries, each candidate must pair the requested start and end events from the same plausible range.",
-    "If the event does not occur in this source, return an empty candidates array. Do not use filenames as visual evidence. Return only JSON matching the supplied schema.",
+    "Continue returning all genuinely valid full occurrences. If the event does not occur in this source, return an empty candidates array. Do not use filenames as visual evidence. Return only JSON matching the supplied schema.",
     `Authoritative source: ${JSON.stringify(source)}`,
     `Moment request: ${JSON.stringify(moment)}`
   ].join("\n\n");

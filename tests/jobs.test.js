@@ -12,7 +12,7 @@ import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations } from "@/lib/editor-core/ai-editor/planner";
-import { buildAiEditorPrompt } from "@/lib/editor-core/ai-editor/prompt";
+import { buildAiEditorPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { createExecutionController, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 
 const video = { name: "source.mp4", type: "video/mp4", size: 1024 };
@@ -422,6 +422,20 @@ test("visual moment localization schema constrains the source, moment ID, and bo
   assert.doesNotMatch(serialized, /source-1/);
 });
 
+test("visual moment localization prompt requires the full visible event without ranking partial matches", () => {
+  const prompt = buildVisualMomentLocalizationPrompt({
+    source: sourceCatalog[0],
+    moment: extractVisualMomentRequest("Use the part where the person walks through the temple.", sourceCatalog.slice(0, 1))
+  });
+  assert.match(prompt, /conjunction of all meaningful visible constraints/);
+  assert.match(prompt, /every essential subject, object, action, setting, direction, relationship, and state/);
+  assert.match(prompt, /Never return a partial semantic match/);
+  assert.match(prompt, /Prefer a false negative/);
+  assert.match(prompt, /do not choose a best occurrence/);
+  assert.match(prompt, /forest or generic path/);
+  assert.match(prompt, /Do not use filenames as visual evidence/);
+});
+
 test("visual moment localizations derive source-time ranges and reject ambiguous or malformed evidence", () => {
   const single = sourceCatalog.slice(0, 1);
   const eventRequest = extractVisualMomentRequest("Use the part where the car enters.", single);
@@ -537,6 +551,18 @@ test("unscoped visual moment requires exactly one candidate across all sources",
   }));
   assert.deepEqual(result.plan.operations[0].clips, [{ sourceId: "source-2", start: 2, end: 6 }]);
   assert.equal(uniqueAi.requests.length, 3);
+
+  const templeAi = createMockGemini({ responses: [
+    momentLocalizationResponse("source-1", []),
+    momentLocalizationResponse("source-2", [{ start: 2.1, end: 5.4 }]),
+    JSON.stringify(fullSequence(catalog))
+  ] });
+  const templeResult = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Use the part where the person walks through the temple.", hasMultipleVideos: true,
+    sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: templeAi
+  }));
+  assert.deepEqual(templeResult.plan.operations[0].clips, [{ sourceId: "source-2", start: 2.1, end: 5.4 }]);
+  assert.equal(templeAi.requests.length, 3);
 
   for (const responses of [
     [momentLocalizationResponse("source-1", []), momentLocalizationResponse("source-2", [])],
