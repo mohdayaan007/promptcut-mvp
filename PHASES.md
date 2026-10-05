@@ -514,9 +514,9 @@ Move Cliponaut from understanding WHICH uploaded source the user means to also u
 
 ## Phase 3A.5C-A — Visual Moment Selection
 
-Status: `🚧 IN PROGRESS`
+Status: `✅ COMPLETE`
 
-Given uploaded source video(s) and a visually observable event or state, Cliponaut should identify the correct source-local range and execute it through the existing V2 sequence pipeline.
+Given uploaded source video(s) and a visually observable event or state, Cliponaut identifies the correct source-local range and executes it through the existing V2 sequence pipeline. Production acceptance scenarios A–M passed.
 
 Representative prompts include:
 
@@ -553,6 +553,8 @@ For every requested moment, the server aggregates candidates across all in-scope
 
 Cliponaut must not choose the first source, earliest timestamp, upload order, or a creatively "best" match. Cross-source search for the same objective event is in scope; cross-source ranking is not.
 
+The server remains authoritative over the final `sourceId`, `start`, and `end`. It reuses existing V2 sequence execution; no new FFmpeg engine, database schema, Railway service, storage architecture, or durable-job system was introduced.
+
 ### Intended Architecture
 
 `prompt structural extraction → source-scope strategy → source resolution when scoped → independent visual moment localization → server candidate validation and aggregation → server-authoritative V2 sequence range → existing planning for remaining operations → validator → executor → FFmpeg`
@@ -585,6 +587,13 @@ Moment localization rejects safely for malformed or incomplete structured respon
 Phase 3A.5C-A does not include speech/transcript selection, best-moment or highlight ranking, automatic reels, autonomous pacing, music sync, B-roll, embeddings/vector databases, full autonomous timeline reasoning, or multi-moment composition.
 
 For controlled short and unambiguous clips, approximately ±2 seconds is an initial human production-testing tolerance for annotated visual boundaries. It is not a permanent universal guarantee and should be adjusted only after observing real localization behavior.
+
+### Implementation and Production Fixes
+
+- `68fa931` — Add visual moment selection
+- `9626561` — Tighten visual moment matching
+
+The targeted production fix strengthened the Gemini localization contract: the full requested visual meaning must match. For example, `person walks through the temple` must not match a person walking through a generic forest or path merely because the action is similar. All essential visible subject, object, action, setting, direction, relationship, and state constraints must jointly match. The server-side candidate aggregation safety rule was not weakened.
 
 ## Phase 3A.5C-B — Spoken Moment Selection
 

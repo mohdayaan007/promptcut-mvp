@@ -1114,113 +1114,122 @@ The earlier long-running five-source render was cancelled as a performance/opera
 
 ---
 
-# 37. Planned Phase 3A.5C-A Acceptance — Visual Moment Selection
+# 37. Phase 3A.5C-A Acceptance — Visual Moment Selection
 
-Status: `🚧 IN PROGRESS`
+Status: `✅ COMPLETE`
 
-Use short, visually obvious 720p/1080p test clips where possible—ideally 10–30 seconds—and run one focused scenario per job. Use mocked automated tests for wording variation, malformed responses, candidate cardinality, source aggregation, invalid timestamps, retries, cleanup, and regressions.
+All final production acceptance scenarios A–M passed. For controlled short, unambiguous clips, approximately ±2 seconds remains the initial human acceptance tolerance for annotated visual boundaries; it is not a permanent universal product guarantee.
 
-For controlled short, unambiguous clips, approximately ±2 seconds is the initial human acceptance tolerance for annotated visual boundaries. This is a production-testing threshold, not a permanent universal product guarantee.
+## A. Unique Single-Video Event
 
-## A. Unique Single-Video Visual Event
+Prompt: `Use the part where the person walks through the temple.`
 
-Prompt example:
-
-> Use the part where the car enters the frame.
-
-Expected: one bounded source-local event segment, not nearly the whole source merely because the event occurs somewhere within it.
+PASS — The output began roughly 1–2 seconds before temple entry, included the full walking-through-temple event, ended when the person exited, and was a playable bounded segment.
 
 ## B. Start Boundary
 
-Prompt example:
+Prompt: `Start when the person enters the temple.`
+Source: `Walking to the temple.mp4`
+Job: `ca41a030-484c-4db9-98df-73038850940d`
 
-> Start when the house appears.
-
-Expected: localized event start through the source’s natural end.
+PASS — Approximately 7.25-second output from the detected entrance through the natural source end.
 
 ## C. End Boundary
 
-Prompt example:
+Prompt: `End when the person exits the temple.`
+Job: `c14f8337-46a8-41c6-ab01-d39c09a0eb8f`
 
-> End when the person sits on the chair.
-
-Expected: source start through the localized event end.
+PASS — Approximately 8.21-second output from source start through the detected exit.
 
 ## D. Start and End Boundaries
 
-Prompt example:
+Prompt: `Start when the person enters the temple and end when the person exits the temple.`
+Job: `cba9f785-ac25-4553-93be-342d1a8350ea`
 
-> Start when the person walks inside the home and end when he sits on the chair.
+PASS — Approximately 5.17-second bounded segment between entrance and exit.
 
-Expected: one plausible paired range with `end > start`.
+## E. Explicit Source plus Moment
 
-## E. Explicit Source plus Semantic Moment
+Prompt: `From video 2, use the part where the person walks through the temple.`
+Sources: `Forest_Path_Video_Generation.mp4`, `Walking to the temple.mp4`
+Job: `7bbc1829-172b-44eb-8ca3-bae86fd0d8c0`
 
-Prompt example:
+PASS — Temple-only segment; no Forest Path substitution.
 
-> From video 2, use the part where the camera pans toward the building.
+## F. Semantic Source plus Moment
 
-Expected: localization occurs only in source-2; no other source may be substituted.
+Prompt: `From the temple clip, use the part where the person walks through the temple.`
+Sources: Forest Path + Temple
+Job: `011c2e8a-f4f2-4b26-854c-973186cef9fd`
 
-## F. Semantic Source plus Semantic Moment
+PASS — Semantic source resolved correctly before localization.
 
-Prompt example:
+## G. Unscoped Multi-Source Unique Match
 
-> From the greenery clip, use the part where the person walks into frame.
+Prompt: `Use the part where the person walks through the temple.`
 
-Expected: semantic source resolution occurs first, then localization occurs only in that resolved source.
+Initial job: `5dbf8296-b877-4ace-bbc9-1e054101bcc2`
 
-## G. Unscoped Two-Source Search — Unique Match
+The initial production run failed safely with `MOMENT_AMBIGUOUS`: the Forest Path source incorrectly returned a candidate alongside the Temple source. This exposed an overly permissive Gemini partial-semantic match; the server aggregation safety behavior was correct.
 
-Use two sources where only one contains the described event.
+Targeted fix: `9626561` — Tighten visual moment matching
+Retest job: `e6e3e097-80a7-4c1d-91d4-45e11d3d3afb`
 
-Expected: both sources are searched independently; the unique candidate source and range are used.
+PASS — Diagnostics reported Forest Path `candidateCount: 0`, Temple `candidateCount: 1`, and aggregated `sourceIds: ['source-2']`, `candidateCount: 1`. The correct temple-only output rendered. Ambiguity behavior remained strict.
 
-## H. Unscoped Multi-Source Search — No Match
+## H. Unscoped No Match
 
-Use sources where none contains the described event.
+Prompt: `Use the part where a car drives through the frame.`
+Sources: Forest Path + Temple
+Job: `c93e8f6a-82b2-434b-ab3a-92adb175c083`
 
-Expected: safe no-match rejection; no invented range or output.
+PASS — `MOMENT_NO_CANDIDATE`; no fabricated output rendered.
 
-## I. Unscoped Multi-Source Search — Cross-Source Ambiguity
+## I. Cross-Source Ambiguity
 
-Use two or more sources with plausible matches for the same event.
+Prompt: `Use the part where the person walks through the temple.`
+Sources: Temple video uploaded as both source-1 and source-2
+Job: `60deaf09-1a6f-46db-8a33-b9b536f53fc5`
 
-Expected: safe ambiguity rejection; do not choose the first, earliest, or visually preferred candidate.
+PASS — `MOMENT_AMBIGUOUS`, `candidateCount: 2`; no arbitrary source was selected and no output rendered.
 
 ## J. Same-Source Ambiguity
 
-Use one source containing two genuinely plausible occurrences of the same event.
+Fixture: `cliponaut-same-source-ambiguity.mp4` — Walking to the temple (8s), Forest Path separator (2s), then the same Walking to the temple excerpt (8s); approximately 18 seconds total.
+Prompt: `Use the part where the person walks through the temple.`
+Job: `74549755-4581-4b4d-9662-ad59f9c230cd`
 
-Expected: safe ambiguity rejection.
+PASS — source-1 returned `candidateCount: 2`, resulting in `MOMENT_AMBIGUOUS`. No output rendered and neither occurrence was arbitrarily selected.
 
-## K. Invalid Timestamp and Structured-Response Rejection
+## K. V1 Regression
 
-Verify safe rejection for malformed responses, wrong source IDs, duplicate/missing/unknown moment IDs, missing candidate arrays, non-numeric/non-finite/negative timestamps, `end <= start`, source-duration overflow, and incomplete unscoped source response sets.
+Prompt: `Make this video black and white.`
+Job: `edccd9f7-9a25-4354-89b2-1ccee24a88b1`
 
-## L. V1 Single-Video Regression
+PASS — Existing V1 behavior remains functional.
 
-Prompt:
+## L. V2 Explicit-Source Regression
 
-> Make this video black and white.
+Prompt: `Use video 2, then video 1.`
+Sources: `Raodmm.mp4`, `Fish Tawa Fry.mp4`
+Job: `bfb673ad-caaf-4f66-b4bf-0face2334bc2`
 
-Expected: existing V1 behavior remains functional.
+PASS — Output order: Fish Tawa Fry → Road.
 
-## M. V2 Explicit-Source Regression
+## M. Semantic-Source Regression
 
-Prompt:
+Prompt: `Use the talking clip first, then the greenery footage.`
+Sources: `Intro Cliponaut Testing.mp4`, `Kerala Greenery.mp4`
+Job: `eb512f61-fcf3-45c8-98c5-92f6ad7b433a`
 
-> Use video 2, then video 1.
+PASS — Output: Talking → Greenery. Existing Phase 3A.5B-B behavior remains functional.
 
-Expected: existing explicit V2 ordering remains functional.
+### Engineering Verification
 
-## N. Existing Semantic-Source Regression
-
-Prompt:
-
-> Use the talking clip first, then the greenery footage.
-
-Expected: completed Phase 3A.5B-B semantic source ordering remains functional.
+- `npm run test:jobs` — 49/49 PASS
+- `npm run lint` — PASS with the existing unrelated `<img>` warning
+- `npm run build` — PASS locally
+- `git diff --check` — PASS
 
 ---
 
