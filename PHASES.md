@@ -504,6 +504,106 @@ These should be measured in production rather than guessed.
 
 ---
 
+# Phase 3A.5C — Semantic Moment Selection
+
+Status: `🚧 IN PROGRESS`
+
+Purpose:
+
+Move Cliponaut from understanding WHICH uploaded source the user means to also understanding WHERE INSIDE uploaded footage a visually or semantically described moment occurs.
+
+## Phase 3A.5C-A — Visual Moment Selection
+
+Status: `🚧 IN PROGRESS`
+
+Given uploaded source video(s) and a visually observable event or state, Cliponaut should identify the correct source-local range and execute it through the existing V2 sequence pipeline.
+
+Representative prompts include:
+
+- `Use the part where the car enters the frame.`
+- `Start when the house appears.`
+- `End when the person sits on the chair.`
+- `Start when the person walks inside the home and end when he sits on the chair.`
+- `From video 2, use the part where the camera pans toward the building.`
+- `From the greenery clip, use the part where the person walks into frame.`
+
+These examples describe structural intent, not a fixed keyword list.
+
+### Moment Modes
+
+- `EVENT_SEGMENT`: use/show/keep/trim to the bounded segment where an event occurs.
+- `START_BOUNDARY`: localized event start through the natural end of the selected source.
+- `END_BOUNDARY`: source start through the localized event end.
+- `START_END_BOUNDARY`: localized start event through localized end event; the server requires `end > start`.
+
+For paired boundaries, localization returns plausible paired ranges rather than combining unrelated timestamps.
+
+### Source Scope and Candidate Safety
+
+- One source: search `source-1`.
+- Explicit source: search only that authoritative source.
+- Semantic source: first resolve it through Phase 3A.5B-B, then search only the resolved source.
+- Multiple sources with no source scope: search every source independently for the same objective visual event.
+
+For every requested moment, the server aggregates candidates across all in-scope sources:
+
+- 0 candidates: safe no-match rejection.
+- Exactly 1 candidate: proceed with its authoritative source and range.
+- 2 or more candidates: safe ambiguity rejection.
+
+Cliponaut must not choose the first source, earliest timestamp, upload order, or a creatively "best" match. Cross-source search for the same objective event is in scope; cross-source ranking is not.
+
+### Intended Architecture
+
+`prompt structural extraction → source-scope strategy → source resolution when scoped → independent visual moment localization → server candidate validation and aggregation → server-authoritative V2 sequence range → existing planning for remaining operations → validator → executor → FFmpeg`
+
+Moment localization uses dedicated structured Gemini calls before final planning. It is an intermediate response, not a new edit-plan or FFmpeg operation. The final planner must not change the resolved source, range, or order; the server preserves/restores the authoritative localized sequence before final validation and execution.
+
+The existing V2 sequence representation, validator, and executor can support a one-source V2 sequence. Localized one-source requests should canonicalize into V2 rather than being forced into V1 trim semantics.
+
+### Gemini Files and Request Discipline
+
+Within one job, each source is uploaded and activated once, then reused for semantic source classification when needed, visual moment localization, and final planning. Existing finally-path cleanup remains responsible for deleting temporary Gemini files.
+
+For an unscoped multi-source request, each already-active source file receives an independent localization call; Gemini is not asked to compare sources or select a winner.
+
+Engineering request-count observations, excluding upload/activation polling and retries:
+
+- one source plus visual moment: about 2 generate calls
+- two sources plus explicit source: about 2 generate calls
+- two sources plus semantic source: about 4 generate calls
+- two unscoped sources: about 3 generate calls
+- three unscoped sources: about 4 generate calls
+- five unscoped sources: about 6 generate calls
+
+Retries can increase these counts within existing bounded retry behavior. Production testing should use short, obvious clips and focused scenarios; broad coverage belongs in mocked automated tests.
+
+### Validation and Out of Scope
+
+Moment localization rejects safely for malformed or incomplete structured responses; wrong, unknown, duplicate, or missing source/moment identifiers; invalid candidate cardinality; non-numeric/non-finite/negative timestamps; `end <= start`; and ranges beyond the authoritative source duration. Unscoped searches must return one valid response for every source the server expected to search.
+
+Phase 3A.5C-A does not include speech/transcript selection, best-moment or highlight ranking, automatic reels, autonomous pacing, music sync, B-roll, embeddings/vector databases, full autonomous timeline reasoning, or multi-moment composition.
+
+For controlled short and unambiguous clips, approximately ±2 seconds is an initial human production-testing tolerance for annotated visual boundaries. It is not a permanent universal guarantee and should be adjusted only after observing real localization behavior.
+
+## Phase 3A.5C-B — Spoken Moment Selection
+
+Status: `⏳ PLANNED`
+
+Purpose:
+
+Speech/transcript-aware moment selection, such as `Start when I say “Welcome to Kerala”.` or `Use the part where I explain pricing.`
+
+## Phase 3A.5C-C — Multi-Moment Composition
+
+Status: `⏳ PLANNED`
+
+Purpose:
+
+Combine multiple independently described semantic moments into one ordered edit, such as showing food being prepared, then served, then tasted.
+
+---
+
 # Render Timeout
 
 Status: `⏳ PLANNED / OPERATIONAL FOLLOW-UP`

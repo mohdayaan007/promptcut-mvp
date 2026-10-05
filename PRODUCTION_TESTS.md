@@ -1114,7 +1114,117 @@ The earlier long-running five-source render was cancelled as a performance/opera
 
 ---
 
-# 37. Product Quality Standard
+# 37. Planned Phase 3A.5C-A Acceptance — Visual Moment Selection
+
+Status: `🚧 IN PROGRESS`
+
+Use short, visually obvious 720p/1080p test clips where possible—ideally 10–30 seconds—and run one focused scenario per job. Use mocked automated tests for wording variation, malformed responses, candidate cardinality, source aggregation, invalid timestamps, retries, cleanup, and regressions.
+
+For controlled short, unambiguous clips, approximately ±2 seconds is the initial human acceptance tolerance for annotated visual boundaries. This is a production-testing threshold, not a permanent universal product guarantee.
+
+## A. Unique Single-Video Visual Event
+
+Prompt example:
+
+> Use the part where the car enters the frame.
+
+Expected: one bounded source-local event segment, not nearly the whole source merely because the event occurs somewhere within it.
+
+## B. Start Boundary
+
+Prompt example:
+
+> Start when the house appears.
+
+Expected: localized event start through the source’s natural end.
+
+## C. End Boundary
+
+Prompt example:
+
+> End when the person sits on the chair.
+
+Expected: source start through the localized event end.
+
+## D. Start and End Boundaries
+
+Prompt example:
+
+> Start when the person walks inside the home and end when he sits on the chair.
+
+Expected: one plausible paired range with `end > start`.
+
+## E. Explicit Source plus Semantic Moment
+
+Prompt example:
+
+> From video 2, use the part where the camera pans toward the building.
+
+Expected: localization occurs only in source-2; no other source may be substituted.
+
+## F. Semantic Source plus Semantic Moment
+
+Prompt example:
+
+> From the greenery clip, use the part where the person walks into frame.
+
+Expected: semantic source resolution occurs first, then localization occurs only in that resolved source.
+
+## G. Unscoped Two-Source Search — Unique Match
+
+Use two sources where only one contains the described event.
+
+Expected: both sources are searched independently; the unique candidate source and range are used.
+
+## H. Unscoped Multi-Source Search — No Match
+
+Use sources where none contains the described event.
+
+Expected: safe no-match rejection; no invented range or output.
+
+## I. Unscoped Multi-Source Search — Cross-Source Ambiguity
+
+Use two or more sources with plausible matches for the same event.
+
+Expected: safe ambiguity rejection; do not choose the first, earliest, or visually preferred candidate.
+
+## J. Same-Source Ambiguity
+
+Use one source containing two genuinely plausible occurrences of the same event.
+
+Expected: safe ambiguity rejection.
+
+## K. Invalid Timestamp and Structured-Response Rejection
+
+Verify safe rejection for malformed responses, wrong source IDs, duplicate/missing/unknown moment IDs, missing candidate arrays, non-numeric/non-finite/negative timestamps, `end <= start`, source-duration overflow, and incomplete unscoped source response sets.
+
+## L. V1 Single-Video Regression
+
+Prompt:
+
+> Make this video black and white.
+
+Expected: existing V1 behavior remains functional.
+
+## M. V2 Explicit-Source Regression
+
+Prompt:
+
+> Use video 2, then video 1.
+
+Expected: existing explicit V2 ordering remains functional.
+
+## N. Existing Semantic-Source Regression
+
+Prompt:
+
+> Use the talking clip first, then the greenery footage.
+
+Expected: completed Phase 3A.5B-B semantic source ordering remains functional.
+
+---
+
+# 38. Product Quality Standard
 
 A production test is not merely checking whether a file was generated.
 
@@ -1133,7 +1243,7 @@ A technically successful render with the wrong semantic result is a failed produ
 
 ---
 
-# 38. Final Testing Principle
+# 39. Final Testing Principle
 
 Cliponaut's goal is not:
 
