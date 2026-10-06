@@ -15,7 +15,8 @@ export function createSourceCatalog(sources = [], media = []) {
         filename: source.name,
         duration: metadata.duration,
         width: metadata.width,
-        height: metadata.height
+        height: metadata.height,
+        hasAudio: metadata.hasAudio
       };
     });
 }

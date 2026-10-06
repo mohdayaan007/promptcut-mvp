@@ -1,7 +1,10 @@
 import { GoogleGenAI, createPartFromUri } from "@google/genai";
-import { createEditPlan, extractSemanticSourceReferences, extractVisualMomentRequest, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { createEditPlan, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { buildAiEditorPrompt, buildSemanticSourceClassificationPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
+import { findPhraseOccurrences, pairPhraseOccurrences } from "@/lib/editor-core/spoken-transcript";
+import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
+import { EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
 const FILE_PROCESSING_TIMEOUT_MS = 60_000;
@@ -108,6 +111,11 @@ function semanticSelectionError(reason, details = {}) {
 
 function visualMomentError(reason, details = {}) {
   if (reason) console.error("Visual moment localization rejected:", { reason, ...details });
+  return new UnsupportedEditRequestError("This edit needs Gemini video understanding");
+}
+
+function spokenMomentError(reason, details = {}) {
+  if (reason) console.error("Spoken moment localization rejected:", { reason, ...details });
   return new UnsupportedEditRequestError("This edit needs Gemini video understanding");
 }
 
@@ -338,16 +346,38 @@ export function resolveVisualMomentLocalizations(localizations, momentRequest, s
   return candidates[0];
 }
 
-function applyAuthoritativeMomentSequence(plan, localizedMoment) {
+function applyAuthoritativeMomentSequence(plan, localizedMoment, { reject = visualMomentError, mismatchReason = "MOMENT_FINAL_PLAN_SOURCE_MISMATCH" } = {}) {
   const authoritativeSequence = {
     type: "sequence",
     clips: [{ sourceId: localizedMoment.sourceId, start: localizedMoment.start, end: localizedMoment.end }]
   };
   const nonSequenceOperations = plan.operations.filter((operation) => operation.type !== "sequence");
   if (nonSequenceOperations.some((operation) => operation.sourceId && operation.sourceId !== localizedMoment.sourceId)) {
-    throw visualMomentError("MOMENT_FINAL_PLAN_SOURCE_MISMATCH", { sourceId: localizedMoment.sourceId });
+    throw reject(mismatchReason, { sourceId: localizedMoment.sourceId });
   }
   return { ...plan, version: "2", operations: [authoritativeSequence, ...nonSequenceOperations] };
+}
+
+function speechSourceForMoment(momentRequest, sourceCatalog, resolvedSemanticSources) {
+  const scope = momentRequest.sourceScope;
+  if (scope.type === "unscoped") throw spokenMomentError("SPEECH_UNSCOPED_MULTI_SOURCE");
+  return localizationSourcesForMoment(momentRequest, sourceCatalog, resolvedSemanticSources)[0];
+}
+
+function resolveExactSpokenRange(transcript, momentRequest, source) {
+  const starts = momentRequest.startPhrase ? findPhraseOccurrences(transcript, momentRequest.startPhrase, momentRequest.mode) : [];
+  const ends = momentRequest.endPhrase ? findPhraseOccurrences(transcript, momentRequest.endPhrase, momentRequest.mode) : [];
+  const candidates = momentRequest.mode === "START_END_BOUNDARY"
+    ? pairPhraseOccurrences(starts, ends).map(({ start, end }) => ({ start, end }))
+    : momentRequest.mode === "START_BOUNDARY"
+      ? starts.map((match) => ({ start: match.start, end: source.duration }))
+      : momentRequest.mode === "END_BOUNDARY"
+        ? ends.map((match) => ({ start: 0, end: match.end }))
+        : starts.map((match) => ({ start: match.start, end: match.end }));
+  console.info("Spoken moment candidate set:", { momentId: momentRequest.momentId, sourceId: source.sourceId, candidateCount: candidates.length });
+  if (!candidates.length) throw spokenMomentError("SPEECH_NO_CANDIDATE", { momentId: momentRequest.momentId, sourceId: source.sourceId });
+  if (candidates.length > 1) throw spokenMomentError("SPEECH_AMBIGUOUS", { momentId: momentRequest.momentId, sourceId: source.sourceId, candidateCount: candidates.length });
+  return { sourceId: source.sourceId, ...candidates[0] };
 }
 
 function validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources) {
@@ -390,10 +420,11 @@ async function waitForActiveFile(ai, uploadedFile) {
   return file;
 }
 
-async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions }) {
+async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions }) {
   const ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const uploadedFiles = [];
   const semanticReferences = extractSemanticSourceReferences(prompt, sourceCatalog);
+  const spokenMomentRequest = extractSpokenMomentRequest(prompt, sourceCatalog);
   const momentRequest = extractVisualMomentRequest(prompt, sourceCatalog);
   const requiresVisualUnderstanding = semanticReferences.length > 0;
   if (requiresVisualUnderstanding) {
@@ -465,6 +496,21 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     }
 
     let localizedMoment;
+    if (spokenMomentRequest?.type === "semantic") {
+      throw spokenMomentError("SPEECH_SEMANTIC_DEFERRED", { momentId: spokenMomentRequest.momentId });
+    }
+    if (spokenMomentRequest) {
+      const source = speechSourceForMoment(spokenMomentRequest, sourceCatalog, resolvedSemanticSources);
+      const input = sourceInputs.find((entry) => entry.source?.sourceId === source.sourceId);
+      if (!input) throw spokenMomentError("SPEECH_SOURCE_MISMATCH", { sourceId: source.sourceId });
+      if (!source.hasAudio) throw spokenMomentError("SPEECH_NO_CANDIDATE", { momentId: spokenMomentRequest.momentId, sourceId: source.sourceId });
+      if (!scratchDirectory) throw spokenMomentError("SPEECH_MISSING_SCRATCH_DIRECTORY", { sourceId: source.sourceId });
+      const transcript = await transcribeSource({
+        inputPath: input.inputPath, scratchDirectory, sourceId: source.sourceId, duration: source.duration,
+        executionController, aiClient: ai, ...transcriptionOptions
+      });
+      localizedMoment = resolveExactSpokenRange(transcript, spokenMomentRequest, source);
+    }
     if (momentRequest) {
       const targetSources = localizationSourcesForMoment(momentRequest, sourceCatalog, resolvedSemanticSources);
       const activeSourceById = new Map(activeSources.map((activeSource) => [activeSource.source.sourceId, activeSource]));
@@ -524,7 +570,9 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     if (!response.text) throw new Error("Gemini returned no edit plan");
     let plan = JSON.parse(response.text);
     if (!Array.isArray(plan.operations)) throw new Error("Gemini returned a malformed edit plan");
-    if (localizedMoment) plan = applyAuthoritativeMomentSequence(plan, localizedMoment);
+    if (localizedMoment) plan = applyAuthoritativeMomentSequence(plan, localizedMoment, spokenMomentRequest
+      ? { reject: spokenMomentError, mismatchReason: "SPEECH_SOURCE_MISMATCH" }
+      : undefined);
     if (!plan.operations.length) {
       if (requiresVisualUnderstanding) logSemanticFinalPlanMismatch(plan);
       throw new UnsupportedEditRequestError("This edit is not supported yet");
@@ -544,11 +592,11 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
   }
 }
 
-export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs, prompt, hasMultipleVideos = false, sourceCatalog = [], aiClient, retryOptions }) {
+export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs, prompt, hasMultipleVideos = false, sourceCatalog = [], aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions }) {
   const planningSources = sourceInputs?.length
     ? sourceInputs
     : inputPath ? [{ inputPath, inputMimeType, source: sourceCatalog[0] }] : [];
-  const requiresVisualUnderstanding = requiresVisualSourceUnderstanding(prompt, sourceCatalog) || requiresVisualMomentUnderstanding(prompt, sourceCatalog);
+  const requiresVisualUnderstanding = requiresVisualSourceUnderstanding(prompt, sourceCatalog) || requiresVisualMomentUnderstanding(prompt, sourceCatalog) || requiresSpokenMomentUnderstanding(prompt, sourceCatalog);
   if (!process.env.GEMINI_API_KEY || !prompt.trim()) {
     if (requiresVisualUnderstanding) throw new UnsupportedEditRequestError("This edit needs Gemini video understanding");
     return {
@@ -559,13 +607,16 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
 
   try {
     return {
-      plan: await createGeminiPlan({ sourceInputs: planningSources, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions }),
+      plan: await createGeminiPlan({ sourceInputs: planningSources, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions }),
       source: "gemini"
     };
   } catch (error) {
+    if (error instanceof EditExecutionCancelledError) throw error;
     if (error instanceof UnsupportedEditRequestError) throw error;
     if (requiresVisualUnderstanding) {
-      console.error("Gemini visual planning failed:", {
+      const spoken = requiresSpokenMomentUnderstanding(prompt, sourceCatalog);
+      console.error(spoken ? "Gemini spoken planning failed:" : "Gemini visual planning failed:", {
+        ...(spoken ? { reason: error?.reason || "SPEECH_TRANSCRIPTION_FAILED" } : {}),
         name: error?.name || null,
         message: safePlanningErrorMessage(error),
         status: error?.status ?? error?.statusCode ?? error?.code ?? error?.$metadata?.httpStatusCode ?? null,

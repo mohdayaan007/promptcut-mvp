@@ -7,11 +7,11 @@ import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
 import { ACTIVE_JOB_STATUSES, isActiveJobStatus, isRecoverableJobStatus } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
-import { createEditPlan, extractSemanticSourceReferences, extractVisualMomentRequest, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { createEditPlan, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations } from "@/lib/editor-core/ai-editor/planner";
+import { createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { createExecutionController, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
@@ -35,13 +35,14 @@ function plannerSources(catalog = sourceCatalog) {
   return catalog.map((source) => ({ inputPath: `/tmp/${source.sourceId}.mp4`, inputMimeType: "video/mp4", source }));
 }
 
-function createMockGemini({ responseText, responses = [], failures = [] } = {}) {
+function createMockGemini({ responseText, responses = [], failures = [], transcriptionInteractions = [] } = {}) {
   const uploads = [];
   const deletes = [];
   const requests = [];
   let generateCalls = 0;
+  const interactionRequests = [];
   return {
-    uploads, deletes, requests,
+    uploads, deletes, requests, interactionRequests,
     files: {
       upload: async ({ file }) => {
         const uploaded = { name: `files/${uploads.length + 1}`, uri: `gemini://${file}`, mimeType: "video/mp4", state: "ACTIVE" };
@@ -59,6 +60,9 @@ function createMockGemini({ responseText, responses = [], failures = [] } = {}) 
         if (failure) throw failure;
         return { text: responses[responseIndex] ?? responseText };
       }
+    },
+    interactions: {
+      create: async (request) => { interactionRequests.push(request); return transcriptionInteractions.shift() || { steps: [] }; }
     }
   };
 }
@@ -125,6 +129,7 @@ const transcriptWords = [
   { text: "Clip", start: 5.5, end: 5.8 }, { text: "or", start: 5.8, end: 5.9 }, { text: "Not.", start: 5.9, end: 6.3 }
 ];
 function transcript(words = transcriptWords) { return createCanonicalTranscript({ sourceId: "source-1", duration: 10, words }); }
+function speechCatalog(catalog = sourceCatalog) { return catalog.map((source) => ({ ...source, hasAudio: true })); }
 
 test("spoken transcript validation rejects malformed and non-monotonic words", () => {
   assert.deepEqual(validateTranscriptWords({ sourceId: "source-1", duration: 2, words: [{ text: "Hi", start: 0, end: 1 }] }), [{ text: "Hi", start: 0, end: 1 }]);
@@ -165,6 +170,152 @@ test("spoken phrase ranges and ordered pairs remain deterministic", () => {
   assert.deepEqual(pairPhraseOccurrences(end, start), []);
 });
 
+test("spoken routing takes exact and semantic speech out of visual localization", () => {
+  const one = speechCatalog([sourceCatalog[0]]);
+  const exact = extractSpokenMomentRequest('Use the part where she says "Welcome".', one);
+  assert.deepEqual(exact, { momentId: "moment-1", type: "exact", mode: "EVENT_SEGMENT", startPhrase: "Welcome", sourceScope: { type: "single", sourceId: "source-1" } });
+  assert.equal(extractVisualMomentRequest('Use the part where she says "Welcome".', one), null);
+  const semantic = extractSpokenMomentRequest("Start when I begin talking about Cliponaut.", one);
+  assert.equal(semantic.type, "semantic");
+  assert.equal(requiresSpokenMomentUnderstanding("Start when I begin talking about Cliponaut.", one), true);
+  assert.equal(extractVisualMomentRequest("Start when I begin talking about Cliponaut.", one), null);
+  assert.ok(extractVisualMomentRequest("Use the part where the car enters the frame.", one));
+});
+
+test("ordinary visual moments remain on the visual path without speech transcription", async () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const aiClient = createMockGemini({ responses: [
+    momentLocalizationResponse("source-1", [{ start: 3, end: 7 }]),
+    JSON.stringify({ version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 3, end: 7 }] }] })
+  ] });
+  assert.equal(requiresSpokenMomentUnderstanding("Use the part where the car enters the frame.", catalog), false);
+  assert.ok(requiresVisualMomentUnderstanding("Use the part where the car enters the frame.", catalog));
+  await withGeminiKey(() => createAiEditPlan({ prompt: "Use the part where the car enters the frame.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient }));
+  assert.equal(aiClient.interactionRequests.length, 0);
+});
+
+test("exact spoken modes create server-authoritative V2 ranges without visual localization", async () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const cases = [
+    ['Use the part where she says "Welcome to Kerala".', { start: 1, end: 1.9 }],
+    ['Start when I say "Welcome to Kerala".', { start: 1, end: 20 }],
+    ['End after he says "Cliponaut".', { start: 0, end: 6.3 }],
+    ['Start when I say "Welcome to Kerala" and end when I say "Cliponaut".', { start: 1, end: 6.3 }]
+  ];
+  for (const [prompt, range] of cases) {
+    const aiClient = createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] }), transcriptionInteractions: [interaction(transcriptWords.map((word) => ({ text: word.text, start_offset: `${word.start}s`, end_offset: `${word.end}s` })))] });
+    const result = await withGeminiKey(() => createAiEditPlan({ prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient, scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} } }));
+    assert.deepEqual(result.plan.operations[0], { type: "sequence", clips: [{ sourceId: "source-1", ...range }] });
+    assert.deepEqual(result.plan.operations[1], { type: "color_grade", style: "bw" });
+    assert.equal(aiClient.requests.length, 1);
+  }
+});
+
+test("Stage 3 preserves Cliponaut normalization and global B&W beside the authoritative spoken range", async () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const aiClient = createMockGemini({
+    responseText: JSON.stringify({ version: "2", operations: [
+      { type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 20 }] },
+      { type: "color_grade", style: "bw" }
+    ] }),
+    transcriptionInteractions: [interaction(transcriptWords.map((word) => ({ text: word.text, start_offset: `${word.start}s`, end_offset: `${word.end}s` })))]
+  });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: 'Use the part where I say "Cliponaut" and make it black and white.', sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 5.5, end: 6.3 }] },
+    { type: "color_grade", style: "bw" }
+  ]);
+});
+
+test("spoken exact matching preserves normalization, ambiguity, source scoping, and final-plan protection", async () => {
+  const catalog = speechCatalog(sourceCatalog);
+  const words = transcriptWords.map((word) => ({ text: word.text, start_offset: `${word.start}s`, end_offset: `${word.end}s` }));
+  const explicit = createMockGemini({ responseText: JSON.stringify(fullSequence(catalog)), transcriptionInteractions: [interaction(words)] });
+  const result = await withGeminiKey(() => createAiEditPlan({ prompt: 'From video 2, use the part where I say "$12".', hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: explicit, scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} } }));
+  assert.deepEqual(explicit.uploads.filter((file) => file.uri.includes("speech.m4a")).map((file) => file.uri), ["gemini:///scratch/source-2-speech.m4a"]);
+  assert.equal(result.plan.operations[0].clips[0].sourceId, "source-2");
+  await withGeminiKey(() => assert.rejects(
+    () => createAiEditPlan({ prompt: 'Use the part where I say "Welcome".', hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: createMockGemini(), scratchDirectory: "/scratch" }),
+    UnsupportedEditRequestError
+  ));
+  const repeated = [...words, { text: "Welcome", start_offset: "7s", end_offset: "7.3s" }];
+  await withGeminiKey(() => assert.rejects(
+    () => createAiEditPlan({ prompt: 'Use the part where I say "Welcome".', sourceCatalog: speechCatalog([sourceCatalog[0]]), sourceInputs: plannerSources([sourceCatalog[0]]), aiClient: createMockGemini({ transcriptionInteractions: [interaction(repeated)] }), scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} } }),
+    UnsupportedEditRequestError
+  ));
+});
+
+test("final planner timestamps never replace a resolved spoken range", async () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const aiClient = createMockGemini({
+    responseText: JSON.stringify({ version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 9, end: 15 }] }] }),
+    transcriptionInteractions: [interaction([{ text: "Welcome", start_offset: "1s", end_offset: "1.4s" }])]
+  });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: 'Use the part where I say "Welcome".', sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 1.4 }] }]);
+});
+
+test("semantic video scope resolves before transcribing only the resolved spoken source", async () => {
+  const catalog = speechCatalog(sourceCatalog);
+  const words = transcriptWords.map((word) => ({ text: word.text, start_offset: `${word.start}s`, end_offset: `${word.end}s` }));
+  const aiClient = createMockGemini({
+    responses: [
+      classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: false }]),
+      classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: true }]),
+      classificationResponse("source-3", [{ referenceId: "semantic-1", plausibleMatch: false }]),
+      JSON.stringify(fullSequence(catalog))
+    ],
+    transcriptionInteractions: [interaction(words)]
+  });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: 'From the talking clip, use the part where I say "Welcome to Kerala".', hasMultipleVideos: true,
+    sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient, scratchDirectory: "/scratch",
+    transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.equal(aiClient.uploads.filter((file) => file.uri.includes("speech.m4a")).length, 1);
+  assert.deepEqual(result.plan.operations[0].clips, [{ sourceId: "source-2", start: 1, end: 1.9 }]);
+});
+
+test("spoken no-match, paired ambiguity, and final source mismatch reject safely", async () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const make = (words, responseText = JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] })) => createAiEditPlan({
+    prompt: 'Use the part where I say "Missing".', sourceCatalog: catalog, sourceInputs: plannerSources(catalog),
+    aiClient: createMockGemini({ responseText, transcriptionInteractions: [interaction(words)] }), scratchDirectory: "/scratch",
+    transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  });
+  await withGeminiKey(() => assert.rejects(() => make([{ text: "Other", start_offset: "1s", end_offset: "1.2s" }]), UnsupportedEditRequestError));
+  const repeatedPairs = [
+    { text: "Welcome", start_offset: "1s", end_offset: "1.2s" }, { text: "Thanks", start_offset: "2s", end_offset: "2.2s" },
+    { text: "Welcome", start_offset: "3s", end_offset: "3.2s" }, { text: "Thanks", start_offset: "4s", end_offset: "4.2s" }
+  ];
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+    prompt: 'Start when I say "Welcome" and end when I say "Thanks".', sourceCatalog: catalog, sourceInputs: plannerSources(catalog),
+    aiClient: createMockGemini({ transcriptionInteractions: [interaction(repeatedPairs)] }), scratchDirectory: "/scratch",
+    transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }), UnsupportedEditRequestError));
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+    prompt: 'Use the part where I say "Welcome".', sourceCatalog: catalog, sourceInputs: plannerSources(catalog), scratchDirectory: "/scratch",
+    aiClient: createMockGemini({ responseText: JSON.stringify({ version: "2", operations: [{ type: "color_grade", sourceId: "source-2", style: "bw" }] }), transcriptionInteractions: [interaction([{ text: "Welcome", start_offset: "1s", end_offset: "1.2s" }])] }),
+    transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }), UnsupportedEditRequestError));
+});
+
+test("a source without an audio stream rejects speech selection without transcription", async () => {
+  const catalog = [{ ...sourceCatalog[0], hasAudio: false }];
+  const aiClient = createMockGemini();
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+    prompt: 'Use the part where I say "Welcome".', sourceCatalog: catalog, sourceInputs: plannerSources(catalog),
+    aiClient, scratchDirectory: "/scratch"
+  }), UnsupportedEditRequestError));
+  assert.equal(aiClient.uploads.filter((file) => file.uri.includes("speech.m4a")).length, 0);
+});
+
 test("spoken transcription annotations parse Gemini word_info offsets without assigning IDs", () => {
   assert.deepEqual(wordAnnotations({ steps: [{ content: [{ annotations: [{ type: "word_info", text: "Welcome", start_offset: "0.8s", end_offset: "1.2s" }, { type: "other", text: "ignored" }] }] }] }), [{ text: "Welcome", start: 0.8, end: 1.2 }]);
 });
@@ -175,7 +326,7 @@ test("speech extraction uses only a caller scratch M4A with exact-child ownershi
   const pending = extractSpeechAudio({ inputPath: "/source.mp4", scratchDirectory: "/scratch", sourceId: "source-1", executionController: controller, spawn: (command, args) => { calls.push({ command, args }); return child; } });
   assert.equal(calls[0].command, "ffmpeg"); assert.deepEqual(calls[0].args.slice(6, 15), ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "48k"]);
   controller.cancel(); assert.deepEqual(child.signals, ["SIGTERM"]); child.emit("close", null, "SIGTERM");
-  await assert.rejects(pending, SpokenTranscriptionError);
+  await assert.rejects(pending, EditExecutionCancelledError);
 });
 
 test("isolated transcription creates canonical server segments and cleans local/Gemini files", async () => {

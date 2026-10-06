@@ -119,6 +119,36 @@ const MOMENT_MODES = {
   START_END_BOUNDARY: "START_END_BOUNDARY"
 };
 
+// Speech requests must be recognized before the structurally similar visual
+// moment requests below. Quoted speech is deliberately the only exact phrase
+// form supported here; topic requests are routed but deferred to Stage 4.
+export function extractSpokenMomentRequest(prompt = "", sourceCatalog = []) {
+  if (!prompt.trim() || /\d+:\d+\s*(?:to|until|through)\s*\d+:\d+/i.test(prompt)) return null;
+  const quoted = `(?:I|he|she|they|we)?\\s*(?:say|says|said)\\s*["“]([^"”]+)["”]`;
+  const paired = prompt.match(new RegExp(`\\b(?:start|begin|cut\\s+in)(?:\\s+from)?\\s+when\\s+${quoted}\\s+(?:and|then)\\s+(?:end|stop|cut\\s+(?:off|everything\\s+after))(?:\\s+(?:when|once|after))?\\s+${quoted}`, "i"));
+  const start = paired ? null : prompt.match(new RegExp(`\\b(?:start|begin|cut\\s+in)(?:\\s+from)?\\s+when\\s+${quoted}`, "i"));
+  const end = paired ? null : prompt.match(new RegExp(`\\b(?:end|stop|cut\\s+(?:off|everything\\s+after))(?:\\s+(?:when|once|after))?\\s+${quoted}`, "i"));
+  const segment = paired || start || end ? null : prompt.match(new RegExp(`\\b(?:use|show|keep|trim(?:\\s+to)?)(?:\\s+(?:me|this|the\\s+video))?\\s+(?:the\\s+)?(?:part|bit|section|moment|clip)\\s+(?:where|when)\\s+${quoted}`, "i"));
+  const semantic = /\b(?:explain|talk(?:ing)?\s+about|discuss|speaking\s+about)\b/i.test(prompt) && /\b(?:where|when|start|use|show|section|part)\b/i.test(prompt);
+  if (!paired && !start && !end && !segment && !semantic) return null;
+
+  const semanticReferences = extractSemanticSourceReferences(prompt, sourceCatalog);
+  const explicitScope = explicitSourceScope(prompt);
+  const semanticScope = !explicitScope && sourceCatalog.length > 1 && /\bfrom\s+(?:the\s+)?[a-z]/i.test(prompt) && semanticReferences.length === 1
+    ? { type: "semantic", referenceId: semanticReferences[0].referenceId }
+    : null;
+  const sourceScope = explicitScope || semanticScope || (sourceCatalog.length === 1 ? { type: "single", sourceId: sourceCatalog[0]?.sourceId } : { type: "unscoped" });
+  if (semantic) return { momentId: "moment-1", type: "semantic", sourceScope };
+  if (paired) return { momentId: "moment-1", type: "exact", mode: MOMENT_MODES.START_END_BOUNDARY, startPhrase: paired[1].trim(), endPhrase: paired[2].trim(), sourceScope };
+  if (start) return { momentId: "moment-1", type: "exact", mode: MOMENT_MODES.START_BOUNDARY, startPhrase: start[1].trim(), sourceScope };
+  if (end) return { momentId: "moment-1", type: "exact", mode: MOMENT_MODES.END_BOUNDARY, endPhrase: end[1].trim(), sourceScope };
+  return { momentId: "moment-1", type: "exact", mode: MOMENT_MODES.EVENT_SEGMENT, startPhrase: segment[1].trim(), sourceScope };
+}
+
+export function requiresSpokenMomentUnderstanding(prompt = "", sourceCatalog = []) {
+  return Boolean(extractSpokenMomentRequest(prompt, sourceCatalog));
+}
+
 function cleanMomentDescription(description = "") {
   return description
     .replace(/\s*(?:[,.!?;:]|\b(?:please|thanks?)\b).*$/i, "")
@@ -135,6 +165,7 @@ function explicitSourceScope(prompt = "") {
  * The event description is deliberately passed to Gemini rather than keyword-matched.
  */
 export function extractVisualMomentRequest(prompt = "", sourceCatalog = []) {
+  if (extractSpokenMomentRequest(prompt, sourceCatalog)) return null;
   if (!prompt.trim() || /\d+:\d+\s*(?:to|until|through)\s*\d+:\d+/i.test(prompt)) return null;
 
   const paired = prompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(.+?)\s+(?:and|then)\s+(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once))?\s+(.+?)(?=[.!?]|$)/i);

@@ -3,6 +3,7 @@ import { rm as removeFile } from "fs/promises";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
 import { createCanonicalTranscript, TranscriptValidationError } from "@/lib/editor-core/spoken-transcript";
+import { EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 
 const TRANSCRIBE_MODEL = "gemini-3.5-transcribe";
 const MAX_RETRIES = 2;
@@ -40,8 +41,8 @@ export async function extractSpeechAudio({ inputPath, scratchDirectory, sourceId
     const finish = (error) => { if (!settled) { settled = true; executionController?.detach(child); error ? reject(error) : resolve(); } };
     executionController?.attach(child);
     child.stderr?.on("data", (chunk) => { stderr += chunk; });
-    child.once("error", (error) => finish(executionController?.isCancelled() ? new SpokenTranscriptionError("SPEECH_AUDIO_EXTRACTION_FAILED") : error));
-    child.once("close", (code) => executionController?.isCancelled() ? finish(new SpokenTranscriptionError("SPEECH_AUDIO_EXTRACTION_FAILED")) : code === 0 ? finish() : finish(new SpokenTranscriptionError("SPEECH_AUDIO_EXTRACTION_FAILED", new Error(stderr))));
+    child.once("error", (error) => finish(executionController?.isCancelled() ? new EditExecutionCancelledError() : error));
+    child.once("close", (code) => executionController?.isCancelled() ? finish(new EditExecutionCancelledError()) : code === 0 ? finish() : finish(new SpokenTranscriptionError("SPEECH_AUDIO_EXTRACTION_FAILED", new Error(stderr))));
   });
   return outputPath;
 }

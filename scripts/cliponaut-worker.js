@@ -61,6 +61,12 @@ async function processJob(job) {
     await mkdir(config.scratchDirectory, { recursive: true });
     scratch = await mkdtemp(path.join(config.scratchDirectory, `${job.id}-`));
     heartbeat = setInterval(() => heartbeatJob(job.id, workerId).catch(() => {}), 30_000);
+    executionController = createExecutionController();
+    const cancelExecutionIfNeeded = async () => {
+      if (await isJobCancelled(job.id, workerId)) executionController.cancel();
+    };
+    await cancelExecutionIfNeeded();
+    cancellationMonitor = setInterval(() => cancelExecutionIfNeeded().catch(() => {}), 1_000);
     const sources = [...job.sources].sort((left, right) => left.index - right.index);
     const inputPaths = [];
     for (const source of sources) {
@@ -78,17 +84,11 @@ async function processJob(job) {
     const { plan } = await createAiEditPlan({
       inputPath: inputPaths[0], inputMimeType: sources[0].type,
       sourceInputs: sources.map((source) => ({ inputPath: inputPaths[source.index], inputMimeType: source.type, source: sourceCatalog.find((entry) => entry.index === source.index) })),
-      prompt: job.prompt, hasMultipleVideos: inputPaths.length > 1, sourceCatalog
+      prompt: job.prompt, hasMultipleVideos: inputPaths.length > 1, sourceCatalog, scratchDirectory: scratch, executionController
     });
     const editPlan = validateEditPlan(plan, { sourceCatalog });
     await throwIfCancelled(job.id);
     if (!await setJobStatus(job.id, workerId, "rendering")) throw new JobCancelledError();
-    executionController = createExecutionController();
-    const cancelExecutionIfNeeded = async () => {
-      if (await isJobCancelled(job.id, workerId)) executionController.cancel();
-    };
-    await cancelExecutionIfNeeded();
-    cancellationMonitor = setInterval(() => cancelExecutionIfNeeded().catch(() => {}), 1_000);
     const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality, executionController });
     await throwIfCancelled(job.id);
     outputKey = outputObjectKey(job.id);
