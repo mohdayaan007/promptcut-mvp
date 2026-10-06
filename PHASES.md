@@ -597,11 +597,117 @@ The targeted production fix strengthened the Gemini localization contract: the f
 
 ## Phase 3A.5C-B — Spoken Moment Selection
 
-Status: `⏳ PLANNED`
+Status: `🚧 IN PROGRESS`
 
 Purpose:
 
-Speech/transcript-aware moment selection, such as `Start when I say “Welcome to Kerala”.` or `Use the part where I explain pricing.`
+Allow users to identify a source-local video range from what is said, while preserving the existing V2 authoritative-sequence, validation, and FFmpeg execution model.
+
+### In Scope
+
+#### Exact / Near-Exact Spoken Phrases
+
+Examples:
+
+- `Start when I say "Welcome to Kerala".`
+- `Use the part where she says "The price is 500 rupees".`
+- `End after he says "Thanks for watching".`
+
+Quoted or phrase-like requests should be matched deterministically against an authoritative transcript. Matching may normalize case, Unicode, punctuation, whitespace, deterministic contractions, and narrowly controlled number/currency and STT-formatting variants. It must not turn an unresolved quoted phrase into broad semantic guessing.
+
+#### Semantic Spoken Content
+
+Examples:
+
+- `Use the part where I explain pricing.`
+- `Show the section where I talk about our refund policy.`
+- `Start when I begin talking about Cliponaut.`
+
+The result must cover a coherent spoken section, rather than merely the one sentence containing a keyword. For example, a pricing request may include the introduction to plans, the price, and the included benefits through the transition to the next topic.
+
+### Spoken Moment Modes
+
+3A.5C-B reuses the user-facing modes from visual moment selection:
+
+- `EVENT_SEGMENT`: the coherent resolved spoken section.
+- `START_BOUNDARY`: the resolved phrase/topic start through the authoritative source duration.
+- `END_BOUNDARY`: source time `0` through the resolved phrase/topic end.
+- `START_END_BOUNDARY`: first resolved spoken boundary through second resolved spoken boundary, with `end > start` required.
+
+Both boundaries are speech-based in this phase. Mixed visual and spoken boundaries are out of scope.
+
+### Source Scope and Candidate Safety
+
+- One source: search its speech.
+- Explicit source: process/search only that source.
+- Semantic source: resolve it first with Phase 3A.5B-B, then process only its speech.
+- Multiple sources without scope: independently process/search every uploaded source and aggregate server-validated candidates.
+
+Candidate safety remains strict:
+
+- 0 candidates: safe no-match rejection.
+- Exactly 1 candidate: proceed.
+- 2 or more candidates: safe ambiguity rejection.
+
+Cliponaut must not select the first occurrence, upload order, longest section, or a supposedly "best" explanation. This applies both to repeated matches in one source and matches across sources.
+
+### Approved Architecture: Hybrid Transcript-First
+
+`spoken-vs-visual structural routing → source scope → temporary FFmpeg audio extraction → Gemini timestamped transcription → server transcript normalization and stable segment IDs → deterministic exact/near-exact phrase matching OR Gemini semantic transcript matching → server candidate validation/aggregation → server-authoritative V2 sourceId/start/end → final planning for remaining supported operations → validator → executor → FFmpeg`
+
+Spoken intent must route before and exclusively from visual moment localization. A request such as `Use the part where she says...` must never enter the visual localizer merely because it contains `use the part where`.
+
+The server remains authoritative: Gemini interprets, but Cliponaut validates and derives execution values. After spoken localization, the final planner must not alter the authoritative `sourceId`, `start`, `end`, or sequence order. Additional supported operations, such as global black and white, may remain in the final plan.
+
+### Transcription Contract and Lifecycle
+
+The current environment has been compatibility-tested with `@google/genai` 2.20.0:
+
+`worker-local video → temporary FFmpeg mono 16 kHz AAC/M4A → Gemini Files upload → gemini-3.5-transcribe interaction → verbatim word annotations`
+
+The dedicated transcription primitive is audio-based. The existing Gemini video File remains in use for semantic source classification, visual understanding, and final edit planning; it is not replaced by the temporary transcription audio File.
+
+Gemini word annotations must be normalized by server code into a canonical source-owned transcript conceptually like:
+
+```json
+{
+  "sourceId": "source-1",
+  "segments": [
+    {
+      "segmentId": "source-1-seg-1",
+      "start": 0.8,
+      "end": 3.7,
+      "text": "Welcome to Kerala",
+      "words": [{ "start": 0.8, "end": 1.2, "text": "Welcome" }]
+    }
+  ]
+}
+```
+
+Cliponaut assigns stable segment IDs; Gemini must not supply authoritative IDs. The first version keeps transcripts only in worker memory for the current job. It does not add transcript persistence to PostgreSQL or object storage. Temporary extracted audio and temporary Gemini audio Files must be deleted after both success and failure.
+
+For semantic topic matching, Gemini should receive canonical transcript text/segments and return transcript segment ID ranges—not raw execution timestamps. Cliponaut validates ownership and ordering, derives the authoritative timestamps from its transcript, then constructs the V2 range.
+
+### Compatibility Evidence and Initial Tolerance
+
+Two local engineering spikes established the primitive:
+
+- `Kerala Homestay.mp4`: 7.838s source / 7.767s audio; transcript `120`; one word annotation from 2.2–2.5s; approximately 4.5s transcription latency; one call; no retry; cleanup succeeded. This proved the primitive but was too speech-light for quality evaluation.
+- `Intro Cliponaut Testing.mp4`: 10.625s source; 28 monotonic word annotations within the source duration; approximately 4.95s transcription latency; one call; no retry; cleanup succeeded. The transcript included `Hello, team TechStars... I'm a solo founder of Clip or Not...`; `Cliponaut` was rendered approximately as `Clip or Not`.
+
+The evidence supports conservative near-exact STT normalization. It does not establish frame-perfect timing. For controlled short speech, approximately ±1 second is the initial human production-testing tolerance for spoken boundaries. It is provisional, not a universal guarantee, and requires manual production-style validation.
+
+### Dependencies and Out of Scope
+
+Gemini remains the only paid AI/API dependency for this phase. Do not add Deepgram, AssemblyAI, paid Whisper APIs, AWS Transcribe, paid Google Speech-to-Text, or another paid transcription/media SaaS.
+
+No self-hosted STT is needed now. A future investigation of open-source options such as whisper.cpp or faster-whisper is justified only by measured production evidence of timing/transcription accuracy, quota/availability, latency, or cost limitations.
+
+3A.5C-B does not include speaker identity/diarization as a product feature, mixed visual/speech boundaries, multi-moment composition, highlights/reels, transcript editing UI, subtitles/captions, translation, dubbing, audio cleanup, music sync, embeddings/vector databases, or a new paid service.
+
+### Planned Operational Validation
+
+Short fixtures establish semantic correctness only. After basic acceptance, separately test realistic workloads—such as a five-minute source and multiple five-minute sources—and record upload, extraction, transcription, transcript matching, planning, rendering, total latency, retries, CPU/RAM, and Gemini request usage. Do not infer paying-user long-media performance from short-fixture results.
 
 ## Phase 3A.5C-C — Multi-Moment Composition
 

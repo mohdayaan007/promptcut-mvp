@@ -1233,7 +1233,149 @@ PASS — Output: Talking → Greenery. Existing Phase 3A.5B-B behavior remains f
 
 ---
 
-# 38. Product Quality Standard
+# 38. Phase 3A.5C-B Planned Acceptance — Spoken Moment Selection
+
+Status: `🚧 IN PROGRESS`
+
+Spoken-moment acceptance must verify correct source selection, authoritative range selection, safe ambiguity behavior, and preservation of existing V1/V2 behavior. For controlled short speech, approximately ±1 second is the initial human acceptance tolerance for a spoken boundary. This is provisional, not frame-accurate or universal, and must be assessed manually on the rendered output.
+
+## A. Exact Phrase Event Segment
+
+Prompt:
+
+> Use the part where I say "Welcome to Kerala."
+
+Expected: a bounded section covering the spoken phrase; no unrelated broader visual event is substituted.
+
+## B. Exact Phrase Start Boundary
+
+Prompt:
+
+> Start when I say "Welcome to Kerala."
+
+Expected: detected phrase start through the authoritative source end.
+
+## C. Exact Phrase End Boundary
+
+Prompt:
+
+> End when I say "Thanks for watching."
+
+Expected: source start through the detected phrase end.
+
+## D. Exact Phrase Start and End Boundaries
+
+Prompt:
+
+> Start when I say "Welcome to Kerala" and end when I say "Thanks for watching."
+
+Expected: first resolved spoken boundary through second resolved spoken boundary, with a positive range.
+
+## E. Near-Exact Normalized Phrase
+
+Prompt:
+
+> Start when I say "The Pro plan costs $12."
+
+Transcript variation:
+
+> The pro plan cost twelve dollars.
+
+Expected: match only when conservative deterministic normalization resolves a unique equivalent phrase. Ambiguous or broad semantic equivalence must reject safely.
+
+## F. Semantic Spoken Section
+
+Prompt:
+
+> Use the part where I explain pricing.
+
+Expected: a coherent pricing discussion across the relevant transcript segments—not merely the sentence containing `price`.
+
+## G. Explicit Source plus Spoken Request
+
+Prompt:
+
+> From video 2, use the part where I explain pricing.
+
+Expected: only source-2 is transcribed/searched for the requested moment.
+
+## H. Semantic Source plus Spoken Request
+
+Prompt:
+
+> From the talking clip, use the part where I explain pricing.
+
+Expected: Phase 3A.5B-B resolves the source first; spoken localization then searches only that source.
+
+## I. Unscoped Multi-Source Unique Match
+
+Prompt:
+
+> Use the part where I explain pricing.
+
+Expected: every in-scope source is evaluated; exactly one candidate produces the correct source and range.
+
+## J. Spoken No Match
+
+Prompt:
+
+> Use the part where I explain our refund policy.
+
+Expected: zero candidates, a safe rejection, and no fabricated output.
+
+## K. Same-Source Phrase Ambiguity
+
+Use a source where the requested phrase occurs twice.
+
+Expected: two candidates, a safe ambiguity rejection, and no first-occurrence selection.
+
+## L. Cross-Source Spoken Ambiguity
+
+Use two sources that both contain the requested phrase or topic.
+
+Expected: two or more candidates, a safe ambiguity rejection, and no ranking or arbitrary selection.
+
+## M. Silent Source
+
+Use a source without usable speech/audio.
+
+Expected: no hallucinated transcript or spoken range; zero candidates or another safe no-match outcome.
+
+## N. Spoken Range plus Normal Edit Operation
+
+Prompt:
+
+> Use the part where I explain pricing and make it black and white.
+
+Expected: the speech-derived range remains server-authoritative while the supported global color operation is also applied.
+
+## O. Regression Coverage
+
+Verify at minimum:
+
+- V1 single-video editing
+- V2 explicit source ordering
+- Phase 3A.5B-B semantic source selection
+- Phase 3A.5C-A visual moment selection
+
+## Later Realistic-Media Performance Validation
+
+Short fixtures prove semantic behavior, not paying-user long-media performance. After semantic acceptance, separately test realistic workloads such as a five-minute source and multiple five-minute sources. Record:
+
+- upload time
+- temporary audio-extraction time
+- transcription time
+- transcript semantic-match time
+- planning time
+- FFmpeg rendering time
+- total latency
+- retries
+- CPU/RAM behavior
+- Gemini request count and usage
+
+---
+
+# 39. Product Quality Standard
 
 A production test is not merely checking whether a file was generated.
 
@@ -1252,7 +1394,7 @@ A technically successful render with the wrong semantic result is a failed produ
 
 ---
 
-# 39. Final Testing Principle
+# 40. Final Testing Principle
 
 Cliponaut's goal is not:
 
