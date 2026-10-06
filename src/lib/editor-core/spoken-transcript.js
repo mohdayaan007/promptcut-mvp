@@ -92,23 +92,32 @@ function strongNearMatch(phrase, window) {
   return compactPhrase.length >= 6 && Math.abs(compactPhrase.length - compactWindow.length) <= allowed && levenshtein(compactPhrase, compactWindow) <= allowed;
 }
 
-/** Returns every strong contiguous occurrence; callers retain ambiguity rather than selecting a winner. */
+/** Returns exact contiguous occurrences first; near matches are only a fallback when none exist. */
 export function findPhraseOccurrences(transcript, phrase, mode = "EVENT_SEGMENT") {
   const target = normalizePhrase(phrase);
   if (!target) return [];
-  const words = transcript?.segments?.flatMap((segment) => segment.words) || [];
-  const tokens = words.map((word) => normalizePhrase(word.text)).filter(Boolean);
+  const normalizedWords = (transcript?.segments?.flatMap((segment) => segment.words) || [])
+    .map((word) => ({ word, token: normalizePhrase(word.text) }))
+    .filter(({ token }) => Boolean(token));
+  const tokens = normalizedWords.map(({ token }) => token);
   const targetCount = target.split(" ").length;
-  const matches = [];
-  for (let start = 0; start < tokens.length; start += 1) {
-    for (let size = Math.max(1, targetCount - 1); size <= targetCount + 2 && start + size <= tokens.length; size += 1) {
+  const collectMatches = (minimumSize, maximumSize, matchesTarget) => {
+    const matches = [];
+    for (let start = 0; start < tokens.length; start += 1) {
+      for (let size = minimumSize; size <= maximumSize && start + size <= tokens.length; size += 1) {
       const window = tokens.slice(start, start + size).join(" ");
-      if (!strongNearMatch(target, window)) continue;
-      const first = words[start]; const last = words[start + size - 1];
-      matches.push({ start: first.start, end: last.end, mode, wordStartIndex: start, wordEndIndex: start + size - 1 });
+        if (!matchesTarget(window)) continue;
+        const first = normalizedWords[start].word; const last = normalizedWords[start + size - 1].word;
+        matches.push({ start: first.start, end: last.end, mode, wordStartIndex: start, wordEndIndex: start + size - 1 });
+      }
     }
-  }
-  return matches.filter((match, index, all) => index === all.findIndex((other) => other.wordStartIndex === match.wordStartIndex && other.wordEndIndex === match.wordEndIndex));
+    return matches;
+  };
+
+  const exactMatches = collectMatches(targetCount, targetCount, (window) => window === target);
+  if (exactMatches.length) return exactMatches;
+
+  return collectMatches(Math.max(1, targetCount - 1), targetCount + 2, (window) => strongNearMatch(target, window));
 }
 
 export function pairPhraseOccurrences(starts = [], ends = []) {

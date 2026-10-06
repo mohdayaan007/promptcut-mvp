@@ -178,6 +178,26 @@ test("spoken phrase occurrences are exact/near-exact, contiguous, and preserve a
   assert.equal(findPhraseOccurrences(repeated, "welcome to kerala").length, 2);
 });
 
+test("spoken phrase matching prefers exact windows before near-exact fallback", () => {
+  const productionTranscript = transcript([
+    { text: "Hello", start: 0.2, end: 0.5 }, { text: "team", start: 0.5, end: 0.8 }, { text: "TechStars", start: 0.8, end: 1.3 },
+    { text: "I", start: 1.3, end: 1.4 }, { text: "am", start: 1.4, end: 1.6 }, { text: "Mohammed.", start: 1.6, end: 2.1 }
+  ]);
+  const productionMatches = findPhraseOccurrences(productionTranscript, "Hello, team TechStars");
+  assert.deepEqual(productionMatches.map(({ start, end }) => ({ start, end })), [{ start: 0.2, end: 1.3 }]);
+
+  const exactAndNear = transcript([
+    { text: "Welcome", start: 0, end: 0.3 }, { text: "everyone.", start: 0.3, end: 0.8 },
+    { text: "Welcome", start: 2, end: 2.3 }, { text: "everyon.", start: 2.3, end: 2.8 }
+  ]);
+  assert.deepEqual(findPhraseOccurrences(exactAndNear, "Welcome everyone").map(({ start, end }) => ({ start, end })), [{ start: 0, end: 0.8 }]);
+
+  const nearOnly = transcript([
+    { text: "Clip", start: 0, end: 0.3 }, { text: "or", start: 0.3, end: 0.4 }, { text: "Not.", start: 0.4, end: 0.8 }
+  ]);
+  assert.deepEqual(findPhraseOccurrences(nearOnly, "Cliponaut").map(({ start, end }) => ({ start, end })), [{ start: 0, end: 0.8 }]);
+});
+
 test("spoken phrase ranges and ordered pairs remain deterministic", () => {
   const value = transcript();
   const start = findPhraseOccurrences(value, "welcome to kerala", "START_BOUNDARY");
@@ -374,6 +394,20 @@ test("exact spoken modes create server-authoritative V2 ranges without visual lo
     assert.deepEqual(result.plan.operations[1], { type: "color_grade", style: "bw" });
     assert.equal(aiClient.requests.length, 1);
   }
+});
+
+test("exact spoken orchestration keeps a unique phrase boundary when later words continue", async () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const words = [
+    { text: "Hello", start_offset: "0.2s", end_offset: "0.5s" }, { text: "team", start_offset: "0.5s", end_offset: "0.8s" }, { text: "TechStars", start_offset: "0.8s", end_offset: "1.3s" },
+    { text: "I", start_offset: "1.3s", end_offset: "1.4s" }, { text: "am", start_offset: "1.4s", end_offset: "1.6s" }, { text: "Mohammed.", start_offset: "1.6s", end_offset: "2.1s" }
+  ];
+  const aiClient = createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [] }), transcriptionInteractions: [interaction(words)] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: 'Use the part where I say "Hello, team TechStars".', sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 0.2, end: 1.3 }] }]);
 });
 
 test("Stage 3 preserves Cliponaut normalization and global B&W beside the authoritative spoken range", async () => {
