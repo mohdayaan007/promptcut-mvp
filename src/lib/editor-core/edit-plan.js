@@ -129,8 +129,11 @@ export function extractSpokenMomentRequest(prompt = "", sourceCatalog = []) {
   const start = paired ? null : prompt.match(new RegExp(`\\b(?:start|begin|cut\\s+in)(?:\\s+from)?\\s+when\\s+${quoted}`, "i"));
   const end = paired ? null : prompt.match(new RegExp(`\\b(?:end|stop|cut\\s+(?:off|everything\\s+after))(?:\\s+(?:when|once|after))?\\s+${quoted}`, "i"));
   const segment = paired || start || end ? null : prompt.match(new RegExp(`\\b(?:use|show|keep|trim(?:\\s+to)?)(?:\\s+(?:me|this|the\\s+video))?\\s+(?:the\\s+)?(?:part|bit|section|moment|clip)\\s+(?:where|when)\\s+${quoted}`, "i"));
-  const semantic = /\b(?:explain|talk(?:ing)?\s+about|discuss|speaking\s+about)\b/i.test(prompt) && /\b(?:where|when|start|use|show|section|part)\b/i.test(prompt);
-  if (!paired && !start && !end && !segment && !semantic) return null;
+  const semanticPaired = prompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)\s+(?:and|then)\s+(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once|after))?\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
+  const semanticStart = semanticPaired ? null : prompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
+  const semanticEnd = semanticPaired ? null : prompt.match(/\b(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once|after))?\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
+  const semanticSegment = semanticPaired || semanticStart || semanticEnd ? null : prompt.match(/\b(?:use|show|keep|trim(?:\s+to)?)(?:\s+(?:me|this|the\s+video))?\s+(?:the\s+)?(?:part|bit|section|moment|clip)\s+(?:where|when)\s+(?:I|he|she|they|we)?\s*(?:explain|discuss|talk(?:ing)?\s+about|speaking\s+about)\s+(.+?)(?=[.!?]|$)/i);
+  if (!paired && !start && !end && !segment && !semanticPaired && !semanticStart && !semanticEnd && !semanticSegment) return null;
 
   const semanticReferences = extractSemanticSourceReferences(prompt, sourceCatalog);
   const explicitScope = explicitSourceScope(prompt);
@@ -138,7 +141,10 @@ export function extractSpokenMomentRequest(prompt = "", sourceCatalog = []) {
     ? { type: "semantic", referenceId: semanticReferences[0].referenceId }
     : null;
   const sourceScope = explicitScope || semanticScope || (sourceCatalog.length === 1 ? { type: "single", sourceId: sourceCatalog[0]?.sourceId } : { type: "unscoped" });
-  if (semantic) return { momentId: "moment-1", type: "semantic", sourceScope };
+  if (semanticPaired) return { momentId: "moment-1", type: "semantic", mode: MOMENT_MODES.START_END_BOUNDARY, startTopicDescription: cleanMomentDescription(semanticPaired[1]), endTopicDescription: cleanMomentDescription(semanticPaired[2]), sourceScope };
+  if (semanticStart) return { momentId: "moment-1", type: "semantic", mode: MOMENT_MODES.START_BOUNDARY, startTopicDescription: cleanMomentDescription(semanticStart[1]), sourceScope };
+  if (semanticEnd) return { momentId: "moment-1", type: "semantic", mode: MOMENT_MODES.END_BOUNDARY, endTopicDescription: cleanMomentDescription(semanticEnd[1]), sourceScope };
+  if (semanticSegment) return { momentId: "moment-1", type: "semantic", mode: MOMENT_MODES.EVENT_SEGMENT, startTopicDescription: cleanMomentDescription(semanticSegment[1]), sourceScope };
   if (paired) return { momentId: "moment-1", type: "exact", mode: MOMENT_MODES.START_END_BOUNDARY, startPhrase: paired[1].trim(), endPhrase: paired[2].trim(), sourceScope };
   if (start) return { momentId: "moment-1", type: "exact", mode: MOMENT_MODES.START_BOUNDARY, startPhrase: start[1].trim(), sourceScope };
   if (end) return { momentId: "moment-1", type: "exact", mode: MOMENT_MODES.END_BOUNDARY, endPhrase: end[1].trim(), sourceScope };

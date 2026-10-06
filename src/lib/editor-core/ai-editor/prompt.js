@@ -25,6 +25,20 @@ export function buildVisualMomentLocalizationPrompt({ source, moment }) {
   ].join("\n\n");
 }
 
+export function buildSemanticTranscriptMatchPrompt({ source, moment, transcript }) {
+  const segments = transcript.segments.map(({ segmentId, text }) => ({ segmentId, text }));
+  return [
+    "You localize a semantic spoken topic within one authoritative transcript. You do not create an edit plan.",
+    "Judge only this source. Return every genuinely plausible coherent occurrence; do not choose a best occurrence or compare sources.",
+    "For EVENT_SEGMENT, select the whole coherent discussion, including relevant introduction and supporting statements, but exclude the transition to a different topic.",
+    "For START_BOUNDARY and END_BOUNDARY, return the segment range that identifies the requested spoken topic boundary. For START_END_BOUNDARY, return an ordered range from the requested start topic through the requested end topic.",
+    "Return only canonical startSegmentId and endSegmentId from the supplied transcript. Never return timestamps, offsets, source ranges, or invented segment IDs. If no complete plausible occurrence exists, return an empty candidates array.",
+    `Authoritative source: ${JSON.stringify({ sourceId: source.sourceId, duration: source.duration })}`,
+    `Moment request: ${JSON.stringify(moment)}`,
+    `Canonical transcript segments: ${JSON.stringify(segments)}`
+  ].join("\n\n");
+}
+
 export function buildAiEditorPrompt({ prompt, hasMultipleVideos = false, sourceCatalog = [], resolvedSemanticSources = [], authoritativeMomentSequence = null }) {
   const capabilities = JSON.stringify(getAiCapabilityContract({
     hasMultipleVideos,

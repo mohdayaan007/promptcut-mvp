@@ -10,9 +10,9 @@ import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
-import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
+import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
-import { buildAiEditorPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
+import { buildAiEditorPrompt, buildSemanticTranscriptMatchPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { createExecutionController, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
 import { extractSpeechAudio, transcribeSource, wordAnnotations, SpokenTranscriptionError } from "@/lib/editor-core/spoken-transcription";
@@ -74,6 +74,9 @@ function classificationResponse(sourceId, matches) {
 function momentLocalizationResponse(sourceId, candidates, momentId = "moment-1") {
   return JSON.stringify({ sourceId, moments: [{ momentId, candidates }] });
 }
+function semanticTranscriptResponse(sourceId, candidates, momentId = "moment-1") {
+  return JSON.stringify({ sourceId, momentId, candidates });
+}
 
 function fullSequence(catalog = sourceCatalog, sourceIds = catalog.map((source) => source.sourceId)) {
   return {
@@ -92,6 +95,20 @@ async function withGeminiKey(callback) {
     if (previous === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = previous;
   }
+}
+
+async function assertSpokenRejection(promiseFactory, expectedReason) {
+  const originalError = console.error;
+  const reasons = [];
+  console.error = (message, details) => {
+    if (message === "Spoken moment localization rejected:") reasons.push(details?.reason);
+  };
+  try {
+    await assert.rejects(promiseFactory, UnsupportedEditRequestError);
+  } finally {
+    console.error = originalError;
+  }
+  assert.ok(reasons.includes(expectedReason), `expected ${expectedReason}, received ${reasons.join(", ")}`);
 }
 
 function createMockChild() {
@@ -180,6 +197,154 @@ test("spoken routing takes exact and semantic speech out of visual localization"
   assert.equal(requiresSpokenMomentUnderstanding("Start when I begin talking about Cliponaut.", one), true);
   assert.equal(extractVisualMomentRequest("Start when I begin talking about Cliponaut.", one), null);
   assert.ok(extractVisualMomentRequest("Use the part where the car enters the frame.", one));
+});
+
+test("semantic spoken parsing preserves modes and excludes visual routing", () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const event = extractSpokenMomentRequest("Use the part where I explain pricing.", catalog);
+  const start = extractSpokenMomentRequest("Start when I begin talking about Cliponaut.", catalog);
+  const end = extractSpokenMomentRequest("End when I start talking about integrations.", catalog);
+  const paired = extractSpokenMomentRequest("Start when I begin talking about pricing and end when I begin talking about integrations.", catalog);
+  assert.deepEqual(event, { momentId: "moment-1", type: "semantic", mode: "EVENT_SEGMENT", startTopicDescription: "pricing", sourceScope: { type: "single", sourceId: "source-1" } });
+  assert.equal(start.mode, "START_BOUNDARY"); assert.equal(start.startTopicDescription, "Cliponaut");
+  assert.equal(end.mode, "END_BOUNDARY"); assert.equal(end.endTopicDescription, "integrations");
+  assert.equal(paired.mode, "START_END_BOUNDARY"); assert.equal(paired.startTopicDescription, "pricing"); assert.equal(paired.endTopicDescription, "integrations");
+  assert.equal(extractVisualMomentRequest("Use the part where I explain pricing.", catalog), null);
+});
+
+test("semantic transcript schema and prompt use segment IDs rather than timestamps", () => {
+  const schema = createSemanticTranscriptMatchJsonSchema({ sourceId: "source-1", momentId: "moment-1" });
+  assert.deepEqual(Object.keys(schema.properties.candidates.items.properties).sort(), ["endSegmentId", "startSegmentId"]);
+  const text = buildSemanticTranscriptMatchPrompt({ source: speechCatalog([sourceCatalog[0]])[0], moment: { momentId: "moment-1", mode: "EVENT_SEGMENT", startTopicDescription: "pricing" }, transcript: transcript() });
+  assert.match(text, /segmentId/); assert.doesNotMatch(text, /"start"\s*:/);
+});
+
+test("semantic spoken matching derives coherent ranges and validates segment IDs", async () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const pricingWords = [
+    { text: "Now", start_offset: "1s", end_offset: "1.2s" }, { text: "plans.", start_offset: "1.2s", end_offset: "1.6s" },
+    { text: "Pricing", start_offset: "2.5s", end_offset: "2.9s" }, { text: "is", start_offset: "2.9s", end_offset: "3s" }, { text: "twelve.", start_offset: "3s", end_offset: "3.4s" },
+    { text: "Unlimited", start_offset: "4.4s", end_offset: "4.8s" }, { text: "exports.", start_offset: "4.8s", end_offset: "5.3s" },
+    { text: "Integrations.", start_offset: "6.3s", end_offset: "6.9s" }
+  ];
+  const aiClient = createMockGemini({ responses: [
+    semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-3" }]),
+    JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] })
+  ], transcriptionInteractions: [interaction(pricingWords)] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Use the part where I explain pricing and make it black and white.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 5.3 }] }, { type: "color_grade", style: "bw" }]);
+  assert.equal(aiClient.requests.length, 2);
+});
+
+test("semantic spoken ranges override final timestamps and reject conflicting source operations", async () => {
+  const catalog = speechCatalog(sourceCatalog.slice(0, 2));
+  const words = [{ text: "Pricing.", start_offset: "2s", end_offset: "2.5s" }];
+  const override = createMockGemini({ responses: [
+    semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]),
+    JSON.stringify({ version: "2", operations: [
+      { type: "sequence", clips: [{ sourceId: "source-1", start: 9, end: 19 }] },
+      { type: "color_grade", style: "bw" }
+    ] })
+  ], transcriptionInteractions: [interaction(words)] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "From video 1, use the part where I explain pricing and make it black and white.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: override,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 2, end: 2.5 }] },
+    { type: "color_grade", style: "bw" }
+  ]);
+
+  const conflict = createMockGemini({ responses: [
+    semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]),
+    JSON.stringify({ version: "2", operations: [{ type: "color_grade", sourceId: "source-2", style: "bw" }] })
+  ], transcriptionInteractions: [interaction(words)] });
+  await withGeminiKey(() => assertSpokenRejection(() => createAiEditPlan({
+    prompt: "From video 1, use the part where I explain pricing.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: conflict,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }), "SPEECH_SOURCE_MISMATCH"));
+});
+
+test("semantic spoken response rejects malformed, unknown, and reversed segment references", async () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const words = [
+    { text: "Pricing.", start_offset: "1s", end_offset: "1.5s" },
+    { text: "Integrations.", start_offset: "2.5s", end_offset: "3s" }
+  ];
+  const invalid = [
+    { responseText: semanticTranscriptResponse("source-2", []), reason: "SPEECH_SOURCE_MISMATCH" },
+    { responseText: semanticTranscriptResponse("source-1", [{ startSegmentId: "missing", endSegmentId: "source-1-seg-1" }]), reason: "SPEECH_UNKNOWN_SEGMENT" },
+    { responseText: semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "missing" }]), reason: "SPEECH_UNKNOWN_SEGMENT" },
+    { responseText: semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-2", endSegmentId: "source-1-seg-1" }]), reason: "SPEECH_INVALID_SEGMENT_RANGE" },
+    { responseText: JSON.stringify({ sourceId: "source-1", momentId: "moment-1", candidates: [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1", start: 999, end: 120 }] }), reason: "SPEECH_MALFORMED_SEMANTIC_RESPONSE" },
+    { responseText: semanticTranscriptResponse("source-1", [{ endSegmentId: "source-1-seg-1" }]), reason: "SPEECH_MISSING_SEGMENT" },
+    { responseText: semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1" }]), reason: "SPEECH_MISSING_SEGMENT" },
+    { responseText: JSON.stringify({ sourceId: "source-1", momentId: "moment-1", candidates: null }), reason: "SPEECH_MALFORMED_SEMANTIC_RESPONSE" },
+    { responseText: JSON.stringify({ sourceId: "source-1", momentId: "wrong", candidates: [] }), reason: "SPEECH_MALFORMED_SEMANTIC_RESPONSE" }
+  ];
+  for (const { responseText, reason } of invalid) {
+    await withGeminiKey(() => assertSpokenRejection(() => createAiEditPlan({
+      prompt: "Use the part where I explain pricing.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog),
+      aiClient: createMockGemini({ responses: [responseText], transcriptionInteractions: [interaction(words)] }), scratchDirectory: "/scratch",
+      transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+    }), reason));
+  }
+});
+
+test("semantic matching retries transient calls without retranscribing and derives boundary modes", async () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const words = [
+    { text: "Pricing.", start_offset: "2s", end_offset: "2.5s" },
+    { text: "Integrations.", start_offset: "5s", end_offset: "5.5s" }
+  ];
+  const busy = Object.assign(new Error("busy"), { status: 429 });
+  const retrying = createMockGemini({ failures: [busy, busy], responses: [undefined, undefined,
+    semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]),
+    JSON.stringify({ version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 20 }] }] })
+  ], transcriptionInteractions: [interaction(words)] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Start when I begin talking about pricing.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: retrying,
+    retryOptions: { sleepFn: async () => {} }, scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations[0].clips, [{ sourceId: "source-1", start: 2, end: 20 }]);
+  assert.equal(retrying.interactionRequests.length, 1);
+  const ending = createMockGemini({ responses: [
+    semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-2", endSegmentId: "source-1-seg-2" }]),
+    JSON.stringify({ version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 20 }] }] })
+  ], transcriptionInteractions: [interaction(words)] });
+  const endResult = await withGeminiKey(() => createAiEditPlan({
+    prompt: "End when I start talking about integrations.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: ending,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(endResult.plan.operations[0].clips, [{ sourceId: "source-1", start: 0, end: 5.5 }]);
+});
+
+test("semantic matcher retry and failure matrix preserves its one canonical transcript", async () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const words = [{ text: "Pricing.", start_offset: "1s", end_offset: "1.5s" }];
+  const run = ({ failures = [], responses = [] }) => {
+    const aiClient = createMockGemini({ failures, responses, transcriptionInteractions: [interaction(words)] });
+    return { aiClient, promise: withGeminiKey(() => createAiEditPlan({ prompt: "Use the part where I explain pricing.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient, retryOptions: { sleepFn: async () => {} }, scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} } })) };
+  };
+  for (const transient of [429, 503]) {
+    const error = Object.assign(new Error("busy"), { status: transient });
+    const { aiClient, promise } = run({ failures: [error], responses: [undefined, semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]), JSON.stringify(fullSequence(catalog))] });
+    await promise;
+    assert.equal(aiClient.interactionRequests.length, 1);
+    assert.equal(aiClient.requests.length, 3);
+  }
+  const exhausted = run({ failures: [503, 503, 503].map((status) => Object.assign(new Error("busy"), { status })) });
+  await assert.rejects(exhausted.promise, UnsupportedEditRequestError);
+  assert.equal(exhausted.aiClient.interactionRequests.length, 1); assert.equal(exhausted.aiClient.requests.length, 3);
+  const nonTransient = run({ failures: [Object.assign(new Error("bad"), { status: 400 })] });
+  await assert.rejects(nonTransient.promise, UnsupportedEditRequestError);
+  assert.equal(nonTransient.aiClient.interactionRequests.length, 1); assert.equal(nonTransient.aiClient.requests.length, 1);
+  const malformed = run({ responses: ["not-json"] });
+  await assert.rejects(malformed.promise, UnsupportedEditRequestError);
+  assert.equal(malformed.aiClient.interactionRequests.length, 1); assert.equal(malformed.aiClient.requests.length, 1);
 });
 
 test("ordinary visual moments remain on the visual path without speech transcription", async () => {
@@ -280,6 +445,70 @@ test("semantic video scope resolves before transcribing only the resolved spoken
   }));
   assert.equal(aiClient.uploads.filter((file) => file.uri.includes("speech.m4a")).length, 1);
   assert.deepEqual(result.plan.operations[0].clips, [{ sourceId: "source-2", start: 1, end: 1.9 }]);
+});
+
+test("unscoped exact speech aggregates every source without upload-order selection", async () => {
+  const catalog = speechCatalog(sourceCatalog.slice(0, 2));
+  const onlySecond = createMockGemini({
+    responseText: JSON.stringify(fullSequence(catalog)),
+    transcriptionInteractions: [
+      interaction([{ text: "Other.", start_offset: "1s", end_offset: "1.2s" }]),
+      interaction([{ text: "Welcome", start_offset: "2s", end_offset: "2.4s" }])
+    ]
+  });
+  const result = await withGeminiKey(() => createAiEditPlan({ prompt: 'Use the part where I say "Welcome".', hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: onlySecond, scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} } }));
+  assert.deepEqual(result.plan.operations[0].clips, [{ sourceId: "source-2", start: 2, end: 2.4 }]);
+  assert.equal(onlySecond.interactionRequests.length, 2);
+  const ambiguous = createMockGemini({ transcriptionInteractions: [
+    interaction([{ text: "Welcome", start_offset: "1s", end_offset: "1.2s" }]),
+    interaction([{ text: "Welcome", start_offset: "2s", end_offset: "2.2s" }])
+  ] });
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({ prompt: 'Use the part where I say "Welcome".', hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: ambiguous, scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} } }), UnsupportedEditRequestError));
+});
+
+test("unscoped semantic speech matches one transcript per source and aggregates safely", async () => {
+  const catalog = speechCatalog(sourceCatalog.slice(0, 2));
+  const pricing = [{ text: "Pricing.", start_offset: "2s", end_offset: "2.5s" }];
+  const unique = createMockGemini({ responses: [
+    semanticTranscriptResponse("source-1", []),
+    semanticTranscriptResponse("source-2", [{ startSegmentId: "source-2-seg-1", endSegmentId: "source-2-seg-1" }]),
+    JSON.stringify(fullSequence(catalog))
+  ], transcriptionInteractions: [interaction([{ text: "Other.", start_offset: "1s", end_offset: "1.2s" }]), interaction(pricing)] });
+  const result = await withGeminiKey(() => createAiEditPlan({ prompt: "Use the part where I explain pricing.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: unique, scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} } }));
+  assert.deepEqual(result.plan.operations[0].clips, [{ sourceId: "source-2", start: 2, end: 2.5 }]);
+  assert.equal(unique.interactionRequests.length, 2);
+  const matcherPrompts = unique.requests.slice(0, 2).map((request) => request.contents);
+  assert.match(matcherPrompts[0], /source-1-seg-1/); assert.doesNotMatch(matcherPrompts[0], /source-2-seg-1/);
+  assert.match(matcherPrompts[1], /source-2-seg-1/); assert.doesNotMatch(matcherPrompts[1], /source-1-seg-1/);
+  const ambiguous = createMockGemini({ responses: [
+    semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]),
+    semanticTranscriptResponse("source-2", [{ startSegmentId: "source-2-seg-1", endSegmentId: "source-2-seg-1" }])
+  ], transcriptionInteractions: [interaction(pricing), interaction(pricing)] });
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({ prompt: "Use the part where I explain pricing.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: ambiguous, scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} } }), UnsupportedEditRequestError));
+  const noMatch = createMockGemini({ responses: [
+    semanticTranscriptResponse("source-1", []),
+    semanticTranscriptResponse("source-2", [])
+  ], transcriptionInteractions: [interaction(pricing), interaction(pricing)] });
+  await withGeminiKey(() => assertSpokenRejection(() => createAiEditPlan({
+    prompt: "Use the part where I explain pricing.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: noMatch,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }), "SPEECH_NO_CANDIDATE"));
+});
+
+test("unscoped speech no-match and silent sources contribute zero candidates", async () => {
+  const catalog = speechCatalog(sourceCatalog.slice(0, 2));
+  const noneExact = createMockGemini({ transcriptionInteractions: [
+    interaction([{ text: "Other.", start_offset: "1s", end_offset: "1.2s" }]),
+    interaction([{ text: "Else.", start_offset: "2s", end_offset: "2.2s" }])
+  ] });
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({ prompt: 'Use the part where I say "Welcome".', hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: noneExact, scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} } }), UnsupportedEditRequestError));
+  const emptyThenUnique = createMockGemini({ responses: [
+    semanticTranscriptResponse("source-1", []),
+    semanticTranscriptResponse("source-2", [{ startSegmentId: "source-2-seg-1", endSegmentId: "source-2-seg-1" }]),
+    JSON.stringify(fullSequence(catalog))
+  ], transcriptionInteractions: [{ steps: [] }, interaction([{ text: "Pricing.", start_offset: "3s", end_offset: "3.5s" }])] });
+  const result = await withGeminiKey(() => createAiEditPlan({ prompt: "Use the part where I explain pricing.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: emptyThenUnique, scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} } }));
+  assert.deepEqual(result.plan.operations[0].clips, [{ sourceId: "source-2", start: 3, end: 3.5 }]);
 });
 
 test("spoken no-match, paired ambiguity, and final source mismatch reject safely", async () => {

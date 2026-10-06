@@ -193,4 +193,29 @@ export function createVisualMomentLocalizationJsonSchema({ sourceId, momentIds =
   };
 }
 
+/** Semantic speech matching may return only canonical transcript segment IDs. */
+export function createSemanticTranscriptMatchJsonSchema({ sourceId, momentId } = {}) {
+  return {
+    type: "object",
+    properties: {
+      sourceId: { type: "string", enum: [sourceId] },
+      momentId: { type: "string", enum: [momentId] },
+      candidates: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            startSegmentId: { type: "string" },
+            endSegmentId: { type: "string" }
+          },
+          required: ["startSegmentId", "endSegmentId"],
+          additionalProperties: false
+        }
+      }
+    },
+    required: ["sourceId", "momentId", "candidates"],
+    additionalProperties: false
+  };
+}
+
 export const EDIT_PLAN_JSON_SCHEMA = createEditPlanJsonSchema();

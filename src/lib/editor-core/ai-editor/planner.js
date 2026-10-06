@@ -1,7 +1,7 @@
 import { GoogleGenAI, createPartFromUri } from "@google/genai";
 import { createEditPlan, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
-import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { buildAiEditorPrompt, buildSemanticSourceClassificationPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
+import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
+import { buildAiEditorPrompt, buildSemanticSourceClassificationPrompt, buildSemanticTranscriptMatchPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { findPhraseOccurrences, pairPhraseOccurrences } from "@/lib/editor-core/spoken-transcript";
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
 import { EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
@@ -358,13 +358,13 @@ function applyAuthoritativeMomentSequence(plan, localizedMoment, { reject = visu
   return { ...plan, version: "2", operations: [authoritativeSequence, ...nonSequenceOperations] };
 }
 
-function speechSourceForMoment(momentRequest, sourceCatalog, resolvedSemanticSources) {
+function speechSourcesForMoment(momentRequest, sourceCatalog, resolvedSemanticSources) {
   const scope = momentRequest.sourceScope;
-  if (scope.type === "unscoped") throw spokenMomentError("SPEECH_UNSCOPED_MULTI_SOURCE");
-  return localizationSourcesForMoment(momentRequest, sourceCatalog, resolvedSemanticSources)[0];
+  if (scope.type === "unscoped") return sourceCatalog;
+  return localizationSourcesForMoment(momentRequest, sourceCatalog, resolvedSemanticSources);
 }
 
-function resolveExactSpokenRange(transcript, momentRequest, source) {
+function exactSpokenCandidates(transcript, momentRequest, source) {
   const starts = momentRequest.startPhrase ? findPhraseOccurrences(transcript, momentRequest.startPhrase, momentRequest.mode) : [];
   const ends = momentRequest.endPhrase ? findPhraseOccurrences(transcript, momentRequest.endPhrase, momentRequest.mode) : [];
   const candidates = momentRequest.mode === "START_END_BOUNDARY"
@@ -374,10 +374,50 @@ function resolveExactSpokenRange(transcript, momentRequest, source) {
       : momentRequest.mode === "END_BOUNDARY"
         ? ends.map((match) => ({ start: 0, end: match.end }))
         : starts.map((match) => ({ start: match.start, end: match.end }));
-  console.info("Spoken moment candidate set:", { momentId: momentRequest.momentId, sourceId: source.sourceId, candidateCount: candidates.length });
-  if (!candidates.length) throw spokenMomentError("SPEECH_NO_CANDIDATE", { momentId: momentRequest.momentId, sourceId: source.sourceId });
-  if (candidates.length > 1) throw spokenMomentError("SPEECH_AMBIGUOUS", { momentId: momentRequest.momentId, sourceId: source.sourceId, candidateCount: candidates.length });
-  return { sourceId: source.sourceId, ...candidates[0] };
+  return candidates.map((candidate) => ({ sourceId: source.sourceId, ...candidate }));
+}
+
+function validateSemanticTranscriptCandidates(response, momentRequest, transcript, source) {
+  if (response?.sourceId !== source.sourceId) throw spokenMomentError("SPEECH_SOURCE_MISMATCH", { sourceId: source.sourceId });
+  if (response?.momentId !== momentRequest.momentId || !Array.isArray(response?.candidates)) {
+    throw spokenMomentError("SPEECH_MALFORMED_SEMANTIC_RESPONSE", { sourceId: source.sourceId, momentId: momentRequest.momentId });
+  }
+  const segments = transcript.segments || [];
+  const indexById = new Map(segments.map((segment, index) => [segment.segmentId, index]));
+  const candidates = [];
+  const seen = new Set();
+  for (const candidate of response.candidates) {
+    if (!candidate || Object.keys(candidate).some((key) => key !== "startSegmentId" && key !== "endSegmentId")) {
+      throw spokenMomentError("SPEECH_MALFORMED_SEMANTIC_RESPONSE", { sourceId: source.sourceId });
+    }
+    const startSegmentId = candidate?.startSegmentId;
+    const endSegmentId = candidate?.endSegmentId;
+    if (!startSegmentId || !endSegmentId) throw spokenMomentError("SPEECH_MISSING_SEGMENT", { sourceId: source.sourceId });
+    const startIndex = indexById.get(startSegmentId);
+    const endIndex = indexById.get(endSegmentId);
+    if (startIndex === undefined || endIndex === undefined) throw spokenMomentError("SPEECH_UNKNOWN_SEGMENT", { sourceId: source.sourceId });
+    if (startIndex > endIndex) throw spokenMomentError("SPEECH_INVALID_SEGMENT_RANGE", { sourceId: source.sourceId });
+    const startSegment = segments[startIndex];
+    const endSegment = segments[endIndex];
+    const range = momentRequest.mode === "START_BOUNDARY"
+      ? { start: startSegment.start, end: source.duration }
+      : momentRequest.mode === "END_BOUNDARY"
+        ? { start: 0, end: endSegment.end }
+        : { start: startSegment.start, end: endSegment.end };
+    if (!Number.isFinite(range.start) || !Number.isFinite(range.end) || range.start < 0 || range.end <= range.start || range.end > source.duration) {
+      throw spokenMomentError("SPEECH_INVALID_SEGMENT_RANGE", { sourceId: source.sourceId });
+    }
+    const key = `${startSegmentId}:${endSegmentId}`;
+    if (!seen.has(key)) { seen.add(key); candidates.push({ sourceId: source.sourceId, ...range }); }
+  }
+  return candidates;
+}
+
+function resolveSpokenCandidates(candidates, momentRequest) {
+  console.info("Spoken moment candidate set:", { momentId: momentRequest.momentId, sourceIds: candidates.map((candidate) => candidate.sourceId), candidateCount: candidates.length });
+  if (!candidates.length) throw spokenMomentError("SPEECH_NO_CANDIDATE", { momentId: momentRequest.momentId });
+  if (candidates.length > 1) throw spokenMomentError("SPEECH_AMBIGUOUS", { momentId: momentRequest.momentId, candidateCount: candidates.length });
+  return candidates[0];
 }
 
 function validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources) {
@@ -496,20 +536,49 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     }
 
     let localizedMoment;
-    if (spokenMomentRequest?.type === "semantic") {
-      throw spokenMomentError("SPEECH_SEMANTIC_DEFERRED", { momentId: spokenMomentRequest.momentId });
-    }
     if (spokenMomentRequest) {
-      const source = speechSourceForMoment(spokenMomentRequest, sourceCatalog, resolvedSemanticSources);
-      const input = sourceInputs.find((entry) => entry.source?.sourceId === source.sourceId);
-      if (!input) throw spokenMomentError("SPEECH_SOURCE_MISMATCH", { sourceId: source.sourceId });
-      if (!source.hasAudio) throw spokenMomentError("SPEECH_NO_CANDIDATE", { momentId: spokenMomentRequest.momentId, sourceId: source.sourceId });
-      if (!scratchDirectory) throw spokenMomentError("SPEECH_MISSING_SCRATCH_DIRECTORY", { sourceId: source.sourceId });
-      const transcript = await transcribeSource({
-        inputPath: input.inputPath, scratchDirectory, sourceId: source.sourceId, duration: source.duration,
-        executionController, aiClient: ai, ...transcriptionOptions
-      });
-      localizedMoment = resolveExactSpokenRange(transcript, spokenMomentRequest, source);
+      if (!scratchDirectory) throw spokenMomentError("SPEECH_MISSING_SCRATCH_DIRECTORY");
+      const targetSources = speechSourcesForMoment(spokenMomentRequest, sourceCatalog, resolvedSemanticSources);
+      const transcripts = new Map();
+      const candidates = [];
+      for (const source of targetSources) {
+        if (!source.hasAudio) continue;
+        const input = sourceInputs.find((entry) => entry.source?.sourceId === source.sourceId);
+        if (!input) throw spokenMomentError("SPEECH_SOURCE_MISMATCH", { sourceId: source.sourceId });
+        let transcript = transcripts.get(source.sourceId);
+        if (!transcript) {
+          transcript = await transcribeSource({
+            inputPath: input.inputPath, scratchDirectory, sourceId: source.sourceId, duration: source.duration,
+            executionController, aiClient: ai, ...transcriptionOptions
+          });
+          transcripts.set(source.sourceId, transcript);
+        }
+        if (spokenMomentRequest.type === "exact") {
+          candidates.push(...exactSpokenCandidates(transcript, spokenMomentRequest, source));
+          continue;
+        }
+        let semanticResponse;
+        try {
+          semanticResponse = await generateWithRetries(ai, {
+            model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
+            contents: buildSemanticTranscriptMatchPrompt({ source, moment: spokenMomentRequest, transcript }),
+            config: {
+              responseMimeType: "application/json",
+              responseJsonSchema: createSemanticTranscriptMatchJsonSchema({ sourceId: source.sourceId, momentId: spokenMomentRequest.momentId })
+            }
+          }, retryOptions);
+        } catch (error) {
+          throw spokenMomentError(isTransientPlanningError(error) ? "SPEECH_SEMANTIC_RETRIES_EXHAUSTED" : "SPEECH_SEMANTIC_REQUEST_FAILED", { sourceId: source.sourceId });
+        }
+        if (!semanticResponse.text) throw spokenMomentError("SPEECH_MALFORMED_SEMANTIC_RESPONSE", { sourceId: source.sourceId });
+        let parsedResponse;
+        try { parsedResponse = JSON.parse(semanticResponse.text); }
+        catch { throw spokenMomentError("SPEECH_MALFORMED_SEMANTIC_RESPONSE", { sourceId: source.sourceId }); }
+        const validatedCandidates = validateSemanticTranscriptCandidates(parsedResponse, spokenMomentRequest, transcript, source);
+        console.info("Semantic spoken moment candidates:", { sourceId: source.sourceId, momentId: spokenMomentRequest.momentId, segmentCount: transcript.segments.length, candidateCount: validatedCandidates.length });
+        candidates.push(...validatedCandidates);
+      }
+      localizedMoment = resolveSpokenCandidates(candidates, spokenMomentRequest);
     }
     if (momentRequest) {
       const targetSources = localizationSourcesForMoment(momentRequest, sourceCatalog, resolvedSemanticSources);
