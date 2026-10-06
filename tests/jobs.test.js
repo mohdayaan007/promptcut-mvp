@@ -14,6 +14,7 @@ import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema,
 import { createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { createExecutionController, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
+import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
 
 const video = { name: "source.mp4", type: "video/mp4", size: 1024 };
 const sourceCatalog = createSourceCatalog(
@@ -99,6 +100,52 @@ function createMockChild() {
   };
   return child;
 }
+
+const transcriptWords = [
+  { text: "Welcome", start: 1, end: 1.3 }, { text: "to", start: 1.3, end: 1.4 }, { text: "Kerala!", start: 1.4, end: 1.9 },
+  { text: "The", start: 2.8, end: 3 }, { text: "Pro", start: 3, end: 3.2 }, { text: "plan", start: 3.2, end: 3.5 }, { text: "costs", start: 3.5, end: 3.8 }, { text: "twelve", start: 3.8, end: 4.1 }, { text: "dollars.", start: 4.1, end: 4.5 },
+  { text: "Clip", start: 5.5, end: 5.8 }, { text: "or", start: 5.8, end: 5.9 }, { text: "Not.", start: 5.9, end: 6.3 }
+];
+function transcript(words = transcriptWords) { return createCanonicalTranscript({ sourceId: "source-1", duration: 10, words }); }
+
+test("spoken transcript validation rejects malformed and non-monotonic words", () => {
+  assert.deepEqual(validateTranscriptWords({ sourceId: "source-1", duration: 2, words: [{ text: "Hi", start: 0, end: 1 }] }), [{ text: "Hi", start: 0, end: 1 }]);
+  for (const words of [[{ text: "x", start: -1, end: 0 }], [{ text: "x", start: 0, end: Infinity }], [{ text: "x", start: 1, end: 0 }], [{ text: "x", start: 0, end: 3 }], [{ text: "a", start: 1, end: 2 }, { text: "b", start: 1.5, end: 2.1 }]]) {
+    assert.throws(() => validateTranscriptWords({ sourceId: "source-1", duration: 2, words }), TranscriptValidationError);
+  }
+});
+
+test("spoken transcript segmentation is stable and uses sentence/pause boundaries", () => {
+  const first = transcript(); const second = transcript();
+  assert.deepEqual(first, second);
+  assert.deepEqual(first.segments.map(({ segmentId, start, end }) => ({ segmentId, start, end })), [
+    { segmentId: "source-1-seg-1", start: 1, end: 1.9 }, { segmentId: "source-1-seg-2", start: 2.8, end: 4.5 }, { segmentId: "source-1-seg-3", start: 5.5, end: 6.3 }
+  ]);
+});
+
+test("spoken phrase normalization covers punctuation, contractions, numbers, and currency", () => {
+  assert.equal(normalizePhrase(" Welcome   to Kerala! "), "welcome to kerala");
+  assert.equal(normalizePhrase("I'm here"), "i am here");
+  assert.equal(normalizePhrase("$12"), normalizePhrase("twelve dollars"));
+});
+
+test("spoken phrase occurrences are exact/near-exact, contiguous, and preserve ambiguity", () => {
+  assert.equal(findPhraseOccurrences(transcript(), "WELCOME to Kerala").length, 1);
+  assert.equal(findPhraseOccurrences(transcript(), "The Pro plan costs $12").length, 1);
+  assert.equal(findPhraseOccurrences(transcript(), "Cliponaut").length, 1);
+  assert.equal(findPhraseOccurrences(transcript(), "unrelated vaguely similar idea").length, 0);
+  const repeated = transcript([...transcriptWords, { text: "Welcome", start: 7, end: 7.3 }, { text: "to", start: 7.3, end: 7.4 }, { text: "Kerala.", start: 7.4, end: 7.9 }]);
+  assert.equal(findPhraseOccurrences(repeated, "welcome to kerala").length, 2);
+});
+
+test("spoken phrase ranges and ordered pairs remain deterministic", () => {
+  const value = transcript();
+  const start = findPhraseOccurrences(value, "welcome to kerala", "START_BOUNDARY");
+  const end = findPhraseOccurrences(value, "cliponaut", "END_BOUNDARY");
+  assert.deepEqual(start[0].start, 1); assert.deepEqual(start[0].end, 1.9);
+  assert.deepEqual(pairPhraseOccurrences(start, end).map(({ start: left, end: right }) => ({ start: left, end: right })), [{ start: 1, end: 6.3 }]);
+  assert.deepEqual(pairPhraseOccurrences(end, start), []);
+});
 
 test("direct-upload manifest accepts five bounded video files", () => {
   assert.equal(validateUploadManifest(Array.from({ length: 5 }, (_, index) => ({ ...video, name: `${index}.mp4` }))), 5120);
