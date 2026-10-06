@@ -15,6 +15,7 @@ import { createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMo
 import { buildAiEditorPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { createExecutionController, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
+import { extractSpeechAudio, transcribeSource, wordAnnotations, SpokenTranscriptionError } from "@/lib/editor-core/spoken-transcription";
 
 const video = { name: "source.mp4", type: "video/mp4", size: 1024 };
 const sourceCatalog = createSourceCatalog(
@@ -101,6 +102,23 @@ function createMockChild() {
   return child;
 }
 
+function successfulSpawn(calls = []) {
+  return (command, args) => {
+    calls.push({ command, args });
+    const child = createMockChild(); child.stderr = new EventEmitter();
+    queueMicrotask(() => child.emit("close", 0));
+    return child;
+  };
+}
+function transcriptionMock({ interactions = [], uploadError, deleteError } = {}) {
+  const calls = { uploads: [], interactions: [], deletes: [] };
+  return { calls, files: {
+    upload: async (request) => { calls.uploads.push(request); if (uploadError) throw uploadError; return { name: "audio-file", uri: "private-uri", mimeType: "audio/m4a" }; },
+    delete: async (request) => { calls.deletes.push(request); if (deleteError) throw deleteError; }
+  }, interactions: { create: async (request) => { calls.interactions.push(request); const value = interactions.shift(); if (value instanceof Error) throw value; return value || { steps: [] }; } } };
+}
+function interaction(words = [{ text: "Hello", start_offset: "1s", end_offset: "1.4s" }]) { return { steps: [{ content: [{ annotations: words.map((word) => ({ type: "word_info", ...word })) }] }] }; }
+
 const transcriptWords = [
   { text: "Welcome", start: 1, end: 1.3 }, { text: "to", start: 1.3, end: 1.4 }, { text: "Kerala!", start: 1.4, end: 1.9 },
   { text: "The", start: 2.8, end: 3 }, { text: "Pro", start: 3, end: 3.2 }, { text: "plan", start: 3.2, end: 3.5 }, { text: "costs", start: 3.5, end: 3.8 }, { text: "twelve", start: 3.8, end: 4.1 }, { text: "dollars.", start: 4.1, end: 4.5 },
@@ -145,6 +163,71 @@ test("spoken phrase ranges and ordered pairs remain deterministic", () => {
   assert.deepEqual(start[0].start, 1); assert.deepEqual(start[0].end, 1.9);
   assert.deepEqual(pairPhraseOccurrences(start, end).map(({ start: left, end: right }) => ({ start: left, end: right })), [{ start: 1, end: 6.3 }]);
   assert.deepEqual(pairPhraseOccurrences(end, start), []);
+});
+
+test("spoken transcription annotations parse Gemini word_info offsets without assigning IDs", () => {
+  assert.deepEqual(wordAnnotations({ steps: [{ content: [{ annotations: [{ type: "word_info", text: "Welcome", start_offset: "0.8s", end_offset: "1.2s" }, { type: "other", text: "ignored" }] }] }] }), [{ text: "Welcome", start: 0.8, end: 1.2 }]);
+});
+
+test("speech extraction uses only a caller scratch M4A with exact-child ownership", async () => {
+  const calls = []; const child = createMockChild(); child.stderr = new EventEmitter();
+  const controller = createExecutionController();
+  const pending = extractSpeechAudio({ inputPath: "/source.mp4", scratchDirectory: "/scratch", sourceId: "source-1", executionController: controller, spawn: (command, args) => { calls.push({ command, args }); return child; } });
+  assert.equal(calls[0].command, "ffmpeg"); assert.deepEqual(calls[0].args.slice(6, 15), ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "48k"]);
+  controller.cancel(); assert.deepEqual(child.signals, ["SIGTERM"]); child.emit("close", null, "SIGTERM");
+  await assert.rejects(pending, SpokenTranscriptionError);
+});
+
+test("isolated transcription creates canonical server segments and cleans local/Gemini files", async () => {
+  const spawns = []; const ai = transcriptionMock({ interactions: [interaction()] }); const removed = [];
+  const result = await transcribeSource({ inputPath: "/source.mp4", scratchDirectory: "/scratch", sourceId: "source-1", duration: 5, aiClient: ai, spawn: successfulSpawn(spawns), remove: async (file) => removed.push(file) });
+  assert.equal(spawns.length, 1); assert.equal(ai.calls.uploads.length, 1); assert.equal(ai.calls.interactions.length, 1); assert.equal(ai.calls.interactions[0].model, "gemini-3.5-transcribe");
+  assert.equal(result.segments[0].segmentId, "source-1-seg-1"); assert.deepEqual(result.segments[0].words[0], { text: "Hello", start: 1, end: 1.4 });
+  assert.equal(ai.calls.deletes.length, 1); assert.deepEqual(removed, ["/scratch/source-1-speech.m4a"]);
+});
+
+test("transcription retries only interactions and maps validation/request failures without masking cleanup", async () => {
+  const transient = Object.assign(new Error("busy"), { status: 503 }); const ai = transcriptionMock({ interactions: [transient, transient, interaction()] }); const spawns = []; const removed = [];
+  await transcribeSource({ inputPath: "/source.mp4", scratchDirectory: "/scratch", sourceId: "source-1", duration: 5, aiClient: ai, spawn: successfulSpawn(spawns), sleep: async () => {}, remove: async (file) => removed.push(file) });
+  assert.equal(spawns.length, 1); assert.equal(ai.calls.uploads.length, 1); assert.equal(ai.calls.interactions.length, 3); assert.equal(ai.calls.deletes.length, 1); assert.equal(removed.length, 1);
+  const badAi = transcriptionMock({ interactions: [interaction([{ text: "Bad", start_offset: "wat", end_offset: "2s" }])], deleteError: new Error("cleanup") });
+  await assert.rejects(() => transcribeSource({ inputPath: "/source.mp4", scratchDirectory: "/scratch", sourceId: "source-1", duration: 5, aiClient: badAi, spawn: successfulSpawn(), remove: async () => { throw new Error("cleanup"); } }), (error) => error.reason === "SPEECH_INVALID_WORD_TIMESTAMPS");
+  const nonTransient = transcriptionMock({ interactions: [Object.assign(new Error("bad"), { status: 400 })] });
+  await assert.rejects(() => transcribeSource({ inputPath: "/source.mp4", scratchDirectory: "/scratch", sourceId: "source-1", duration: 5, aiClient: nonTransient, spawn: successfulSpawn() }), (error) => error.reason === "SPEECH_TRANSCRIPTION_REQUEST_FAILED");
+  assert.equal(nonTransient.calls.interactions.length, 1);
+});
+
+test("Stage 2 retries 429s once per interaction and exhausts without re-uploading", async () => {
+  const busy = Object.assign(new Error("busy"), { status: 429 }); const ai = transcriptionMock({ interactions: [busy, interaction()] }); const spawns = [];
+  await transcribeSource({ inputPath: "/source.mp4", scratchDirectory: "/scratch", sourceId: "source-1", duration: 5, aiClient: ai, spawn: successfulSpawn(spawns), sleep: async () => {} });
+  assert.equal(spawns.length, 1); assert.equal(ai.calls.uploads.length, 1); assert.equal(ai.calls.interactions.length, 2);
+  const exhausted = transcriptionMock({ interactions: [busy, busy, busy] }); const exhaustedSpawns = [];
+  await assert.rejects(() => transcribeSource({ inputPath: "/source.mp4", scratchDirectory: "/scratch", sourceId: "source-1", duration: 5, aiClient: exhausted, spawn: successfulSpawn(exhaustedSpawns), sleep: async () => {} }), (error) => error.reason === "SPEECH_TRANSCRIPTION_RETRIES_EXHAUSTED");
+  assert.equal(exhaustedSpawns.length, 1); assert.equal(exhausted.calls.uploads.length, 1); assert.equal(exhausted.calls.interactions.length, 3); assert.equal(exhausted.calls.deletes.length, 1);
+});
+
+test("Stage 2 cleans extraction/upload/request paths and preserves empty transcripts", async () => {
+  const removed = []; const uploadFailure = transcriptionMock({ uploadError: new Error("upload") });
+  await assert.rejects(() => transcribeSource({ inputPath: "/source.mp4", scratchDirectory: "/scratch", sourceId: "source-1", duration: 5, aiClient: uploadFailure, spawn: successfulSpawn(), remove: async (file) => removed.push(file) }));
+  assert.equal(uploadFailure.calls.deletes.length, 0); assert.equal(removed.length, 1);
+  const requestFailure = transcriptionMock({ interactions: [Object.assign(new Error("bad"), { status: 400 })] }); const requestRemoved = [];
+  await assert.rejects(() => transcribeSource({ inputPath: "/source.mp4", scratchDirectory: "/scratch", sourceId: "source-1", duration: 5, aiClient: requestFailure, spawn: successfulSpawn(), remove: async (file) => requestRemoved.push(file) }));
+  assert.equal(requestFailure.calls.deletes.length, 1); assert.equal(requestRemoved.length, 1);
+  const silent = transcriptionMock({ interactions: [{ steps: [] }], deleteError: new Error("cleanup") }); const result = await transcribeSource({ inputPath: "/source.mp4", scratchDirectory: "/scratch", sourceId: "source-1", duration: 5, aiClient: silent, spawn: successfulSpawn(), remove: async () => { throw new Error("cleanup"); } });
+  assert.deepEqual(result, { sourceId: "source-1", segments: [] });
+});
+
+test("Stage 2 maps every malformed word shape without retrying", async () => {
+  const invalid = [
+    [{ text: "", start_offset: "1s", end_offset: "2s" }], [{ text: "x", start_offset: "NaNs", end_offset: "2s" }],
+    [{ text: "x", start_offset: "-1s", end_offset: "2s" }], [{ text: "x", start_offset: "3s", end_offset: "2s" }],
+    [{ text: "x", start_offset: "1s", end_offset: "9s" }], [{ text: "a", start_offset: "2s", end_offset: "3s" }, { text: "b", start_offset: "1s", end_offset: "2s" }]
+  ];
+  for (const words of invalid) {
+    const ai = transcriptionMock({ interactions: [interaction(words)] });
+    await assert.rejects(() => transcribeSource({ inputPath: "/source.mp4", scratchDirectory: "/scratch", sourceId: "source-1", duration: 5, aiClient: ai, spawn: successfulSpawn() }), (error) => error.reason === "SPEECH_INVALID_WORD_TIMESTAMPS");
+    assert.equal(ai.calls.interactions.length, 1); assert.equal(ai.calls.deletes.length, 1);
+  }
 });
 
 test("direct-upload manifest accepts five bounded video files", () => {
