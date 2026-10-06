@@ -597,7 +597,7 @@ The targeted production fix strengthened the Gemini localization contract: the f
 
 ## Phase 3A.5C-B — Spoken Moment Selection
 
-Status: `🚧 IN PROGRESS`
+Status: `✅ COMPLETE`
 
 Purpose:
 
@@ -651,9 +651,9 @@ Candidate safety remains strict:
 
 Cliponaut must not select the first occurrence, upload order, longest section, or a supposedly "best" explanation. This applies both to repeated matches in one source and matches across sources.
 
-### Approved Architecture: Hybrid Transcript-First
+### Production Architecture: Hybrid Transcript-First
 
-`spoken-vs-visual structural routing → source scope → temporary FFmpeg audio extraction → Gemini timestamped transcription → server transcript normalization and stable segment IDs → deterministic exact/near-exact phrase matching OR Gemini semantic transcript matching → server candidate validation/aggregation → server-authoritative V2 sourceId/start/end → final planning for remaining supported operations → validator → executor → FFmpeg`
+`prompt structural extraction → source-scope strategy → semantic source resolution when required → temporary FFmpeg audio extraction → Gemini timestamped transcription → canonical server-owned transcript → deterministic exact/normalized phrase matching OR semantic transcript matching → server candidate validation and aggregation → authoritative sourceId + start + end → existing planner for remaining operations → V2 validation → FFmpeg execution`
 
 Spoken intent must route before and exclusively from visual moment localization. A request such as `Use the part where she says...` must never enter the visual localizer merely because it contains `use the part where`.
 
@@ -705,7 +705,25 @@ No self-hosted STT is needed now. A future investigation of open-source options 
 
 3A.5C-B does not include speaker identity/diarization as a product feature, mixed visual/speech boundaries, multi-moment composition, highlights/reels, transcript editing UI, subtitles/captions, translation, dubbing, audio cleanup, music sync, embeddings/vector databases, or a new paid service.
 
-### Planned Operational Validation
+### Production Sign-Off and Realistic-Media Performance Follow-Up
+
+Production acceptance A–O passed on revision `3f1490d1786facfdcd3ce113ee9b6070646ec7b9`. The final automated state was:
+
+- `npm run test:jobs` — 84/84 PASS
+- `npm run lint` — PASS except the existing unrelated `<img>` warning in `src/app/editor/page.js`
+- `npm run build` — PASS locally
+- `git diff --check` — PASS
+
+Two production-found exact-phrase matcher fixes are part of this completed phase:
+
+- `465f9f6244cf7160bf3ba82d63c52fa0f775d23d` — `Fix duplicate spoken phrase matches`: normalized exact occurrences are collected first; near-exact fallback runs only when there are no exact occurrences, while genuinely repeated exact phrases remain ambiguous.
+- `3f1490d1786facfdcd3ce113ee9b6070646ec7b9` — `Fix normalized spoken phrase matching`: bounded contiguous windows of original Gemini word annotations are normalized as whole text, compared with the normalized target, and retain the original first/last annotation timestamps. This handles normalization cardinality changes such as `I'm a solo founder` without collapsing genuine repeats.
+
+Deterministic normalization remains conservative and production-proven for `$12` ↔ `twelve dollars`, supported contractions such as `I'm` ↔ `I am`, and the narrowly supported `Clip or Not` ↔ `Cliponaut` compatibility case. It is not general fuzzy semantic equivalence. Exact normalized matches always take precedence over near-exact fallback.
+
+Semantic spoken requests such as `Use the part where I explain pricing.` operate over canonical transcript segments. Gemini may identify a coherent discussion through stable segment IDs, never authoritative timestamps; the server validates those IDs and derives the authoritative range. This preserves the distinction between the spoken and visual routing paths, the strict global 0 / 1 / 2+ candidate safety rule, and final-planner protection of the authoritative spoken sequence.
+
+No database, Railway service, durable-job model, or FFmpeg architecture was introduced for C-B. Job-scoped cancellation remains shared across planning and rendering; transcription and semantic matching use bounded transient retries, and temporary extracted audio and Gemini files are cleaned up best-effort. Cancellation remains expected cancellation rather than ordinary job failure.
 
 Short fixtures establish semantic correctness only. After basic acceptance, separately test realistic workloads—such as a five-minute source and multiple five-minute sources—and record upload, extraction, transcription, transcript matching, planning, rendering, total latency, retries, CPU/RAM, and Gemini request usage. Do not infer paying-user long-media performance from short-fixture results.
 

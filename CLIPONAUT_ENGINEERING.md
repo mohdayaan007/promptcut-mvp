@@ -301,6 +301,30 @@ Filenames are descriptive metadata.
 
 Filenames must not be treated as authoritative source identifiers.
 
+## Spoken Moment Selection
+
+Spoken-moment selection is a production-established routing path separate from visual moment selection. It supports quoted exact speech and semantic spoken topics/sections. Source scope is resolved first (single, explicit, semantic, or independently across unscoped sources), then selection occurs before final edit-plan execution.
+
+The flow is:
+
+source scope
+→ temporary FFmpeg audio extraction
+→ Gemini timestamped transcription
+→ canonical server-owned transcript with stable segment IDs
+→ deterministic exact quoted-speech matching or Gemini semantic transcript matching
+→ server candidate validation and aggregation
+→ authoritative sourceId/start/end
+→ final planner for remaining supported operations
+→ existing V2 validator/executor/FFmpeg pipeline
+
+Exact speech uses conservative deterministic normalization and matching. Semantic speech gives Gemini canonical transcript segment text only; Gemini returns segment IDs, not authoritative timestamps. The server validates candidates and derives timestamps from the canonical transcript.
+
+Candidate cardinality is strict: 0 means safe no-match, 1 proceeds, and 2 or more means safe ambiguity rejection. Repeated phrases remain genuinely ambiguous. Cliponaut must never rank sources/candidates or silently guess.
+
+The final planner cannot override the authoritative spoken `sourceId`, `start`, or `end`; normal supported operations may still be layered onto that range. AI interprets. Server validates. FFmpeg executes.
+
+Temporary audio and Gemini files are cleaned up best-effort. Transcription and semantic requests use bounded retries for transient failures, and job-scoped cancellation remains expected cancellation rather than ordinary failure. Long-media transcription and performance characteristics still require separate realistic-media measurement.
+
 ---
 
 # 11. Edit Plan Versions

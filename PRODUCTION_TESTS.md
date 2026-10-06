@@ -1233,9 +1233,11 @@ PASS — Output: Talking → Greenery. Existing Phase 3A.5B-B behavior remains f
 
 ---
 
-# 38. Phase 3A.5C-B Planned Acceptance — Spoken Moment Selection
+# 38. Phase 3A.5C-B Acceptance — Spoken Moment Selection
 
-Status: `🚧 IN PROGRESS`
+Status: `✅ COMPLETE`
+
+Production acceptance was completed on revision `3f1490d1786facfdcd3ce113ee9b6070646ec7b9`.
 
 Spoken-moment acceptance must verify correct source selection, authoritative range selection, safe ambiguity behavior, and preservation of existing V1/V2 behavior. For controlled short speech, approximately ±1 second is the initial human acceptance tolerance for a spoken boundary. This is provisional, not frame-accurate or universal, and must be assessed manually on the rendered output.
 
@@ -1357,6 +1359,76 @@ Verify at minimum:
 - V2 explicit source ordering
 - Phase 3A.5B-B semantic source selection
 - Phase 3A.5C-A visual moment selection
+
+## Accepted Production Evidence
+
+### A — Exact Phrase Event Segment
+
+PASS. Job `efccc054-e2d3-4be6-a879-94a0d4ef7e37` produced one candidate and a bounded quoted-speech segment. The initial duplicate-candidate failure was corrected by `465f9f6`.
+
+### B — Exact Spoken Start Boundary
+
+PASS. Job `8eb00ead-5952-4c27-ac43-6027db50715e` produced one candidate and the authoritative phrase-start-to-source-end range. The initial contraction/cardinality failure was corrected by `3f1490d`.
+
+### C — Exact Spoken End Boundary
+
+PASS. Job `bca6a307-23f2-407d-a46a-ab45a39b39b7` produced one candidate and the source-start-to-detected-phrase-end range.
+
+### D — Exact Start + End Boundary
+
+PASS. Job `f394747e-025b-4f8f-a7e4-984b32903962` produced one bounded positive spoken interval.
+
+### E — Controlled Normalization
+
+PASS. With `Cliponaut Pricing Test.mp4`, `Use the part where I say "twelve dollars".` produced one candidate and an approximately 0.7s output. The `$12` variant (job `d074a3a6-04e9-4639-9689-183d6540e6ed`) produced the same bounded result, proving deterministic `$12` ↔ `twelve dollars` normalization. The earlier full-sentence wording did not pass because unrelated transcript wording varied and is not acceptance evidence.
+
+### F — Semantic Spoken Section
+
+PASS. Job `87b9b6a0-9705-4e6a-9b59-8375020f2c9a` selected one coherent pricing discussion from a 22.015s source, producing approximately 10.2s while excluding the unrelated introduction and later customer-support topic.
+
+### G — Explicit Source + Spoken
+
+PASS. Job `7b919d55-1d84-410c-aa23-22992ff20100` correctly scoped `From video 2, use the part where I explain pricing.` to `source-2`.
+
+### H — Semantic Source + Spoken
+
+PASS. Job `be527ef2-f3c5-47ab-9bc7-30cd3a8a7b66` uniquely resolved `indoor talking clip` to `source-1` against outdoor greenery, then selected the pricing section.
+
+### I — Unscoped Multi-Source Unique Match
+
+PASS. Job `df25d131-fae7-482e-9f8c-fa289bb8750c` found zero pricing candidates in source-1 and one in source-2; global cardinality was one and source-2 rendered.
+
+### J — Spoken No Match
+
+PASS. Job `cab75fd9-6fc9-4340-b065-6c46bb4a3c3f` returned `SPEECH_NO_CANDIDATE` for `Use the part where I explain our refund policy.` when both sources had zero candidates. No output was fabricated.
+
+### K — Same-Source Phrase Ambiguity
+
+PASS. `Cliponaut Same Source Ambiguity Test.mp4` job `66a6f9e6-34db-4e23-abed-8640eab0e50b` produced two source-1 candidates and `SPEECH_AMBIGUOUS`; no occurrence was selected or rendered.
+
+### L — Cross-Source Spoken Ambiguity
+
+PASS. Job `de62584a-cc61-435c-b082-955bcf0b766a`, using two uploads of `Cliponaut Pricing Test.mp4`, produced one pricing candidate per source and safely rejected with `SPEECH_AMBIGUOUS`.
+
+### M — Silent Source
+
+PASS. `Duel between Samurai and Po.mp4` (approximately 5.1s, no audio track), job `e0b1bd04-e22e-426b-b2ae-c739e474b284`, produced zero candidates and `SPEECH_NO_CANDIDATE`, with no hallucinated transcript, range, or output.
+
+### N — Spoken Range + Normal Edit
+
+PASS. Job `35e3f674-b84e-43ee-8d4d-9b2fa056cfd2` selected the same coherent pricing range from the 22.015s source (approximately 10.218s output) and rendered it black and white. The server-authoritative spoken range survived normal planner operations.
+
+### O — Regression Coverage
+
+PASS. V1 single-video black-and-white (`a453a8a4-be06-4090-a894-9861af35433f`), V2 explicit `source-2 → source-1` ordering (`c41b20f9-ebcf-4e9b-bb37-3909b7394cd4`), Phase 3A.5B-B Talking → Greenery semantic source selection (`37422435-d2cf-496a-98b1-c79ae856bebb`), and Phase 3A.5C-A visual temple-event selection (`189ee8e5-3283-4431-adf5-f7e6c757a7b9`) all passed. The visual route retained its server-authoritative approximately 3.0s–7.3s range and was not affected by spoken routing.
+
+## Final C-B Sign-Off
+
+`Phase 3A.5C-B — Spoken Moment Selection: ✅ COMPLETE`
+
+Production acceptance: `A–O PASS`.
+
+No known blocking regression remains. These controlled short fixtures do not prove long-media performance; retain the realistic-media validation below.
 
 ## Later Realistic-Media Performance Validation
 
