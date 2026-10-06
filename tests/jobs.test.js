@@ -198,6 +198,36 @@ test("spoken phrase matching prefers exact windows before near-exact fallback", 
   assert.deepEqual(findPhraseOccurrences(nearOnly, "Cliponaut").map(({ start, end }) => ({ start, end })), [{ start: 0, end: 0.8 }]);
 });
 
+test("whole-window normalization matches contractions without annotation-count assumptions", () => {
+  const founderWords = [
+    { text: "I'm", start: 0, end: 0.3 }, { text: "a", start: 0.3, end: 0.4 }, { text: "solo", start: 0.4, end: 0.8 }, { text: "founder", start: 0.8, end: 1.2 },
+    { text: "of", start: 1.2, end: 1.4 }, { text: "Clip", start: 1.4, end: 1.7 }, { text: "or", start: 1.7, end: 1.8 }, { text: "Not.", start: 1.8, end: 2.1 }
+  ];
+  const founderPhrase = "I'm a solo founder";
+  assert.equal(normalizePhrase(founderPhrase).split(" ").length, 5);
+  assert.equal(founderWords.slice(0, 4).length, 4);
+  assert.deepEqual(findPhraseOccurrences(transcript(founderWords), founderPhrase).map(({ start, end }) => ({ start, end })), [{ start: 0, end: 1.2 }]);
+  assert.deepEqual(findPhraseOccurrences(transcript(founderWords), "Cliponaut").map(({ start, end }) => ({ start, end })), [{ start: 1.4, end: 2.1 }]);
+
+  const multipleContractions = transcript([
+    { text: "I'm", start: 0, end: 0.3 }, { text: "sure", start: 0.3, end: 0.6 }, { text: "you're", start: 0.6, end: 1 }, { text: "ready.", start: 1, end: 1.4 }
+  ]);
+  assert.deepEqual(findPhraseOccurrences(multipleContractions, "I am sure you are ready").map(({ start, end }) => ({ start, end })), [{ start: 0, end: 1.4 }]);
+
+  const repeated = transcript([
+    ...founderWords.slice(0, 4),
+    { text: "Later.", start: 3, end: 3.4 },
+    { text: "I'm", start: 4, end: 4.3 }, { text: "a", start: 4.3, end: 4.4 }, { text: "solo", start: 4.4, end: 4.8 }, { text: "founder.", start: 4.8, end: 5.2 }
+  ]);
+  assert.equal(findPhraseOccurrences(repeated, founderPhrase).length, 2);
+
+  const exactAndNear = transcript([
+    ...founderWords.slice(0, 4),
+    { text: "I'm", start: 3, end: 3.3 }, { text: "a", start: 3.3, end: 3.4 }, { text: "solo", start: 3.4, end: 3.8 }, { text: "foundr.", start: 3.8, end: 4.2 }
+  ]);
+  assert.deepEqual(findPhraseOccurrences(exactAndNear, founderPhrase).map(({ start, end }) => ({ start, end })), [{ start: 0, end: 1.2 }]);
+});
+
 test("spoken phrase ranges and ordered pairs remain deterministic", () => {
   const value = transcript();
   const start = findPhraseOccurrences(value, "welcome to kerala", "START_BOUNDARY");
@@ -408,6 +438,20 @@ test("exact spoken orchestration keeps a unique phrase boundary when later words
     scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
   }));
   assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 0.2, end: 1.3 }] }]);
+});
+
+test("exact spoken START boundary handles contraction-expanded phrases once", async () => {
+  const catalog = speechCatalog([{ ...sourceCatalog[0], duration: 10.625 }]);
+  const words = [
+    { text: "I'm", start_offset: "1.1s", end_offset: "1.4s" }, { text: "a", start_offset: "1.4s", end_offset: "1.5s" }, { text: "solo", start_offset: "1.5s", end_offset: "1.9s" }, { text: "founder", start_offset: "1.9s", end_offset: "2.4s" },
+    { text: "building", start_offset: "2.4s", end_offset: "2.8s" }, { text: "Cliponaut.", start_offset: "2.8s", end_offset: "3.4s" }
+  ];
+  const aiClient = createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [] }), transcriptionInteractions: [interaction(words)] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: 'Start when I say "I\'m a solo founder".', sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 1.1, end: 10.625 }] }]);
 });
 
 test("Stage 3 preserves Cliponaut normalization and global B&W beside the authoritative spoken range", async () => {

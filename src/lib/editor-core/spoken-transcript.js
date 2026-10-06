@@ -60,6 +60,7 @@ export function createCanonicalTranscript({ sourceId, duration, words }) {
 
 const CONTRACTIONS = { "i'm": "i am", "you're": "you are", "we're": "we are", "they're": "they are", "can't": "cannot", "don't": "do not", "won't": "will not", "it's": "it is" };
 const NUMBER_WORDS = { zero: "0", one: "1", two: "2", three: "3", four: "4", five: "5", six: "6", seven: "7", eight: "8", nine: "9", ten: "10", eleven: "11", twelve: "12", thirteen: "13", fourteen: "14", fifteen: "15", sixteen: "16", seventeen: "17", eighteen: "18", nineteen: "19", twenty: "20" };
+const MAX_NORMALIZATION_WINDOW_DELTA = 2;
 
 export function normalizePhrase(value = "") {
   let text = String(value).normalize("NFKC").toLocaleLowerCase().replace(/[’']/g, "'");
@@ -96,28 +97,27 @@ function strongNearMatch(phrase, window) {
 export function findPhraseOccurrences(transcript, phrase, mode = "EVENT_SEGMENT") {
   const target = normalizePhrase(phrase);
   if (!target) return [];
-  const normalizedWords = (transcript?.segments?.flatMap((segment) => segment.words) || [])
-    .map((word) => ({ word, token: normalizePhrase(word.text) }))
-    .filter(({ token }) => Boolean(token));
-  const tokens = normalizedWords.map(({ token }) => token);
+  const words = (transcript?.segments?.flatMap((segment) => segment.words) || [])
+    .filter((word) => Boolean(normalizePhrase(word.text)));
   const targetCount = target.split(" ").length;
   const collectMatches = (minimumSize, maximumSize, matchesTarget) => {
     const matches = [];
-    for (let start = 0; start < tokens.length; start += 1) {
-      for (let size = minimumSize; size <= maximumSize && start + size <= tokens.length; size += 1) {
-      const window = tokens.slice(start, start + size).join(" ");
+    for (let start = 0; start < words.length; start += 1) {
+      for (let size = minimumSize; size <= maximumSize && start + size <= words.length; size += 1) {
+        const window = normalizePhrase(words.slice(start, start + size).map((word) => word.text).join(" "));
         if (!matchesTarget(window)) continue;
-        const first = normalizedWords[start].word; const last = normalizedWords[start + size - 1].word;
+        const first = words[start]; const last = words[start + size - 1];
         matches.push({ start: first.start, end: last.end, mode, wordStartIndex: start, wordEndIndex: start + size - 1 });
       }
     }
     return matches;
   };
 
-  const exactMatches = collectMatches(targetCount, targetCount, (window) => window === target);
+  const maximumWindowSize = targetCount + MAX_NORMALIZATION_WINDOW_DELTA;
+  const exactMatches = collectMatches(1, maximumWindowSize, (window) => window === target);
   if (exactMatches.length) return exactMatches;
 
-  return collectMatches(Math.max(1, targetCount - 1), targetCount + 2, (window) => strongNearMatch(target, window));
+  return collectMatches(1, maximumWindowSize, (window) => strongNearMatch(target, window));
 }
 
 export function pairPhraseOccurrences(starts = [], ends = []) {
