@@ -7,7 +7,7 @@ import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
 import { ACTIVE_JOB_STATUSES, isActiveJobStatus, isRecoverableJobStatus } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
-import { createEditPlan, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
@@ -1419,4 +1419,188 @@ test("Gemini-unavailable explicit source requests retain fallback while semantic
   });
   assert.equal(requiresVisualSourceUnderstanding("Use the talking clip first, then the greenery footage.", sourceCatalog), true);
   assert.equal(requiresVisualSourceUnderstanding("Use video 2 first, then the greenery clip.", sourceCatalog), true);
+});
+
+test("multi-moment composition extraction is ordered, bounded, and preserves existing paired boundaries", () => {
+  const catalog = speechCatalog(sourceCatalog.slice(0, 2));
+  for (const { prompt, count } of [
+    { prompt: "Use the part where the person enters, then the part where the person exits.", count: 2 },
+    { prompt: "Use the part where the food is prepared and then the section where the food is served followed by the moment where the food is tasted.", count: 3 }
+  ]) {
+    const composition = extractMomentCompositionRequests(prompt, catalog);
+    assert.equal(composition.requests.length, count);
+    assert.deepEqual(composition.requests.map((request) => request.momentId), Array.from({ length: count }, (_, index) => `moment-${index + 1}`));
+    assert.ok(composition.requests.every((request) => request.mode === "EVENT_SEGMENT"));
+  }
+  assert.equal(extractMomentCompositionRequests("Start when the door opens and end when she leaves.", catalog), null);
+  assert.equal(extractMomentCompositionRequests("Start when I begin talking about pricing and end when I begin talking about integrations.", catalog), null);
+  assert.equal(extractMomentCompositionRequests("Start when the door opens then end when she leaves.", catalog), null);
+  assert.equal(extractMomentCompositionRequests("Start when I begin talking about pricing then stop when I begin talking about integrations.", catalog), null);
+  assert.equal(extractMomentCompositionRequests("Use the part where the person walks and then rides a bicycle.", catalog), null);
+  assert.equal(requiresMomentCompositionUnderstanding("Use the part where the person enters, then the part where the person exits.", catalog), true);
+  assert.equal(requiresMomentCompositionUnderstanding("Start when the door opens and end when she leaves.", catalog), false);
+  assert.equal(extractMomentCompositionRequests("Use the part where the door opens, then the part where.", catalog).error, "COMPOSITION_UNSUPPORTED_MOMENT");
+  assert.equal(extractMomentCompositionRequests("Use the part where one, then the part where two, then the part where three, then the part where four, then the part where five, then the part where six.", catalog).error, "COMPOSITION_TOO_MANY_MOMENTS");
+  assert.equal(extractMomentCompositionRequests("From the indoor clip, use the part where the person waves, then the part where the person leaves.", catalog).error, "COMPOSITION_SEMANTIC_SOURCE_SCOPE_UNSUPPORTED");
+
+  const five = extractMomentCompositionRequests("Use the part where one, then the part where two, then the part where three, then the part where four, then the part where five.", catalog);
+  assert.deepEqual(five.requests.map((request) => request.momentId), ["moment-1", "moment-2", "moment-3", "moment-4", "moment-5"]);
+
+  const quotedComposition = extractMomentCompositionRequests('Use the part where I say "one and make two", then the part where I say "done".', catalog);
+  assert.deepEqual(quotedComposition.requests.map((request) => request.startPhrase), ["one and make two", "done"]);
+  const quotedThen = extractMomentCompositionRequests('Use the part where I say "first then second", then the part where I say "done".', catalog);
+  assert.deepEqual(quotedThen.requests.map((request) => request.startPhrase), ["first then second", "done"]);
+  const curly = extractMomentCompositionRequests("Use the part where I say “one and make two”, then the part where I say “done”.", catalog);
+  assert.deepEqual(curly.requests.map((request) => request.startPhrase), ["one and make two", "done"]);
+  assert.equal(extractMomentCompositionRequests('Use the part where I say "first then the part where second".', catalog), null);
+  assert.equal(extractSpokenMomentRequest('Use the part where I say "first then the part where second".', catalog).startPhrase, "first then the part where second");
+  assert.equal(extractMomentCompositionRequests("Use the part where one,then the part where two.", catalog).requests.length, 2);
+});
+
+test("multi-moment visual composition preserves requested order and replaces final planner clips", async () => {
+  const catalog = sourceCatalog.slice(0, 2);
+  const aiClient = createMockGemini({ responses: [
+    momentLocalizationResponse("source-1", [{ start: 8, end: 10 }], "moment-1"),
+    momentLocalizationResponse("source-1", [{ start: 2, end: 4 }], "moment-2"),
+    JSON.stringify(fullSequence(catalog, ["source-2", "source-1"]))
+  ] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "From video 1, use the part where the person enters, then from video 1, use the part where the person exits.", hasMultipleVideos: true,
+    sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient
+  }));
+  assert.deepEqual(result.plan.operations[0], {
+    type: "sequence",
+    clips: [{ sourceId: "source-1", start: 8, end: 10 }, { sourceId: "source-1", start: 2, end: 4 }]
+  });
+  assert.equal(aiClient.requests.length, 3);
+  assert.doesNotThrow(() => validateEditPlan(result.plan, { sourceCatalog: catalog }));
+});
+
+test("multi-moment composition searches each unscoped request independently and builds three clips", async () => {
+  const catalog = sourceCatalog.slice(0, 2);
+  const aiClient = createMockGemini({ responses: [
+    momentLocalizationResponse("source-1", [{ start: 1, end: 2 }], "moment-1"),
+    momentLocalizationResponse("source-2", [], "moment-1"),
+    momentLocalizationResponse("source-1", [], "moment-2"),
+    momentLocalizationResponse("source-2", [{ start: 4, end: 6 }], "moment-2"),
+    momentLocalizationResponse("source-1", [{ start: 7, end: 9 }], "moment-3"),
+    momentLocalizationResponse("source-2", [], "moment-3"),
+    JSON.stringify({ version: "1", operations: [] })
+  ] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Use the part where the door opens, then the part where the person enters, followed by the part where the door closes.", hasMultipleVideos: true,
+    sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient
+  }));
+  assert.deepEqual(result.plan.operations[0].clips, [
+    { sourceId: "source-1", start: 1, end: 2 },
+    { sourceId: "source-2", start: 4, end: 6 },
+    { sourceId: "source-1", start: 7, end: 9 }
+  ]);
+  assert.equal(aiClient.requests.length, 7);
+});
+
+test("multi-moment composition routes visual and exact spoken clauses independently and reuses transcripts", async () => {
+  const catalog = speechCatalog(sourceCatalog.slice(0, 2));
+  const aiClient = createMockGemini({ responses: [
+    momentLocalizationResponse("source-1", [{ start: 3, end: 5 }], "moment-1"),
+    JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] })
+  ], transcriptionInteractions: [interaction([
+    { text: "Welcome", start_offset: "7s", end_offset: "7.3s" },
+    { text: "Back.", start_offset: "7.3s", end_offset: "7.7s" }
+  ])] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: 'From video 1, use the part where the person waves, then from video 2, use the part where I say "Welcome Back" and make it black and white.',
+    hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient, scratchDirectory: "/scratch",
+    transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 3, end: 5 }, { sourceId: "source-2", start: 7, end: 7.7 }] },
+    { type: "color_grade", style: "bw" }
+  ]);
+  assert.equal(aiClient.interactionRequests.length, 1);
+  assert.equal(aiClient.requests.length, 2);
+  assert.match(aiClient.requests[0].contents.at(-1), /person waves/);
+});
+
+test("multi-moment exact and semantic speech reuse one source transcript", async () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const aiClient = createMockGemini({ responses: [
+    semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-2", endSegmentId: "source-1-seg-2" }], "moment-1"),
+    JSON.stringify({ version: "1", operations: [] })
+  ], transcriptionInteractions: [interaction([
+    { text: "Welcome", start_offset: "1s", end_offset: "1.4s" },
+    { text: "Pricing.", start_offset: "2.5s", end_offset: "3s" }
+  ])] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: 'Use the part where I explain pricing, then the part where I say "Welcome".', sourceCatalog: catalog,
+    sourceInputs: plannerSources(catalog), aiClient, scratchDirectory: "/scratch",
+    transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations[0].clips, [{ sourceId: "source-1", start: 2.5, end: 3 }, { sourceId: "source-1", start: 1, end: 1.4 }]);
+  assert.equal(aiClient.interactionRequests.length, 1);
+  assert.equal(aiClient.requests.length, 2);
+});
+
+test("multi-moment composition rejects atomically when any clause has zero or ambiguous candidates", async () => {
+  const catalog = sourceCatalog.slice(0, 2);
+  for (const responses of [
+    [momentLocalizationResponse("source-1", [{ start: 1, end: 2 }], "moment-1"), momentLocalizationResponse("source-2", [], "moment-2")],
+    [momentLocalizationResponse("source-1", [{ start: 1, end: 2 }], "moment-1"), momentLocalizationResponse("source-2", [{ start: 3, end: 4 }, { start: 5, end: 6 }], "moment-2")]
+  ]) {
+    const aiClient = createMockGemini({ responses });
+    await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+      prompt: "From video 1, use the part where the person enters, then from video 2, use the part where the person exits.", hasMultipleVideos: true,
+      sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient
+    }), UnsupportedEditRequestError));
+    assert.equal(aiClient.requests.length, 2);
+  }
+});
+
+test("multi-moment malformed composition rejects before any localization or final plan", async () => {
+  const aiClient = createMockGemini();
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+    prompt: "Use the part where the person enters, then the part where.", hasMultipleVideos: true,
+    sourceCatalog: sourceCatalog.slice(0, 2), sourceInputs: plannerSources(sourceCatalog.slice(0, 2)), aiClient
+  }), UnsupportedEditRequestError));
+  assert.equal(aiClient.requests.length, 0);
+  assert.equal(aiClient.uploads.length, 0);
+});
+
+test("multi-moment explicit scopes isolate visual and semantic speech work", async () => {
+  const catalog = speechCatalog(sourceCatalog.slice(0, 2));
+  const aiClient = createMockGemini({ responses: [
+    momentLocalizationResponse("source-1", [{ start: 4, end: 6 }], "moment-1"),
+    semanticTranscriptResponse("source-2", [{ startSegmentId: "source-2-seg-1", endSegmentId: "source-2-seg-1" }], "moment-2"),
+    JSON.stringify({ version: "1", operations: [] })
+  ], transcriptionInteractions: [interaction([{ text: "Pricing.", start_offset: "2s", end_offset: "2.5s" }])] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "From video 1, use the part where the person waves, then from video 2, use the part where I explain pricing.", hasMultipleVideos: true,
+    sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient, scratchDirectory: "/scratch",
+    transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations[0].clips, [{ sourceId: "source-1", start: 4, end: 6 }, { sourceId: "source-2", start: 2, end: 2.5 }]);
+  assert.equal(aiClient.interactionRequests.length, 1);
+  assert.match(aiClient.requests[0].contents[0], /SOURCE source-1/);
+  assert.match(aiClient.requests[1].contents, /source-2-seg-1/);
+});
+
+test("multi-source compositions reject final planner source-scoped operations but retain global operations", async () => {
+  const catalog = sourceCatalog.slice(0, 2);
+  const prompt = "From video 1, use the part where the person enters, then from video 2, use the part where the person exits and make it black and white.";
+  const localizationResponses = [
+    momentLocalizationResponse("source-1", [{ start: 1, end: 3 }], "moment-1"),
+    momentLocalizationResponse("source-2", [{ start: 4, end: 6 }], "moment-2")
+  ];
+  const scoped = createMockGemini({ responses: [...localizationResponses, JSON.stringify({ version: "2", operations: [
+    { type: "sequence", clips: [{ sourceId: "source-2", start: 0, end: 30 }] },
+    { type: "color_grade", sourceId: "source-1", style: "bw" }
+  ] })] });
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({ prompt, hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: scoped }), UnsupportedEditRequestError));
+
+  const global = createMockGemini({ responses: [...localizationResponses, JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] })] });
+  const result = await withGeminiKey(() => createAiEditPlan({ prompt, hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: global }));
+  assert.deepEqual(result.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 3 }, { sourceId: "source-2", start: 4, end: 6 }] },
+    { type: "color_grade", style: "bw" }
+  ]);
 });

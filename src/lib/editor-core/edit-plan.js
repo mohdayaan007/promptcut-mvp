@@ -119,6 +119,110 @@ const MOMENT_MODES = {
   START_END_BOUNDARY: "START_END_BOUNDARY"
 };
 
+const COMPOSITION_CLAUSE_PREFIX = /^(?:(?:from\s+(?:(?:video\s*|source[-\s]?)(?:\d+)|(?:the\s+)?[a-z][a-z\s-]{1,48}\s+(?:video|clip|footage|shot))\s*,?\s*)?)(?:(?:use|show|keep|trim(?:\s+to)?)\s+)?(?:the\s+)?(?:part|bit|section|moment|clip)\s+(?:where|when)\b/i;
+const COMPOSITION_SEPARATOR = /(?:,\s*|\s+)(?:and\s+then|then|followed\s+by)\s+(?=(?:(?:from\s+(?:(?:video\s*|source[-\s]?)(?:\d+)|(?:the\s+)?[a-z][a-z\s-]{1,48}\s+(?:video|clip|footage|shot))\s*,?\s*)?)(?:(?:use|show|keep|trim(?:\s+to)?)\s+)?(?:the\s+)?(?:part|bit|section|moment|clip)\s+(?:where|when)\b)/gi;
+const TRAILING_COMPOSITION_EDIT = /(?:,?\s+and\s+)(?:make|turn|change|add|fade|crop|speed|zoom)\b.*$/gi;
+
+function quotedRanges(text = "") {
+  const ranges = [];
+  let start = null;
+  let quote = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote === '"' && character === '"') {
+      ranges.push({ start, end: index + 1 }); start = null; quote = null;
+    } else if (quote === "curly" && character === "”") {
+      ranges.push({ start, end: index + 1 }); start = null; quote = null;
+    } else if (!quote && character === '"') {
+      start = index; quote = '"';
+    } else if (!quote && character === "“") {
+      start = index; quote = "curly";
+    }
+  }
+  if (start !== null) ranges.push({ start, end: text.length });
+  return ranges;
+}
+
+function overlapsQuotedRange(match, ranges) {
+  const start = match.index || 0;
+  const end = start + match[0].length;
+  return ranges.some((range) => start < range.end && end > range.start);
+}
+
+function outsideQuotedMatches(text, expression) {
+  const ranges = quotedRanges(text);
+  return [...text.matchAll(expression)].filter((match) => !overlapsQuotedRange(match, ranges));
+}
+
+function removeTrailingCompositionEditRequest(clause = "") {
+  const match = outsideQuotedMatches(clause, TRAILING_COMPOSITION_EDIT)[0];
+  return match ? clause.slice(0, match.index).trim() : clause.trim();
+}
+
+function normalizeCompositionClause(clause = "", index) {
+  const normalized = removeTrailingCompositionEditRequest(clause);
+  if (!normalized) return null;
+  if (index > 0 && /^(?:the\s+)?(?:part|bit|section|moment|clip)\s+(?:where|when)\b/i.test(normalized)) {
+    return `Use ${normalized}`;
+  }
+  if (index > 0) {
+    const scopedShorthand = normalized.match(/^(from\s+(?:(?:video\s*|source[-\s]?)(?:\d+)|(?:the\s+)?[a-z][a-z\s-]{1,48}\s+(?:video|clip|footage|shot))\s*,?\s*)((?:the\s+)?(?:part|bit|section|moment|clip)\s+(?:where|when)\b.*)$/i);
+    if (scopedShorthand) return `${scopedShorthand[1]}Use ${scopedShorthand[2]}`;
+  }
+  return normalized;
+}
+
+function compositionAttempt(prompt = "") {
+  return outsideQuotedMatches(prompt, COMPOSITION_SEPARATOR).length > 0;
+}
+
+/**
+ * Extracts ordered, independently bounded EVENT_SEGMENT requests. This is
+ * deliberately structural: it does not interpret visual or spoken content.
+ */
+export function extractMomentCompositionRequests(prompt = "", sourceCatalog = []) {
+  if (!prompt.trim() || !compositionAttempt(prompt)) return null;
+
+  const clauses = [];
+  let lastIndex = 0;
+  for (const separator of outsideQuotedMatches(prompt, COMPOSITION_SEPARATOR)) {
+    clauses.push(prompt.slice(lastIndex, separator.index));
+    lastIndex = (separator.index || 0) + separator[0].length;
+  }
+  clauses.push(prompt.slice(lastIndex));
+
+  if (clauses.length < 2) {
+    return { error: "COMPOSITION_MALFORMED_CLAUSE" };
+  }
+  if (clauses.length > 5) {
+    return { error: "COMPOSITION_TOO_MANY_MOMENTS", count: clauses.length };
+  }
+
+  const requests = [];
+  for (const [index, clause] of clauses.entries()) {
+    const normalizedClause = normalizeCompositionClause(clause, index);
+    if (!normalizedClause || !COMPOSITION_CLAUSE_PREFIX.test(normalizedClause)) {
+      return { error: "COMPOSITION_MALFORMED_CLAUSE", clauseIndex: index + 1 };
+    }
+    const spoken = extractSpokenMomentRequest(normalizedClause, sourceCatalog);
+    const visual = spoken ? null : extractVisualMomentRequest(normalizedClause, sourceCatalog);
+    const request = spoken || visual;
+    if (!request || request.mode !== MOMENT_MODES.EVENT_SEGMENT) {
+      return { error: "COMPOSITION_UNSUPPORTED_MOMENT", clauseIndex: index + 1 };
+    }
+    if (request.sourceScope?.type === "semantic") {
+      return { error: "COMPOSITION_SEMANTIC_SOURCE_SCOPE_UNSUPPORTED", clauseIndex: index + 1 };
+    }
+    requests.push({ ...request, momentId: `moment-${index + 1}` });
+  }
+
+  return { requests };
+}
+
+export function requiresMomentCompositionUnderstanding(prompt = "", sourceCatalog = []) {
+  return Boolean(extractMomentCompositionRequests(prompt, sourceCatalog));
+}
+
 // Speech requests must be recognized before the structurally similar visual
 // moment requests below. Quoted speech is deliberately the only exact phrase
 // form supported here; topic requests are routed but deferred to Stage 4.

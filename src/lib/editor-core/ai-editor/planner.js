@@ -1,5 +1,5 @@
 import { GoogleGenAI, createPartFromUri } from "@google/genai";
-import { createEditPlan, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { buildAiEditorPrompt, buildSemanticSourceClassificationPrompt, buildSemanticTranscriptMatchPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { findPhraseOccurrences, pairPhraseOccurrences } from "@/lib/editor-core/spoken-transcript";
@@ -346,14 +346,16 @@ export function resolveVisualMomentLocalizations(localizations, momentRequest, s
   return candidates[0];
 }
 
-function applyAuthoritativeMomentSequence(plan, localizedMoment, { reject = visualMomentError, mismatchReason = "MOMENT_FINAL_PLAN_SOURCE_MISMATCH" } = {}) {
+function applyAuthoritativeMomentSequence(plan, localizedMoments, { reject = visualMomentError, mismatchReason = "MOMENT_FINAL_PLAN_SOURCE_MISMATCH", rejectSourceScopedOperations = false } = {}) {
+  const moments = Array.isArray(localizedMoments) ? localizedMoments : [localizedMoments];
   const authoritativeSequence = {
     type: "sequence",
-    clips: [{ sourceId: localizedMoment.sourceId, start: localizedMoment.start, end: localizedMoment.end }]
+    clips: moments.map(({ sourceId, start, end }) => ({ sourceId, start, end }))
   };
   const nonSequenceOperations = plan.operations.filter((operation) => operation.type !== "sequence");
-  if (nonSequenceOperations.some((operation) => operation.sourceId && operation.sourceId !== localizedMoment.sourceId)) {
-    throw reject(mismatchReason, { sourceId: localizedMoment.sourceId });
+  const authoritativeSourceIds = new Set(authoritativeSequence.clips.map((clip) => clip.sourceId));
+  if (nonSequenceOperations.some((operation) => operation.sourceId && (rejectSourceScopedOperations || !authoritativeSourceIds.has(operation.sourceId)))) {
+    throw reject(mismatchReason, { sourceIds: [...authoritativeSourceIds] });
   }
   return { ...plan, version: "2", operations: [authoritativeSequence, ...nonSequenceOperations] };
 }
@@ -420,6 +422,88 @@ function resolveSpokenCandidates(candidates, momentRequest) {
   return candidates[0];
 }
 
+async function localizeSpokenMoment({ momentRequest, sourceCatalog, resolvedSemanticSources, sourceInputs, ai, retryOptions, scratchDirectory, executionController, transcriptionOptions, transcripts }) {
+  if (!scratchDirectory) throw spokenMomentError("SPEECH_MISSING_SCRATCH_DIRECTORY", { momentId: momentRequest.momentId });
+  const targetSources = speechSourcesForMoment(momentRequest, sourceCatalog, resolvedSemanticSources);
+  const candidates = [];
+  for (const source of targetSources) {
+    if (!source.hasAudio) continue;
+    const input = sourceInputs.find((entry) => entry.source?.sourceId === source.sourceId);
+    if (!input) throw spokenMomentError("SPEECH_SOURCE_MISMATCH", { sourceId: source.sourceId, momentId: momentRequest.momentId });
+    let transcript = transcripts.get(source.sourceId);
+    if (!transcript) {
+      transcript = await transcribeSource({
+        inputPath: input.inputPath, scratchDirectory, sourceId: source.sourceId, duration: source.duration,
+        executionController, aiClient: ai, ...transcriptionOptions
+      });
+      transcripts.set(source.sourceId, transcript);
+    }
+    if (momentRequest.type === "exact") {
+      candidates.push(...exactSpokenCandidates(transcript, momentRequest, source));
+      continue;
+    }
+    let semanticResponse;
+    try {
+      semanticResponse = await generateWithRetries(ai, {
+        model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
+        contents: buildSemanticTranscriptMatchPrompt({ source, moment: momentRequest, transcript }),
+        config: {
+          responseMimeType: "application/json",
+          responseJsonSchema: createSemanticTranscriptMatchJsonSchema({ sourceId: source.sourceId, momentId: momentRequest.momentId })
+        }
+      }, retryOptions);
+    } catch (error) {
+      throw spokenMomentError(isTransientPlanningError(error) ? "SPEECH_SEMANTIC_RETRIES_EXHAUSTED" : "SPEECH_SEMANTIC_REQUEST_FAILED", { sourceId: source.sourceId, momentId: momentRequest.momentId });
+    }
+    if (!semanticResponse.text) throw spokenMomentError("SPEECH_MALFORMED_SEMANTIC_RESPONSE", { sourceId: source.sourceId, momentId: momentRequest.momentId });
+    let parsedResponse;
+    try { parsedResponse = JSON.parse(semanticResponse.text); }
+    catch { throw spokenMomentError("SPEECH_MALFORMED_SEMANTIC_RESPONSE", { sourceId: source.sourceId, momentId: momentRequest.momentId }); }
+    const validatedCandidates = validateSemanticTranscriptCandidates(parsedResponse, momentRequest, transcript, source);
+    console.info("Semantic spoken moment candidates:", { sourceId: source.sourceId, momentId: momentRequest.momentId, segmentCount: transcript.segments.length, candidateCount: validatedCandidates.length });
+    candidates.push(...validatedCandidates);
+  }
+  return resolveSpokenCandidates(candidates, momentRequest);
+}
+
+async function localizeVisualMoment({ momentRequest, sourceCatalog, resolvedSemanticSources, activeSources, ai, retryOptions }) {
+  const targetSources = localizationSourcesForMoment(momentRequest, sourceCatalog, resolvedSemanticSources);
+  const activeSourceById = new Map(activeSources.map((activeSource) => [activeSource.source.sourceId, activeSource]));
+  const localizations = [];
+  for (const source of targetSources) {
+    const activeSource = activeSourceById.get(source.sourceId);
+    if (!activeSource) throw visualMomentError("MOMENT_MISSING_SOURCE_LOCALIZATION", { sourceId: source.sourceId, momentId: momentRequest.momentId });
+    let localizationResponse;
+    try {
+      localizationResponse = await generateWithRetries(ai, {
+        model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
+        contents: buildSingleSourceContents(activeSource, buildVisualMomentLocalizationPrompt({ source, moment: momentRequest })),
+        config: {
+          responseMimeType: "application/json",
+          responseJsonSchema: createVisualMomentLocalizationJsonSchema({ sourceId: source.sourceId, momentIds: [momentRequest.momentId] })
+        }
+      }, retryOptions);
+    } catch (error) {
+      logMomentLocalizationRequestFailure(source.sourceId, error);
+      throw visualMomentError(undefined, { momentId: momentRequest.momentId });
+    }
+    if (!localizationResponse.text) throw visualMomentError("MOMENT_MALFORMED_RESPONSE", { sourceId: source.sourceId, momentId: momentRequest.momentId });
+    let parsedResponse;
+    try { parsedResponse = JSON.parse(localizationResponse.text); }
+    catch { throw visualMomentError("MOMENT_MALFORMED_RESPONSE", { sourceId: source.sourceId, momentId: momentRequest.momentId }); }
+    console.info("Gemini visual moment localization:", {
+      sourceId: source.sourceId,
+      momentId: momentRequest.momentId,
+      candidateCount: Array.isArray(parsedResponse?.moments?.[0]?.candidates) ? parsedResponse.moments[0].candidates.length : null,
+      candidates: Array.isArray(parsedResponse?.moments?.[0]?.candidates)
+        ? parsedResponse.moments[0].candidates.map((candidate) => ({ start: candidate?.start ?? null, end: candidate?.end ?? null }))
+        : null
+    });
+    localizations.push({ expectedSourceId: source.sourceId, response: parsedResponse });
+  }
+  return resolveVisualMomentLocalizations(localizations, momentRequest, sourceCatalog, targetSources.map((source) => source.sourceId));
+}
+
 function validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources) {
   if (!resolvedSemanticSources.length) return;
   const sequence = plan.version === "2" && plan.operations.find((operation) => operation.type === "sequence");
@@ -463,9 +547,14 @@ async function waitForActiveFile(ai, uploadedFile) {
 async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions }) {
   const ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const uploadedFiles = [];
-  const semanticReferences = extractSemanticSourceReferences(prompt, sourceCatalog);
-  const spokenMomentRequest = extractSpokenMomentRequest(prompt, sourceCatalog);
-  const momentRequest = extractVisualMomentRequest(prompt, sourceCatalog);
+  const composition = extractMomentCompositionRequests(prompt, sourceCatalog);
+  if (composition?.error) {
+    throw visualMomentError(composition.error, { clauseIndex: composition.clauseIndex || null, count: composition.count || null });
+  }
+  const compositionRequests = composition?.requests || null;
+  const semanticReferences = compositionRequests ? [] : extractSemanticSourceReferences(prompt, sourceCatalog);
+  const spokenMomentRequest = compositionRequests ? null : extractSpokenMomentRequest(prompt, sourceCatalog);
+  const momentRequest = compositionRequests ? null : extractVisualMomentRequest(prompt, sourceCatalog);
   const requiresVisualUnderstanding = semanticReferences.length > 0;
   if (requiresVisualUnderstanding) {
     console.info("Gemini semantic source references extracted:", { semanticReferences });
@@ -535,100 +624,21 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
       }
     }
 
-    let localizedMoment;
-    if (spokenMomentRequest) {
-      if (!scratchDirectory) throw spokenMomentError("SPEECH_MISSING_SCRATCH_DIRECTORY");
-      const targetSources = speechSourcesForMoment(spokenMomentRequest, sourceCatalog, resolvedSemanticSources);
-      const transcripts = new Map();
-      const candidates = [];
-      for (const source of targetSources) {
-        if (!source.hasAudio) continue;
-        const input = sourceInputs.find((entry) => entry.source?.sourceId === source.sourceId);
-        if (!input) throw spokenMomentError("SPEECH_SOURCE_MISMATCH", { sourceId: source.sourceId });
-        let transcript = transcripts.get(source.sourceId);
-        if (!transcript) {
-          transcript = await transcribeSource({
-            inputPath: input.inputPath, scratchDirectory, sourceId: source.sourceId, duration: source.duration,
-            executionController, aiClient: ai, ...transcriptionOptions
-          });
-          transcripts.set(source.sourceId, transcript);
-        }
-        if (spokenMomentRequest.type === "exact") {
-          candidates.push(...exactSpokenCandidates(transcript, spokenMomentRequest, source));
-          continue;
-        }
-        let semanticResponse;
-        try {
-          semanticResponse = await generateWithRetries(ai, {
-            model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
-            contents: buildSemanticTranscriptMatchPrompt({ source, moment: spokenMomentRequest, transcript }),
-            config: {
-              responseMimeType: "application/json",
-              responseJsonSchema: createSemanticTranscriptMatchJsonSchema({ sourceId: source.sourceId, momentId: spokenMomentRequest.momentId })
-            }
-          }, retryOptions);
-        } catch (error) {
-          throw spokenMomentError(isTransientPlanningError(error) ? "SPEECH_SEMANTIC_RETRIES_EXHAUSTED" : "SPEECH_SEMANTIC_REQUEST_FAILED", { sourceId: source.sourceId });
-        }
-        if (!semanticResponse.text) throw spokenMomentError("SPEECH_MALFORMED_SEMANTIC_RESPONSE", { sourceId: source.sourceId });
-        let parsedResponse;
-        try { parsedResponse = JSON.parse(semanticResponse.text); }
-        catch { throw spokenMomentError("SPEECH_MALFORMED_SEMANTIC_RESPONSE", { sourceId: source.sourceId }); }
-        const validatedCandidates = validateSemanticTranscriptCandidates(parsedResponse, spokenMomentRequest, transcript, source);
-        console.info("Semantic spoken moment candidates:", { sourceId: source.sourceId, momentId: spokenMomentRequest.momentId, segmentCount: transcript.segments.length, candidateCount: validatedCandidates.length });
-        candidates.push(...validatedCandidates);
-      }
-      localizedMoment = resolveSpokenCandidates(candidates, spokenMomentRequest);
-    }
-    if (momentRequest) {
-      const targetSources = localizationSourcesForMoment(momentRequest, sourceCatalog, resolvedSemanticSources);
-      const activeSourceById = new Map(activeSources.map((activeSource) => [activeSource.source.sourceId, activeSource]));
-      const localizations = [];
-      for (const source of targetSources) {
-        const activeSource = activeSourceById.get(source.sourceId);
-        if (!activeSource) throw visualMomentError("MOMENT_MISSING_SOURCE_LOCALIZATION", { sourceId: source.sourceId });
-        let localizationResponse;
-        try {
-          localizationResponse = await generateWithRetries(ai, {
-            model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
-            contents: buildSingleSourceContents(activeSource, buildVisualMomentLocalizationPrompt({ source, moment: momentRequest })),
-            config: {
-              responseMimeType: "application/json",
-              responseJsonSchema: createVisualMomentLocalizationJsonSchema({
-                sourceId: source.sourceId,
-                momentIds: [momentRequest.momentId]
-              })
-            }
-          }, retryOptions);
-        } catch (error) {
-          logMomentLocalizationRequestFailure(source.sourceId, error);
-          throw visualMomentError();
-        }
-        if (!localizationResponse.text) throw visualMomentError("MOMENT_MALFORMED_RESPONSE", { sourceId: source.sourceId });
-        let parsedResponse;
-        try {
-          parsedResponse = JSON.parse(localizationResponse.text);
-        } catch {
-          throw visualMomentError("MOMENT_MALFORMED_RESPONSE", { sourceId: source.sourceId });
-        }
-        console.info("Gemini visual moment localization:", {
-          sourceId: source.sourceId,
-          momentId: momentRequest.momentId,
-          candidateCount: Array.isArray(parsedResponse?.moments?.[0]?.candidates) ? parsedResponse.moments[0].candidates.length : null,
-          candidates: Array.isArray(parsedResponse?.moments?.[0]?.candidates)
-            ? parsedResponse.moments[0].candidates.map((candidate) => ({ start: candidate?.start ?? null, end: candidate?.end ?? null }))
-            : null
-        });
-        localizations.push({ expectedSourceId: source.sourceId, response: parsedResponse });
-      }
-      localizedMoment = resolveVisualMomentLocalizations(localizations, momentRequest, sourceCatalog, targetSources.map((source) => source.sourceId));
+    const transcripts = new Map();
+    const requests = compositionRequests || [spokenMomentRequest || momentRequest].filter(Boolean);
+    const localizedMoments = [];
+    for (const request of requests) {
+      const localizedMoment = request.type
+        ? await localizeSpokenMoment({ momentRequest: request, sourceCatalog, resolvedSemanticSources, sourceInputs, ai, retryOptions, scratchDirectory, executionController, transcriptionOptions, transcripts })
+        : await localizeVisualMoment({ momentRequest: request, sourceCatalog, resolvedSemanticSources, activeSources, ai, retryOptions });
+      localizedMoments.push(localizedMoment);
     }
 
     const response = await generateWithRetries(ai, {
       model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
       contents: buildMultiSourceContents(activeSources, buildAiEditorPrompt({
         prompt, hasMultipleVideos, sourceCatalog, resolvedSemanticSources,
-        authoritativeMomentSequence: localizedMoment ? [{ sourceId: localizedMoment.sourceId, start: localizedMoment.start, end: localizedMoment.end }] : null
+        authoritativeMomentSequence: localizedMoments.length ? localizedMoments.map(({ sourceId, start, end }) => ({ sourceId, start, end })) : null
       })),
       config: {
         responseMimeType: "application/json",
@@ -639,9 +649,13 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     if (!response.text) throw new Error("Gemini returned no edit plan");
     let plan = JSON.parse(response.text);
     if (!Array.isArray(plan.operations)) throw new Error("Gemini returned a malformed edit plan");
-    if (localizedMoment) plan = applyAuthoritativeMomentSequence(plan, localizedMoment, spokenMomentRequest
+    const authoritativeSequenceOptions = requests.some((request) => request.type)
       ? { reject: spokenMomentError, mismatchReason: "SPEECH_SOURCE_MISMATCH" }
-      : undefined);
+      : {};
+    if (compositionRequests && new Set(localizedMoments.map((moment) => moment.sourceId)).size > 1) {
+      authoritativeSequenceOptions.rejectSourceScopedOperations = true;
+    }
+    if (localizedMoments.length) plan = applyAuthoritativeMomentSequence(plan, localizedMoments, authoritativeSequenceOptions);
     if (!plan.operations.length) {
       if (requiresVisualUnderstanding) logSemanticFinalPlanMismatch(plan);
       throw new UnsupportedEditRequestError("This edit is not supported yet");
@@ -665,7 +679,7 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
   const planningSources = sourceInputs?.length
     ? sourceInputs
     : inputPath ? [{ inputPath, inputMimeType, source: sourceCatalog[0] }] : [];
-  const requiresVisualUnderstanding = requiresVisualSourceUnderstanding(prompt, sourceCatalog) || requiresVisualMomentUnderstanding(prompt, sourceCatalog) || requiresSpokenMomentUnderstanding(prompt, sourceCatalog);
+  const requiresVisualUnderstanding = requiresVisualSourceUnderstanding(prompt, sourceCatalog) || requiresMomentCompositionUnderstanding(prompt, sourceCatalog) || requiresVisualMomentUnderstanding(prompt, sourceCatalog) || requiresSpokenMomentUnderstanding(prompt, sourceCatalog);
   if (!process.env.GEMINI_API_KEY || !prompt.trim()) {
     if (requiresVisualUnderstanding) throw new UnsupportedEditRequestError("This edit needs Gemini video understanding");
     return {
