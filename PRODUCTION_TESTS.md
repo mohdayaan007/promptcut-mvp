@@ -1477,3 +1477,170 @@ Cliponaut's goal is:
 > correctly understand what the user asked for and produce that edit reliably.
 
 When testing, prioritize correctness and predictable behavior over merely obtaining a completed job status.
+
+---
+
+# 39. Phase 3A.5C-C Acceptance — Multi-Moment Composition
+
+Status: `✅ COMPLETE`
+
+Final production acceptance completed on revision:
+
+`6edd50841ff5ca1e7e4c81dadcb0255d653fcb89`
+
+All six final acceptance and regression jobs passed.
+
+## A — Visual + Visual Composition
+
+Job: `7da5b603-8213-4ee0-ba99-431def74c89a`
+
+Prompt:
+
+> From video 1, use the part where the person walks through the temple, then from video 2, use the part where the person is talking to the camera.
+
+PASS.
+
+`moment-1` resolved uniquely to source-1 at approximately 3.5–7.8s.
+
+`moment-2` resolved uniquely to source-2 at approximately 0.7–10.62s.
+
+Authoritative order:
+
+Temple → Talking
+
+The final output was playable and approximately 14.233s.
+
+## B — Exact Spoken Reverse Order
+
+Job: `5c531888-34e8-4240-9319-efc13ced697c`
+
+Prompt:
+
+> Use the part where I say "customer support", then the part where I say "twelve dollars".
+
+PASS.
+
+Both spoken moments produced exactly one candidate from source-1.
+
+Requested order was preserved:
+
+Customer support → Twelve dollars
+
+The final composed output was approximately 1.706s.
+
+## C — Mixed Visual + Semantic Spoken + Global Black and White
+
+Job: `014c68c5-12e0-4478-aa39-e08169143ea6`
+
+Prompt:
+
+> From video 1, use the part where the person walks through the temple, then from video 2, use the part where I explain pricing, and make it black and white.
+
+PASS.
+
+The visual moment resolved uniquely to source-1 at approximately 3.0–7.5s.
+
+The semantic spoken moment resolved uniquely to source-2 across a coherent pricing section.
+
+Authoritative order:
+
+Temple → Pricing
+
+The final output was approximately 14.75s.
+
+Inspected portions of both assembled segments were black and white, confirming the color operation applied globally.
+
+## D — Atomic Spoken Ambiguity
+
+Job: `29672e3f-d5b0-433a-8e94-49dbac250a33`
+
+Prompt:
+
+> From video 1, use the part where the person walks through the temple, then from video 2, use the part where I say "The price is twelve dollars".
+
+PASS.
+
+The first visual moment was valid.
+
+The second source produced two exact spoken candidates.
+
+Diagnostics reported:
+
+- `SPEECH_AMBIGUOUS`
+- `candidateCount: 2`
+- both candidates belonged to source-2
+
+The job failed safely with no output artifact.
+
+No temple-only partial render and no arbitrary spoken occurrence were produced.
+
+## R1 — Phase 3A.5C-A Visual Regression
+
+Job: `e99111e8-7d51-492d-8311-eb991f5d2372`
+
+Prompt:
+
+> Use the part where the person walks through the temple.
+
+PASS.
+
+The single visual request resolved uniquely to approximately 3.0–7.5s and produced a bounded approximately 4.5s playable output.
+
+Existing C-A routing remained intact.
+
+## R2 — Phase 3A.5C-B Spoken Regression
+
+Job: `ae676f1d-6d42-4958-91dc-4b673d528b4a`
+
+Prompt:
+
+> Use the part where I say "twelve dollars".
+
+PASS.
+
+The single exact spoken request resolved uniquely and produced a bounded approximately 0.7s playable output.
+
+Existing C-B routing remained intact.
+
+## Mixed-FPS Executor Incident and Regression
+
+The original Test A failure was traced to production FFmpeg `5.1.9-0+deb12u1`.
+
+A 24 fps + 30 fps concat without explicit FPS synchronization reproduced extreme frame duplication:
+
+- timeout after 8 seconds in the bounded synthetic reproduction
+- approximately 5.95 MB partial output
+- approximately 0.811s reported duration
+- 166,667 video frames
+- approximately 1,000,000 fps
+- repeated FFmpeg duplicated-frame warnings
+
+Adding:
+
+`-fps_mode vfr`
+
+to shared concat output produced:
+
+- successful completion in approximately one second
+- approximately 14.016s duration
+- 396 video frames
+- bounded output size
+- valid audio
+
+The exact real production Test A then passed after deployment.
+
+No mixed-FPS concat runaway recurred during the remaining C-C acceptance batch.
+
+## Final C-C Sign-Off
+
+`Phase 3A.5C-C — Multi-Moment Composition: ✅ COMPLETE`
+
+Production acceptance: `6/6 PASS`.
+
+No known blocking regression remains.
+
+The parent:
+
+`Phase 3A.5C — Semantic Moment Selection`
+
+is also safe to mark `✅ COMPLETE`.

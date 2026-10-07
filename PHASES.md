@@ -506,7 +506,7 @@ These should be measured in production rather than guessed.
 
 # Phase 3A.5C — Semantic Moment Selection
 
-Status: `🚧 IN PROGRESS`
+Status: `✅ COMPLETE`
 
 Purpose:
 
@@ -729,11 +729,123 @@ Short fixtures establish semantic correctness only. After basic acceptance, sepa
 
 ## Phase 3A.5C-C — Multi-Moment Composition
 
-Status: `⏳ PLANNED`
+Status: `✅ COMPLETE`
 
 Purpose:
 
-Combine multiple independently described semantic moments into one ordered edit, such as showing food being prepared, then served, then tasted.
+Combine multiple independently described visual and spoken moments into one ordered edit while preserving server-authoritative source IDs, ranges, ordering, validation, and existing V2 execution behavior.
+
+### Supported Composition Behavior
+
+Phase 3A.5C-C supports ordered compositions of 2–5 independently localized moments.
+
+Moments may include:
+
+- visual event segments
+- exact / normalized spoken phrases
+- semantic spoken sections
+- combinations of visual and spoken moments
+- multiple moments from the same source
+- multiple moments across different explicitly scoped sources
+
+Representative prompts include:
+
+> From video 1, use the part where the person walks through the temple, then from video 2, use the part where the person is talking to the camera.
+
+> Use the part where I say "customer support", then the part where I say "twelve dollars".
+
+> From video 1, use the part where the person walks through the temple, then from video 2, use the part where I explain pricing, and make it black and white.
+
+The requested order is authoritative. Cliponaut must not sort localized moments by source timestamp.
+
+### Architecture and Safety
+
+Each requested moment is localized independently using the existing Phase 3A.5C-A visual path or Phase 3A.5C-B spoken path.
+
+The resulting server-authoritative moment sequence is converted into one V2 `sequence` operation.
+
+The final planner may preserve supported global operations, but it must not change:
+
+- localized source IDs
+- localized start/end ranges
+- requested sequence order
+- number of accepted moments
+
+Composition parsing is quote-aware so separator phrases inside quoted speech do not accidentally split or reroute the request.
+
+Atomic safety remains strict:
+
+- every requested moment must resolve successfully
+- one ambiguous or unmatched moment rejects the entire composition
+- no partial composition may render
+- repeated exact spoken phrases remain ambiguous rather than selecting the first occurrence
+- unsafe source-scoped non-sequence operations are rejected across multi-source compositions
+
+The existing V2 validator and executor remain authoritative.
+
+### Mixed-Frame-Rate Production Fix
+
+Initial Production Test A exposed a shared FFmpeg concat issue rather than a C-C planning failure.
+
+Production FFmpeg `5.1.9-0+deb12u1` reproduced extreme frame duplication when concatenating mixed 24 fps and 30 fps inputs without an explicit output FPS policy.
+
+The executor fix added:
+
+`-fps_mode vfr`
+
+specifically to shared concat output.
+
+Production negative control without this option reproduced the runaway. With explicit VFR, the same synthetic mixed-rate concat completed normally.
+
+Implementation commits:
+
+- `18ef583e58027b9f30070c1335d82c80bce871b2` — Add multi-moment composition
+- `6edd50841ff5ca1e7e4c81dadcb0255d653fcb89` — Fix mixed frame rate sequence concat
+
+Final automated verification:
+
+- `npm run test:jobs` — 95/95 PASS
+- `npm run lint` — PASS except the existing unrelated `<img>` warning
+- `npm run build` — PASS
+- `git diff --check` — PASS
+
+### Production Sign-Off
+
+Production acceptance completed on revision:
+
+`6edd50841ff5ca1e7e4c81dadcb0255d653fcb89`
+
+Six final acceptance and regression jobs passed:
+
+1. Visual + Visual composition
+2. Exact spoken composition in reverse source chronology
+3. Mixed visual + semantic spoken composition with global black and white
+4. Atomic rejection when the second moment is ambiguous
+5. Phase 3A.5C-A single visual regression
+6. Phase 3A.5C-B single spoken regression
+
+The mixed-frame-rate concat runaway did not recur.
+
+No known blocking regression remains.
+
+---
+
+## Phase 3A.5C Final Sign-Off
+
+`Phase 3A.5C — Semantic Moment Selection: ✅ COMPLETE`
+
+Cliponaut can now:
+
+- identify which uploaded source the user means
+- find visually described moments inside footage
+- find exact and semantic spoken moments
+- combine multiple independently localized moments
+- preserve requested sequence order
+- mix visual and spoken localization in one edit
+- safely reject ambiguous compositions atomically
+- layer supported global operations over the authoritative composition
+
+Phase 3A.5C is complete because implementation, automated verification, deployment, production acceptance, and regression coverage for C-A, C-B, and C-C have all passed.
 
 ---
 
