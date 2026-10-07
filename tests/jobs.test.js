@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
@@ -13,9 +18,11 @@ import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt, buildSemanticTranscriptMatchPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
-import { createExecutionController, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
+import { createExecutionController, EditExecutionCancelledError, executeEditPlan } from "@/lib/editor-core/edit-executor";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
 import { extractSpeechAudio, transcribeSource, wordAnnotations, SpokenTranscriptionError } from "@/lib/editor-core/spoken-transcription";
+
+const execFileAsync = promisify(execFile);
 
 const video = { name: "source.mp4", type: "video/mp4", size: 1024 };
 const sourceCatalog = createSourceCatalog(
@@ -1603,4 +1610,116 @@ test("multi-source compositions reject final planner source-scoped operations bu
     { type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 3 }, { sourceId: "source-2", start: 4, end: 6 }] },
     { type: "color_grade", style: "bw" }
   ]);
+});
+
+async function makeMixedFrameRateSource(output, frameRate, duration) {
+  await execFileAsync("ffmpeg", [
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-f", "lavfi", "-i", `testsrc2=size=160x90:rate=${frameRate}`,
+    "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
+    "-t", duration.toString(), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", output
+  ]);
+}
+
+async function executeWithWatchdog(options, { watchdogMs = 8_000 } = {}) {
+  const executionController = createExecutionController({ gracePeriodMs: 500 });
+  let watchdogFired = false;
+  const watchdog = setTimeout(() => {
+    watchdogFired = true;
+    executionController.cancel();
+  }, watchdogMs);
+  try {
+    const output = await executeEditPlan({ ...options, executionController });
+    assert.equal(watchdogFired, false, "mixed-FPS watchdog fired");
+    return output;
+  } finally {
+    clearTimeout(watchdog);
+    executionController.dispose();
+  }
+}
+
+async function probeRenderedVideo(outputPath) {
+  const { stdout } = await execFileAsync("ffprobe", [
+    "-v", "error", "-show_entries", "format=duration:stream=codec_type,avg_frame_rate,r_frame_rate,time_base,nb_frames", "-of", "json", outputPath
+  ]);
+  const probe = JSON.parse(stdout);
+  return {
+    duration: Number(probe.format.duration),
+    video: probe.streams.find((stream) => stream.codec_type === "video"),
+    audio: probe.streams.find((stream) => stream.codec_type === "audio")
+  };
+}
+
+test("mixed 24fps and 30fps sequence concat preserves a bounded VFR output", { timeout: 15_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-mixed-fps-"));
+  const sourcePaths = [path.join(tempDirectory, "source-24.mp4"), path.join(tempDirectory, "source-30.mp4")];
+  try {
+    await makeMixedFrameRateSource(sourcePaths[0], 24, 4);
+    await makeMixedFrameRateSource(sourcePaths[1], 30, 10);
+    const media = [
+      { duration: 4, width: 160, height: 90, hasAudio: true, frameRate: 24 },
+      { duration: 10, width: 160, height: 90, hasAudio: true, frameRate: 30 }
+    ];
+    const catalog = media.map((entry, index) => ({ ...entry, sourceId: `source-${index + 1}`, index }));
+    const startedAt = Date.now();
+    const renderedPath = await executeWithWatchdog({
+      inputPaths: sourcePaths,
+      media,
+      sourceCatalog: catalog,
+      tempDirectory,
+      plan: {
+        version: "2",
+        operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 4 }, { sourceId: "source-2", start: 0, end: 10 }] }]
+      }
+    });
+    assert.equal(renderedPath, path.join(tempDirectory, "sequence.mp4"));
+    assert.ok(Date.now() - startedAt < 10_000, "mixed-FPS render should complete quickly");
+    const outputStats = await stat(renderedPath);
+    assert.ok(outputStats.size > 0 && outputStats.size < 5 * 1024 * 1024, "output should remain bounded");
+    const { duration, video, audio } = await probeRenderedVideo(renderedPath);
+    assert.ok(duration > 13.8 && duration < 14.3, `unexpected output duration: ${duration}`);
+    assert.ok(video, "output should include video");
+    assert.ok(audio, "output should include audio");
+    assert.ok(Number(video.nb_frames) > 350 && Number(video.nb_frames) < 600, `unexpected video frame count: ${video.nb_frames}`);
+    const [numerator, denominator] = video.avg_frame_rate.split("/").map(Number);
+    assert.ok(Number.isFinite(numerator / denominator) && numerator / denominator > 0 && numerator / denominator < 100, `unexpected video frame rate: ${video.avg_frame_rate}`);
+    assert.match(video.time_base, /^\d+\/\d+$/);
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test("mixed-FPS sequence remains playable through global black and white", { timeout: 15_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-mixed-fps-color-"));
+  const sourcePaths = [path.join(tempDirectory, "source-24.mp4"), path.join(tempDirectory, "source-30.mp4")];
+  try {
+    await makeMixedFrameRateSource(sourcePaths[0], 24, 1);
+    await makeMixedFrameRateSource(sourcePaths[1], 30, 1);
+    const media = [
+      { duration: 1, width: 160, height: 90, hasAudio: true, frameRate: 24 },
+      { duration: 1, width: 160, height: 90, hasAudio: true, frameRate: 30 }
+    ];
+    const catalog = media.map((entry, index) => ({ ...entry, sourceId: `source-${index + 1}`, index }));
+    const renderedPath = await executeWithWatchdog({
+      inputPaths: sourcePaths,
+      media,
+      sourceCatalog: catalog,
+      tempDirectory,
+      plan: {
+        version: "2",
+        operations: [
+          { type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 1 }, { sourceId: "source-2", start: 0, end: 1 }] },
+          // Compatibility only: downstream filters may choose their own output cadence.
+          { type: "color_grade", style: "bw" }
+        ]
+      }
+    });
+    const outputStats = await stat(renderedPath);
+    const { duration, video, audio } = await probeRenderedVideo(renderedPath);
+    assert.ok(outputStats.size > 0 && outputStats.size < 2 * 1024 * 1024, "processed output should remain bounded");
+    assert.ok(duration > 1.8 && duration < 2.2, `unexpected processed duration: ${duration}`);
+    assert.ok(video && audio, "processed output should retain video and audio");
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
 });

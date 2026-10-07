@@ -113,7 +113,10 @@ async function mergeVideos(inputs, output, executionController) {
   await exec(FFMPEG, [
     "-y", "-hide_banner", "-loglevel", "error", ...inputs.flatMap((input) => ["-i", input]), "-filter_complex",
     `${filterInputs}concat=n=${inputs.length}:v=1:a=1[v][a]`, "-map", "[v]", "-map", "[a]",
-    ...VIDEO_ENCODING_ARGS, output
+    // The concat filter can receive legitimate mixed-CFR clips (for example
+    // 24fps followed by 30fps). Preserve their frame timestamps instead of
+    // letting FFmpeg synthesize a common-CFR stream with duplicated frames.
+    "-fps_mode", "vfr", ...VIDEO_ENCODING_ARGS, output
   ], { executionController });
 }
 
