@@ -875,7 +875,7 @@ Uploaded music, additional audio tracks, beat syncing, audio ducking, and multi-
 
 ## Phase 3B-A — Text & Typography Engine
 
-Status: `🚧 IN PROGRESS`
+Status: `✅ COMPLETE`
 
 Purpose:
 
@@ -1136,6 +1136,80 @@ Phase 3B-A is not complete until automated and production testing demonstrates:
 15. Invalid font, color, size, timing, or positioning values fail validation rather than reaching FFmpeg unsafely.
 
 Phase completion requires production acceptance, not only local tests.
+
+### Phase 3B-A Completion Sign-Off
+
+Phase 3B-A is production accepted.
+
+Implementation commit:
+
+`c9f0e5b17d16771f8c9ced88354f212dcd18ea6c`
+
+Production blocker fix:
+
+`28b9fdb672fda9155911d276d12aff5d5a392b1b`
+
+Completed capabilities include:
+
+- backward-compatible legacy titles
+- reusable rich-text runs inside one title
+- multiple independent text layers
+- scalable server-side font catalog
+- exact supported font resolution
+- semantic font-style resolution against registered fonts only
+- arbitrary validated six-digit HEX colors
+- run-level fonts, colors, sizes, and weights
+- nine-point title positioning
+- ASS/libass deterministic server-side rendering
+- escaped user text and Unicode-safe rendering
+- final-output timeline semantics for title timestamps
+- title timing preserved through sequence, trim, and speed operations
+- no separate Gemini call solely for font selection
+
+Automated verification after the production blocker fix:
+
+- `100/100` job/editor tests passed
+- lint passed with only the existing unrelated `<img>` warning
+- production build passed
+- `git diff --check` passed
+
+Production acceptance verified:
+
+- ASS/libass rendering with bundled fonts
+- legacy title compatibility
+- HEX color + exact font + bottom-right placement
+- semantic font intent
+- mixed rich typography within one title
+- multiple independent text layers
+- final-output title timing after trim + speed
+- final-output title timing across an explicit multi-source sequence
+- existing black-and-white editing regression
+
+The final multi-source acceptance job:
+
+`8e14d85d-835d-4ff2-8003-d7ec91de9326`
+
+produced an approximately `6.016s` output with:
+
+`source-1 → source-2`
+
+and rendered `SECOND HALF` on source-2 at approximately output `0:04`, confirming that unqualified text timestamps use the assembled final-output timeline.
+
+A production parsing defect discovered during acceptance caused explicit phrases such as:
+
+`first 3 seconds of video 1`
+
+to be misread as semantic references such as:
+
+`seconds of video`
+
+The focused fix in `28b9fdb` prevents explicit numeric source references from entering semantic source classification while preserving legitimate semantic source descriptions.
+
+Final result:
+
+`Phase 3B-A — Text & Typography Engine: ✅ COMPLETE`
+
+The parent `Phase 3B — Text, Captions & Audio` remains `🚧 IN PROGRESS` until 3B-B and 3B-C are complete.
 
 ---
 

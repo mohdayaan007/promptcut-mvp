@@ -1644,3 +1644,277 @@ The parent:
 `Phase 3A.5C — Semantic Moment Selection`
 
 is also safe to mark `✅ COMPLETE`.
+
+---
+
+# Phase 3B-A — Text & Typography Engine Production Acceptance
+
+Production acceptance date: 2026-10-08
+
+Accepted deployed revision:
+
+`28b9fdb672fda9155911d276d12aff5d5a392b1b`
+
+Typography implementation commit:
+
+`c9f0e5b17d16771f8c9ced88354f212dcd18ea6c`
+
+Production blocker fix:
+
+`28b9fdb672fda9155911d276d12aff5d5a392b1b`
+
+## Environment Compatibility
+
+Production worker:
+
+- FFmpeg `5.1.9-0+deb12u1`
+- Debian 12
+- `--enable-libass`
+- `ass` filter available
+- `fontsdir` supported
+- bundled fonts readable from `/app/public/fonts`
+
+Bundled production fonts verified:
+
+- Inter
+- Instrument Serif
+- JetBrains Mono
+
+No ASS/libass/font-loading blocker was identified before render testing.
+
+## Gate 1 — ASS / Instrument Serif Proof
+
+Job:
+
+`164e7cea-edce-4d9a-b933-849e688997b3`
+
+Prompt:
+
+> Add the title "A Day In Kerala" at 0:03 using Instrument Serif.
+
+PASS.
+
+Instrument Serif rendered around final-output 3 seconds.
+
+Output was playable and approximately 10.63s.
+
+No ASS/libass/font-loading error occurred.
+
+## A — Legacy Title Compatibility
+
+Job:
+
+`3336ce56-fc71-41da-80dc-752e1aef26ae`
+
+Prompt:
+
+> Add the title "Kerala" at 0:03.
+
+PASS.
+
+Legacy simple-title behavior remained intact with sensible default styling.
+
+## B — HEX Color + Exact Font + Position
+
+Job:
+
+`3c2bc7df-b488-491f-880c-0b091541c898`
+
+Prompt:
+
+> Add the title "KERALA" at 0:03 in JetBrains Mono, use #677DEC, and place it at the bottom-right.
+
+PASS.
+
+Verified:
+
+- registered monospaced font styling
+- requested blue-purple HEX treatment
+- bottom-right placement
+
+## C — Semantic Font Intent
+
+Job:
+
+`555a5352-044b-40d7-a6a5-f695a12a83fb`
+
+Prompt:
+
+> Add the title "GAME NIGHT" at 0:03 using a gaming-style font.
+
+PASS.
+
+The request resolved to a registered font treatment.
+
+No nonexistent/proprietary font asset was referenced.
+
+## D — Rich Inline Typography
+
+Job:
+
+`de926e11-1224-44f5-9895-e21eba5f6742`
+
+Prompt:
+
+> Add the title "Trip to Kerala" at 0:03. Keep "Trip to" clean and white, and make "Kerala" elegant, #677DEC, and larger.
+
+PASS.
+
+One coherent title rendered with independently styled runs:
+
+- `Trip to` — clean / white
+- `Kerala` — larger / blue / elegant treatment
+
+No ASS markup leaked into visible output.
+
+## E — Multiple Independent Text Layers
+
+Job:
+
+`bd548845-7d5a-44ae-906f-02577da245a2`
+
+Prompt:
+
+> Add "Chapter One" at 0:01 at the top-center, then add "Kerala" at 0:05 at the bottom-center.
+
+PASS.
+
+Both title operations were preserved with independent timing and placement.
+
+Neither layer overwrote or dropped the other.
+
+## F — Final-Output Timing After Trim + Speed
+
+Job:
+
+`50e7bd8c-1654-4233-abf9-dfa04e01d89d`
+
+Prompt:
+
+> Trim the video from 0:05 to 0:15, make it 2x speed, and add the title "FAST" at 0:03.
+
+PASS.
+
+Final output was approximately 5.07s.
+
+`FAST` appeared approximately 3 seconds into the final exported video.
+
+This confirmed that title timing is evaluated after temporal editing rather than against the original source timeline.
+
+## G — Multi-Source Final-Output Timeline
+
+Initial production attempts exposed two unrelated blockers before the target behavior could be exercised.
+
+### Attempt 1 — External Gemini 503
+
+Job:
+
+`40737307-65b4-4ffa-8347-bf29d53ec157`
+
+Result:
+
+External Gemini `503 UNAVAILABLE`.
+
+No output was rendered.
+
+This was not treated as a Cliponaut implementation defect.
+
+### Attempt 2 — Explicit-Source Parsing Defect
+
+Job:
+
+`3d26a9f4-42cc-4fb7-9e5c-bff3cdfb6c36`
+
+Prompt:
+
+> Use the first 3 seconds of video 1, followed by the first 3 seconds of video 2, and add the title "SECOND HALF" at 0:04.
+
+Result:
+
+The prompt failed before rendering because explicit source-time phrases were incorrectly extracted as semantic references:
+
+`seconds of video`
+
+This produced ambiguous semantic source classification and safe rejection.
+
+Root cause:
+
+`extractSemanticSourceReferences()` could match the substring before the numeric source ordinal, leaving `video 1` / `video 2` outside the semantic match.
+
+Fix:
+
+`28b9fdb672fda9155911d276d12aff5d5a392b1b`
+
+The parser now excludes explicit numeric source references from semantic source extraction while preserving legitimate semantic descriptions.
+
+### Final Rerun — PASS
+
+Job:
+
+`8e14d85d-835d-4ff2-8003-d7ec91de9326`
+
+Deployed revision:
+
+`28b9fdb672fda9155911d276d12aff5d5a392b1b`
+
+Exact prompt:
+
+> Use the first 3 seconds of video 1, followed by the first 3 seconds of video 2, and add the title "SECOND HALF" at 0:04.
+
+PASS.
+
+Verified sequence:
+
+source-1 → source-2
+
+Final output duration:
+
+approximately `6.016s`
+
+`SECOND HALF` was visibly present on source-2 at approximately output `4.51s`.
+
+The prior `SEMANTIC_AMBIGUOUS` parser failure did not recur.
+
+This confirms that unqualified title timestamps are interpreted against the assembled final-output timeline rather than restarting per source.
+
+## H — Non-Text Regression
+
+Job:
+
+`f68a9ec3-a230-496a-859b-82f5ee236b38`
+
+Prompt:
+
+> Make this video black and white.
+
+PASS.
+
+Existing non-text editing remained intact.
+
+Output was playable, black and white, and approximately 10.63s.
+
+## Final 3B-A Sign-Off
+
+`Phase 3B-A — Text & Typography Engine: ✅ COMPLETE`
+
+Production acceptance confirms:
+
+- legacy title compatibility
+- ASS/libass production rendering
+- exact registered fonts
+- semantic font intent
+- HEX colors
+- nine-point positioning
+- rich text runs
+- multiple independent text layers
+- final-output timing after temporal edits
+- final-output timing across explicit multi-source sequence assembly
+- no regression in the tested non-text editing path
+
+No known blocking regression remains for Phase 3B-A.
+
+The parent:
+
+`Phase 3B — Text, Captions & Audio`
+
+remains `🚧 IN PROGRESS` pending Phase 3B-B and Phase 3B-C.
