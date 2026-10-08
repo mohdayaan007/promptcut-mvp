@@ -943,6 +943,24 @@ test("semantic source extraction preserves order and skips explicit ordinals", (
   assert.deepEqual(extractSemanticSourceReferences("Use video 2, then video 1.", sourceCatalog), []);
 });
 
+test("semantic source extraction excludes explicit source-time phrases without losing semantic references", () => {
+  const productionPrompt = 'Use the first 3 seconds of video 1, followed by the first 3 seconds of video 2, and add the title "SECOND HALF" at 0:04.';
+  assert.deepEqual(extractSemanticSourceReferences(productionPrompt, sourceCatalog), []);
+  assert.equal(requiresVisualSourceUnderstanding(productionPrompt, sourceCatalog), false);
+  assert.deepEqual(createEditPlan({ prompt: productionPrompt, hasMultipleVideos: true, sourceCatalog }).operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 3 }, { sourceId: "source-2", start: 0, end: 3 }] }
+  ]);
+  assert.deepEqual(extractSemanticSourceReferences("Use the first 3 seconds of video 1, followed by seconds 5 to 8 of video 2.", sourceCatalog), []);
+  assert.deepEqual(extractSemanticSourceReferences("Use the first 3 seconds of source-1, then the first 3 seconds of source-2.", sourceCatalog), []);
+  assert.deepEqual(extractSemanticSourceReferences("Use the greenery video, then the talking clip.", sourceCatalog), [
+    { referenceId: "semantic-1", description: "greenery video" },
+    { referenceId: "semantic-2", description: "talking clip" }
+  ]);
+  assert.deepEqual(extractSemanticSourceReferences("Use video 2 first, then the greenery clip.", sourceCatalog), [
+    { referenceId: "semantic-1", description: "greenery clip" }
+  ]);
+});
+
 test("semantic source classification schema constrains the assigned source and references", () => {
   const schema = createSemanticSourceClassificationJsonSchema({ sourceId: "source-1", referenceIds: ["semantic-1"] });
   const serialized = JSON.stringify(schema);

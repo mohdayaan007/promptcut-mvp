@@ -84,7 +84,10 @@ function normalizeSemanticDescription(description = "") {
 export function extractSemanticSourceReferences(prompt = "", sourceCatalog = []) {
   if (sourceCatalog.length < 2) return [];
   const normalized = prompt.toLowerCase();
-  const semanticPhrase = /\b(?:the\s+)?([a-z][a-z\s-]{1,48})\s+(video|clip|footage|shot)\b/g;
+  // A numeric ordinal immediately after a source noun is an explicit source
+  // reference (for example, "first 3 seconds of video 1"), not semantic media
+  // metadata such as "greenery video".
+  const semanticPhrase = /\b(?:the\s+)?([a-z][a-z\s-]{1,48})\s+(video|clip|footage|shot)\b(?!\s*\d+\b)/g;
   const references = [];
   for (const match of normalized.matchAll(semanticPhrase)) {
     const description = normalizeSemanticDescription(match[1]);
