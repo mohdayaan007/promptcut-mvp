@@ -1,5 +1,5 @@
 import { COLOR_PRESETS } from "@/lib/color-presets";
-import { COLOR_MAP, FONT_MAP, POSITION_MAP, SIZE_MAP } from "@/lib/title-config";
+import { COLOR_MAP, FONT_CATALOG, POSITION_MAP, SIZE_MAP, TITLE_SIZE_LIMITS } from "@/lib/title-config";
 
 export const CAPABILITY_LIMITS = {
   zoom: { minAmount: 1, maxAmount: 2 },
@@ -30,11 +30,12 @@ export function getAiCapabilityContract({ hasMultipleVideos = false, supportsSeq
   return {
     color_grade: { styles: Object.keys(COLOR_PRESETS) },
     title: {
-      fonts: Object.keys(FONT_MAP),
+      fonts: Object.values(FONT_CATALOG).map(({ id, family, aliases, tags, weights }) => ({ id, family, aliases, tags, weights })),
       positions: Object.keys(POSITION_MAP),
       sizes: Object.keys(SIZE_MAP),
       colors: Object.keys(COLOR_MAP),
       weights: ["regular", "bold"],
+      numericSizeBounds: TITLE_SIZE_LIMITS,
       requiredFields: CAPABILITY_REGISTRY.title.requiredFields
     },
     trim: { requiredFields: CAPABILITY_REGISTRY.trim.requiredFields },

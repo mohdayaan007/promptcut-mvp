@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -21,6 +21,9 @@ import { buildAiEditorPrompt, buildSemanticTranscriptMatchPrompt, buildVisualMom
 import { createExecutionController, EditExecutionCancelledError, executeEditPlan } from "@/lib/editor-core/edit-executor";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
 import { extractSpeechAudio, transcribeSource, wordAnnotations, SpokenTranscriptionError } from "@/lib/editor-core/spoken-transcription";
+import { FONT_CATALOG, resolveFontId, resolveSemanticFontIntent } from "@/lib/title-config";
+import { buildAssDocument } from "@/lib/title-renderer";
+import { parseTitle } from "@/lib/title-parser";
 
 const execFileAsync = promisify(execFile);
 
@@ -1719,6 +1722,112 @@ test("mixed-FPS sequence remains playable through global black and white", { tim
     assert.ok(outputStats.size > 0 && outputStats.size < 2 * 1024 * 1024, "processed output should remain bounded");
     assert.ok(duration > 1.8 && duration < 2.2, `unexpected processed duration: ${duration}`);
     assert.ok(video && audio, "processed output should retain video and audio");
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+function titlePlan(operation, { version = "1" } = {}) {
+  return { version, operations: [operation] };
+}
+
+test("title typography normalizes legacy and rich title plans through the registered catalog", () => {
+  const legacy = titlePlan({
+    type: "title", text: "Trip to Kerala", start: 0, end: 3,
+    position: "bottom", size: "medium", color: "white", weight: "regular", font: "instrumentSerif"
+  });
+  validateEditPlan(legacy);
+  assert.equal(legacy.operations[0].position, "bottom-center");
+  assert.equal(legacy.operations[0].font, "instrumentSerif");
+  assert.deepEqual(legacy.operations[0].runs, [{ text: "Trip to Kerala", font: "instrumentSerif", size: "medium", color: "#FFFFFF", weight: "regular" }]);
+
+  const rich = titlePlan({
+    type: "title", text: "Trip to Kerala", start: 0.25, end: 3,
+    position: "bottom-right", size: "medium", color: "white", weight: "regular", font: "inter",
+    runs: [
+      { text: "Trip to ", font: "inter", size: "medium", color: "#FFFFFF", weight: "regular" },
+      { text: "Kerala", fontIntent: "elegant classy", size: 58, color: "#677dec", weight: "bold" }
+    ]
+  });
+  validateEditPlan(rich);
+  assert.deepEqual(rich.operations[0].runs[1], { text: "Kerala", font: "instrumentSerif", size: 58, color: "#677DEC", weight: "bold" });
+  assert.equal(resolveFontId("Instrument Serif"), "instrumentSerif");
+  assert.equal(resolveFontId("Comic Sans"), null);
+  assert.equal(resolveSemanticFontIntent("gaming fun"), "jetbrainsMono");
+  assert.ok(Object.values(FONT_CATALOG).every((font) => font.files.regular));
+  assert.match(buildAiEditorPrompt({ prompt: "Add a title", sourceCatalog: [] }), /Title timestamps use the final assembled output timeline/);
+  assert.deepEqual(parseTitle('Add the title "Kerala" at 0:03 in a large font.'), {
+    text: '"Kerala"', start: 3, end: 6, position: "center", size: "large", color: "white", weight: "regular", font: "inter"
+  });
+  assert.equal(parseTitle('Add the title "Kerala" using Comic Sans font.').font, "__unavailable__");
+});
+
+test("title typography rejects unsupported renderer values and inconsistent rich runs", () => {
+  const base = { type: "title", text: "Kerala", start: 0, end: 1, position: "center", size: "medium", color: "white", weight: "regular", font: "inter" };
+  for (const operation of [
+    { ...base, color: "#12FG00" },
+    { ...base, font: "Comic Sans" },
+    { ...base, size: 999 },
+    { ...base, position: "middle-ish" },
+    { ...base, start: 2, end: 1 },
+    { ...base, runs: [{ text: "Different" }] }
+  ]) {
+    assert.throws(() => validateEditPlan(titlePlan(operation)), /Invalid edit plan/);
+  }
+});
+
+test("ASS title rendering escapes control-like text while preserving Unicode and independent runs", () => {
+  const document = buildAssDocument([{
+    text: "Hello ｛world｝ Kerala",
+    start: 0.25, end: 1.75, position: "top-left",
+    runs: [
+      { text: "Hello {\\pos(1,1)} ", font: "inter", size: 32, color: "#FFFFFF", weight: "regular" },
+      { text: "കേരള", font: "instrumentSerif", size: 44, color: "#45A049", weight: "bold" }
+    ]
+  }], { width: 640, height: 360 });
+  assert.match(document, /Dialogue: 0,0:00:00\.25,0:00:01\.75/);
+  assert.match(document, /\\fnInter\\fs32\\c&H00FFFFFF&\\b0/);
+  assert.match(document, /\\fnInstrument Serif\\fs44\\c&H0049A045&\\b1/);
+  assert.match(document, /｛＼pos\(1,1\)｝/);
+  assert.match(document, /കേരള/);
+  assert.doesNotMatch(document, /\}\{\\pos\(1,1\)/);
+});
+
+test("rich ASS titles render after a sequence and temporal trim on the final output timeline", { timeout: 20_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-title-render-"));
+  const sourcePaths = [path.join(tempDirectory, "one.mp4"), path.join(tempDirectory, "two.mp4")];
+  try {
+    await makeMixedFrameRateSource(sourcePaths[0], 24, 1);
+    await makeMixedFrameRateSource(sourcePaths[1], 30, 1);
+    const media = [
+      { duration: 1, width: 160, height: 90, hasAudio: true, frameRate: 24 },
+      { duration: 1, width: 160, height: 90, hasAudio: true, frameRate: 30 }
+    ];
+    const catalog = media.map((entry, index) => ({ ...entry, sourceId: `source-${index + 1}`, index }));
+    const plan = {
+      version: "2",
+      operations: [
+        { type: "sequence", clips: [{ sourceId: "source-2", start: 0, end: 1 }, { sourceId: "source-1", start: 0, end: 1 }] },
+        { type: "trim", start: 0.25, end: 1.75 },
+        {
+          type: "title", text: "Trip to Kerala", start: 0.25, end: 1.1,
+          position: "bottom-right", size: "medium", color: "white", weight: "regular", font: "inter",
+          runs: [
+            { text: "Trip to ", font: "inter", size: 24, color: "#FFFFFF", weight: "regular" },
+            { text: "Kerala", font: "instrumentSerif", size: 36, color: "#45A049", weight: "bold" }
+          ]
+        }
+      ]
+    };
+    validateEditPlan(plan, { sourceCatalog: catalog });
+    const output = await executeWithWatchdog({ inputPaths: sourcePaths, media, sourceCatalog: catalog, tempDirectory, plan }, { watchdogMs: 15_000 });
+    const ass = await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8");
+    const { duration, video, audio } = await probeRenderedVideo(output);
+    assert.match(ass, /Dialogue: 0,0:00:00\.25,0:00:01\.10/);
+    assert.match(ass, /\\fnInter/);
+    assert.match(ass, /\\fnInstrument Serif/);
+    assert.ok(duration > 1.35 && duration < 1.65, `unexpected title render duration: ${duration}`);
+    assert.ok(video && audio, "rich title output should remain playable with audio");
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });
   }

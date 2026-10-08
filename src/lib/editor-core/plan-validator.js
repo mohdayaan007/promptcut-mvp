@@ -1,4 +1,4 @@
-import { COLOR_MAP, FONT_MAP, POSITION_MAP, SIZE_MAP } from "@/lib/title-config";
+import { FONT_CATALOG, normalizeTitleColor, normalizeTitlePosition, normalizeTitleSize, normalizeTitleWeight, resolveFontId, resolveSemanticFontIntent } from "@/lib/title-config";
 import { CAPABILITY_LIMITS, getCapability } from "@/lib/editor-core/capability-registry";
 
 function validationError(message) {
@@ -16,11 +16,34 @@ function validateTitle(operation) {
   if (!isNonNegativeNumber(operation.start) || !isNonNegativeNumber(operation.end) || operation.end <= operation.start) {
     throw validationError("title timestamps must be a valid positive range");
   }
-  if (!POSITION_MAP[operation.position] || !SIZE_MAP[operation.size] || !COLOR_MAP[operation.color]) {
+  operation.position = normalizeTitlePosition(operation.position);
+  operation.size = normalizeTitleSize(operation.size);
+  operation.color = normalizeTitleColor(operation.color);
+  operation.weight = normalizeTitleWeight(operation.weight);
+  operation.font = operation.fontIntent ? resolveSemanticFontIntent(operation.fontIntent) : resolveFontId(operation.font);
+  if (!operation.position || !operation.size || !operation.color) {
     throw validationError("title position, size, or color is unsupported");
   }
-  if (!FONT_MAP[operation.font] || !FONT_MAP[operation.font][operation.weight]) {
+  if (!operation.font || !operation.weight || !FONT_CATALOG[operation.font]?.weights.includes(operation.weight)) {
     throw validationError("title font or weight is unsupported");
+  }
+  const rawRuns = operation.runs === undefined ? [{ text: operation.text }] : operation.runs;
+  if (!Array.isArray(rawRuns) || !rawRuns.length || rawRuns.length > 20) {
+    throw validationError("title runs must be a non-empty bounded array");
+  }
+  operation.runs = rawRuns.map((run) => {
+    if (!run || typeof run.text !== "string" || !run.text.length) throw validationError("title run text must be non-empty");
+    const font = run.fontIntent ? resolveSemanticFontIntent(run.fontIntent) : resolveFontId(run.font ?? operation.font);
+    const size = normalizeTitleSize(run.size ?? operation.size);
+    const color = normalizeTitleColor(run.color ?? operation.color);
+    const weight = normalizeTitleWeight(run.weight ?? operation.weight);
+    if (!font || !size || !color || !weight || !FONT_CATALOG[font]?.weights.includes(weight)) {
+      throw validationError("title run font, size, color, or weight is unsupported");
+    }
+    return { text: run.text, font, size, color, weight };
+  });
+  if (operation.runs.map((run) => run.text).join("") !== operation.text) {
+    throw validationError("title runs must reproduce title text exactly");
   }
 }
 

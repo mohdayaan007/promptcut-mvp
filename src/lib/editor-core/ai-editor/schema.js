@@ -1,4 +1,4 @@
-import { COLOR_MAP, FONT_MAP, POSITION_MAP, SIZE_MAP } from "@/lib/title-config";
+import { COLOR_MAP, FONT_CATALOG, POSITION_MAP, SIZE_MAP, TITLE_SIZE_LIMITS } from "@/lib/title-config";
 import { COLOR_PRESETS } from "@/lib/color-presets";
 import { CAPABILITY_LIMITS } from "@/lib/editor-core/capability-registry";
 
@@ -10,10 +10,26 @@ const titleFields = {
     start: { type: "number", minimum: 0 },
     end: { type: "number", minimum: 0 },
     position: { type: "string", enum: Object.keys(POSITION_MAP) },
-    size: { type: "string", enum: Object.keys(SIZE_MAP) },
-    color: { type: "string", enum: Object.keys(COLOR_MAP) },
+    size: { anyOf: [{ type: "string", enum: Object.keys(SIZE_MAP) }, { type: "number", minimum: TITLE_SIZE_LIMITS.min, maximum: TITLE_SIZE_LIMITS.max }] },
+    color: { type: "string", pattern: "^(?:#[0-9A-Fa-f]{6}|white|black|yellow|red|blue|green|orange|purple|pink)$" },
     weight: { type: "string", enum: ["regular", "bold"] },
-    font: { type: "string", enum: Object.keys(FONT_MAP) }
+    font: { type: "string", enum: Object.keys(FONT_CATALOG) },
+    fontIntent: { type: "string", maxLength: 64 },
+    runs: {
+      type: "array", minItems: 1, maxItems: 20,
+      items: {
+        type: "object",
+        properties: {
+          text: { type: "string", minLength: 1, maxLength: 500 },
+          font: { type: "string", enum: Object.keys(FONT_CATALOG) },
+          fontIntent: { type: "string", maxLength: 64 },
+          size: { anyOf: [{ type: "string", enum: Object.keys(SIZE_MAP) }, { type: "number", minimum: TITLE_SIZE_LIMITS.min, maximum: TITLE_SIZE_LIMITS.max }] },
+          color: { type: "string", pattern: "^(?:#[0-9A-Fa-f]{6}|white|black|yellow|red|blue|green|orange|purple|pink)$" },
+          weight: { type: "string", enum: ["regular", "bold"] }
+        },
+        required: ["text"], additionalProperties: false
+      }
+    }
   },
   required: ["type", "text", "start", "end", "position", "size", "color", "weight", "font"],
   additionalProperties: false

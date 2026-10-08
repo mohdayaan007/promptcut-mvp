@@ -1,7 +1,7 @@
 import { spawn } from "child_process";
 import path from "path";
 import { COLOR_PRESETS } from "@/lib/color-presets";
-import { buildTitleFilter } from "@/lib/title-renderer";
+import { buildAssFilter, writeTitleAssFile } from "@/lib/title-renderer";
 import { buildNormalizationFilter, createMediaProfile, getCropSettings } from "@/lib/editor-core/media-profile";
 
 const FFMPEG = "ffmpeg";
@@ -240,6 +240,16 @@ async function applyFade(input, output, fade, executionController) {
   return output;
 }
 
+async function applyTitles(input, output, titles, { width, height, tempDirectory, executionController }) {
+  if (!titles.length) return input;
+  const assPath = await writeTitleAssFile(titles, { width, height, tempDirectory });
+  await exec(FFMPEG, [
+    "-y", "-hide_banner", "-loglevel", "error", "-i", input,
+    "-vf", buildAssFilter(assPath), ...VIDEO_ENCODING_ARGS, output
+  ], { executionController });
+  return output;
+}
+
 /** Executes only capabilities registered in the validated edit plan. */
 export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog = [], tempDirectory, exportQuality = "standard", executionController }) {
   const sequence = plan.operations.find((operation) => operation.type === "sequence");
@@ -289,14 +299,13 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
     baseVideo = mergedPath;
   }
 
-  // Source-time visual phase: center crop establishes the output canvas before zoom, then
-  // color and titles are composited. Trim/speed run next and can change duration; fades run last.
+  // Source-time visual phase establishes the canvas and applies color/zoom. Temporal edits then
+  // establish the final output timeline, so title timestamps are never shifted by trim or speed.
   const cropSettings = getCropSettings(crop, profile);
   const filters = cropSettings.filter ? [cropSettings.filter] : [];
   for (const operation of plan.operations) {
     if (operation.type === "zoom") filters.push(buildZoomFilter(operation, cropSettings));
     if (operation.type === "color_grade" && !operation.sourceId) filters.push(...COLOR_PRESETS[operation.style]);
-    if (operation.type === "title") filters.push(buildTitleFilter(operation));
   }
 
   let processed = baseVideo;
@@ -313,5 +322,9 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
   const speed = plan.operations.find((operation) => operation.type === "speed");
   const fade = plan.operations.find((operation) => operation.type === "fade");
   const timedVideo = await applyTemporalOperations(processed, path.join(tempDirectory, "timed.mp4"), trim, speed, executionController);
-  return applyFade(timedVideo, path.join(tempDirectory, "faded.mp4"), fade, executionController);
+  const titles = plan.operations.filter((operation) => operation.type === "title");
+  const titledVideo = await applyTitles(timedVideo, path.join(tempDirectory, "titled.mp4"), titles, {
+    width: cropSettings.width, height: cropSettings.height, tempDirectory, executionController
+  });
+  return applyFade(titledVideo, path.join(tempDirectory, "faded.mp4"), fade, executionController);
 }
