@@ -849,6 +849,376 @@ Phase 3A.5C is complete because implementation, automated verification, deployme
 
 ---
 
+# Phase 3B — Text, Captions & Audio
+
+Status: `🚧 IN PROGRESS`
+
+Purpose:
+
+Extend Cliponaut's natural-language editing model beyond basic single-style titles into a reusable text, typography, caption, and basic audio system.
+
+The goal is not to recreate every desktop-editor control immediately. The goal is to build foundations that preserve Cliponaut's long-term product direction:
+
+> ChatGPT for video editing.
+
+Users should be able to describe the visual intent they want without needing to know exact editor terminology, font names, or implementation details.
+
+Phase 3B is divided into:
+
+- Phase 3B-A — Text & Typography Engine
+- Phase 3B-B — Captions / Subtitles
+- Phase 3B-C — Basic Audio Controls
+
+Uploaded music, additional audio tracks, beat syncing, audio ducking, and multi-track audio composition are not part of the current Phase 3B scope.
+
+---
+
+## Phase 3B-A — Text & Typography Engine
+
+Status: `🚧 IN PROGRESS`
+
+Purpose:
+
+Replace the current single-style title model with a reusable rich-text foundation that can later power both titles and subtitles.
+
+### Core Product Behavior
+
+Cliponaut should support natural-language requests such as:
+
+> Add the title "Trip to Kerala" at 0:03 using Instrument Serif.
+
+> Add "Trip to Kerala" at 0:03. Keep "Trip to" clean and simple, but make "Kerala" elegant and larger.
+
+> Make "Trip to" Helvetica-style and white, while "Kerala" uses an editorial serif and #45A049.
+
+> Use a fun font for the title.
+
+> Use a retro-style font and make the video feel retro too.
+
+> Use a gaming-style font for the title.
+
+> Use a classy, elegant font.
+
+Users should not be required to know exact font names.
+
+### Rich Text Model
+
+A text layer may contain multiple independently styled runs.
+
+Example:
+
+`Trip to Kerala`
+
+may resolve to:
+
+- `Trip to ` — clean sans-serif, 48 px, #FFFFFF
+- `Kerala` — editorial serif, 58 px, #45A049
+
+The engine must not assume that one title has only one:
+
+- font
+- size
+- color
+- weight
+- style
+
+Multiple text layers must also be allowed in the same edit.
+
+### Font Architecture
+
+The existing hardcoded three-font model must evolve into a scalable font catalog.
+
+The catalog should:
+
+- support a broad set of legally usable font assets
+- allow new fonts to be registered without rewriting the text engine
+- include searchable semantic metadata / tags
+- support exact font-name lookup when available
+- support semantic style lookup when the user describes a visual intent instead of a font name
+- provide deterministic fallback behavior when an exact requested font is unavailable
+- never allow the AI planner to invent an unavailable font file
+
+Representative semantic tags may include:
+
+- clean
+- minimal
+- sans-serif
+- serif
+- editorial
+- elegant
+- luxury
+- playful
+- fun
+- handwritten
+- retro
+- vintage
+- 70s
+- 80s
+- 90s
+- gaming
+- futuristic
+- technical
+- cinematic
+- bold
+- condensed
+- mono
+- display
+- documentary
+
+The initial catalog does not need to contain every font in existence.
+
+The architecture must make adding additional supported fonts primarily a catalog / asset operation rather than an editor-core rewrite.
+
+Custom user-uploaded fonts may be added in a future phase.
+
+### Semantic Font Selection
+
+When the user specifies an exact supported font:
+
+> Use Instrument Serif.
+
+the exact valid font should be used.
+
+When the user describes an intent:
+
+> Use a classy font.
+
+the AI may interpret the semantic typography intent, but the server must resolve that intent only against registered font metadata.
+
+Do not add a separate Gemini call solely for font selection if the existing planning flow can carry the typography intent.
+
+Principle:
+
+> AI interprets. Server validates. Renderer executes.
+
+### Colors
+
+Text colors must support:
+
+- arbitrary validated six-digit HEX colors such as `#FFFFFF`, `#677DEC`, `#45A049`
+- existing named colors such as white, black, red, yellow, etc.
+
+Invalid color values must be rejected safely.
+
+Different text runs inside one layer may use different colors.
+
+### Sizes
+
+The engine must continue understanding convenient natural-language sizes such as:
+
+- small
+- medium
+- large
+
+It should also support explicit validated numeric font sizes.
+
+Different runs inside the same text layer may use different sizes.
+
+### Positioning
+
+Phase 3B-A should support at minimum:
+
+- top-left
+- top-center
+- top-right
+- center-left
+- center
+- center-right
+- bottom-left
+- bottom-center
+- bottom-right
+
+Arbitrary visual-object-relative placement such as:
+
+> Put the title above the person's shoulder.
+
+is not required in this phase.
+
+### Timing Semantics
+
+Unqualified timestamps refer to the final assembled output timeline.
+
+Example:
+
+> Add "Trip to Kerala" at 0:03.
+
+means:
+
+`00:03` of the final edited video.
+
+It must not mean:
+
+- 00:03 of every uploaded source
+- automatically 00:03 of source-1
+- 00:03 of each clip independently
+
+Text rendering should occur in a timeline stage where trim, speed, sequence, and composition operations cannot silently shift the requested final-output timestamp.
+
+Explicit source-relative text timing may be added separately once source-to-output timeline mapping is formally supported.
+
+### Backward Compatibility
+
+Existing title prompts must continue working.
+
+Examples include:
+
+> Add the title "Trip to Kerala" at 0:03.
+
+> Use Instrument Serif and add the title "A Day In Kerala" at 0:05.
+
+Existing:
+
+- title text
+- start time
+- default duration behavior
+- supported legacy fonts
+- named colors
+- simple size words
+- existing title positioning
+
+must not regress.
+
+### Renderer Direction
+
+The current one-`drawtext`-filter-per-title model is not sufficient for the long-term rich-text requirements.
+
+Phase 3B-A should introduce a renderer architecture capable of:
+
+- inline font changes
+- inline size changes
+- inline color changes
+- multiple text runs
+- multiple text layers
+- reuse by Phase 3B-B captions
+
+ASS/libass or an equivalently capable deterministic server-side text-rendering approach is preferred over continuously extending a brittle single-style `drawtext` representation.
+
+The final implementation must remain compatible with the production Railway FFmpeg environment.
+
+### Out of Scope for 3B-A
+
+Do not expand this phase into a complete motion-graphics editor.
+
+The following are intentionally deferred:
+
+- animated typography
+- word-by-word caption highlighting
+- gradients
+- text masks
+- curved text
+- perspective text
+- advanced blend modes
+- brand kits
+- user-uploaded custom fonts
+- arbitrary visual-object-relative placement
+- text tracking of moving objects
+
+The architecture should avoid blocking these capabilities later.
+
+### Phase 3B-A Acceptance Criteria
+
+Phase 3B-A is not complete until automated and production testing demonstrates:
+
+1. Existing basic title prompts remain compatible.
+2. Arbitrary valid HEX colors render correctly.
+3. At least one title can contain multiple differently styled text runs.
+4. Multiple independent text layers can render in one output.
+5. Exact supported font requests resolve deterministically.
+6. Semantic font-style requests resolve only to registered fonts.
+7. An unavailable exact font does not cause the AI to invent or reference a nonexistent font asset.
+8. Rich text supports different font, size, and color values inside one title.
+9. Nine-point positioning works safely.
+10. Unqualified timestamps are interpreted against the final output timeline.
+11. A title timestamp remains correct when the same job includes sequence / composition and temporal editing.
+12. Existing trim, sequence, semantic moment, color, zoom, speed, fade, and crop behavior does not regress.
+13. The implementation does not introduce a separate AI call solely to choose a font unless production evidence shows it is necessary.
+14. The production Railway FFmpeg environment successfully renders the chosen rich-text format.
+15. Invalid font, color, size, timing, or positioning values fail validation rather than reaching FFmpeg unsafely.
+
+Phase completion requires production acceptance, not only local tests.
+
+---
+
+## Phase 3B-B — Captions / Subtitles
+
+Status: `⏳ PLANNED`
+
+Purpose:
+
+Reuse the Phase 3A.5C-B transcription infrastructure and the Phase 3B-A text engine to render synchronized subtitles.
+
+Initial scope should include:
+
+- automatic subtitles from existing speech transcription
+- correct transcript timing
+- readable default caption styling
+- font selection
+- HEX / named colors
+- caption size
+- caption positioning
+- compatibility with trims
+- compatibility with semantic moment selection
+- compatibility with multi-moment composition
+- burned-in subtitles in exported MP4
+
+Titles may be expressive while subtitles should default to highly readable typography unless the user explicitly requests otherwise.
+
+Deferred:
+
+- karaoke / word-by-word highlighting
+- translation
+- bilingual captions
+- speaker identification
+- caption animation presets
+- manual caption-editor UI
+
+---
+
+## Phase 3B-C — Basic Audio Controls
+
+Status: `⏳ PLANNED`
+
+Purpose:
+
+Add a deliberately small set of natural-language audio controls without introducing a multi-track audio editor.
+
+Initial scope:
+
+- mute
+- explicit volume adjustment
+- increase / decrease volume
+- audio-only fade in
+- audio-only fade out
+- correct audio behavior through existing trim / speed / sequence / composition operations
+
+Representative prompts:
+
+> Mute the video.
+
+> Reduce the volume to 50%.
+
+> Make the audio quieter.
+
+> Fade the audio out at the end.
+
+Deferred:
+
+- uploaded music / additional audio tracks
+- audio placement against individual output clips
+- music looping
+- automatic music selection
+- ducking
+- beat syncing
+- AI noise removal
+- silence removal
+- multi-track audio timeline editing
+
+These deferred capabilities should only be designed when product demand justifies the additional timeline and mixing architecture.
+
+---
+
+---
+
 # Render Timeout
 
 Status: `⏳ PLANNED / OPERATIONAL FOLLOW-UP`
