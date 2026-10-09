@@ -1,4 +1,5 @@
 import { normalizePhrase } from "@/lib/editor-core/spoken-transcript";
+import { COLOR_MAP, FONT_CATALOG, normalizeTitleColor, normalizeTitlePosition, POSITION_MAP } from "@/lib/title-config";
 
 const MAX_WORDS = 8;
 const MAX_CHARACTERS = 48;
@@ -6,6 +7,54 @@ const MAX_DURATION = 5;
 const PAUSE_SECONDS = 0.65;
 
 export class CaptionError extends Error {}
+
+function escapeRegExp(value) { return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+/** Extracts only explicit, renderer-supported caption styling from the prompt. */
+export function extractCaptionStyleRequest(prompt = "") {
+  const style = {};
+  const text = String(prompt);
+  const fontAliases = Object.values(FONT_CATALOG)
+    .flatMap((font) => [font.id, font.family, ...font.aliases].map((alias) => ({ alias, font: font.id })))
+    .sort((left, right) => right.alias.length - left.alias.length);
+  const font = fontAliases.find(({ alias }) => new RegExp(`\\b${escapeRegExp(alias)}\\b`, "i").test(text));
+  if (font) style.font = font.font;
+
+  const hex = text.match(/#[0-9a-f]{6}\b/i)?.[0];
+  if (hex) style.color = normalizeTitleColor(hex);
+  if (!style.color) {
+    const namedColors = Object.keys(COLOR_MAP).join("|");
+    const named = text.match(new RegExp(`\\b(?:using|with|in|color|colour)\\s+(${namedColors})\\b|\\b(${namedColors})\\s+(?:subtitles?|captions?|text)\\b`, "i"));
+    if (named) style.color = normalizeTitleColor(named[1] || named[2]);
+  }
+
+  if (/\b(?:small|smaller)\s+(?:text|subtitles?|captions?)\b|\b(?:text|subtitles?|captions?)\s+(?:small|smaller)\b/i.test(text)) style.size = "small";
+  else if (/\b(?:large|larger)\s+(?:text|subtitles?|captions?)\b|\b(?:text|subtitles?|captions?)\s+(?:large|larger)\b/i.test(text)) style.size = "large";
+  else if (/\bmedium\s+(?:text|subtitles?|captions?)\b|\b(?:text|subtitles?|captions?)\s+medium\b/i.test(text)) style.size = "medium";
+
+  const positions = Object.keys(POSITION_MAP).sort((left, right) => right.length - left.length);
+  const position = positions.find((value) => new RegExp(`\\b${escapeRegExp(value).replace(/-/g, "[-\\s]+")}\\b`, "i").test(text));
+  if (position) style.position = normalizeTitlePosition(position);
+
+  const weight = text.match(/\b(bold|regular)\b/i)?.[1]?.toLowerCase();
+  if (weight) style.weight = weight;
+  return style;
+}
+
+export function createCaptionOperation(prompt = "") {
+  return { type: "captions", ...extractCaptionStyleRequest(prompt) };
+}
+
+/** Ensures a prompt-authorized caption operation survives AI planning. */
+export function reconcileCaptionOperation(plan, prompt = "") {
+  if (!requestsCaptions(prompt)) return plan;
+  const operations = Array.isArray(plan?.operations) ? plan.operations : [];
+  const aiCaption = operations.find((operation) => operation?.type === "captions");
+  const explicitStyle = extractCaptionStyleRequest(prompt);
+  const caption = { ...createCaptionOperation(prompt), ...aiCaption, ...explicitStyle };
+  if (explicitStyle.font) delete caption.fontIntent;
+  return { ...plan, operations: [...operations.filter((operation) => operation?.type !== "captions"), caption] };
+}
 
 function sentenceEnd(word) { return /[.!?](?:[\]"')}]*)$/.test(word.text); }
 

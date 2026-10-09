@@ -1,6 +1,6 @@
 import { getIntentPattern, understandPrompt } from "@/lib/prompt-understanding";
 import { parseTitle } from "@/lib/title-parser";
-import { requestsCaptions } from "@/lib/editor-core/caption-engine";
+import { createCaptionOperation, requestsCaptions } from "@/lib/editor-core/caption-engine";
 
 function detectColor(intents = []) {
   if (intents.includes("blackWhite")) return "bw";
@@ -392,7 +392,7 @@ export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipl
   const title = parseTitle(prompt);
   const sourceAwarePlan = sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle);
   if (sourceAwarePlan) {
-    if (requestsCaptions(prompt)) sourceAwarePlan.operations.push({ type: "captions" });
+    if (requestsCaptions(prompt)) sourceAwarePlan.operations.push(createCaptionOperation(prompt));
     return sourceAwarePlan;
   }
 
@@ -401,7 +401,7 @@ export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipl
   if (hasMultipleVideos) operations.push({ type: "merge" });
   if (colorStyle) operations.push({ type: "color_grade", style: colorStyle });
   if (title) operations.push({ type: "title", ...title });
-  if (requestsCaptions(prompt)) operations.push({ type: "captions" });
+  if (requestsCaptions(prompt)) operations.push(createCaptionOperation(prompt));
   if (trim) operations.push({ type: "trim", ...trim });
   operations.push(...parseFallbackCapabilities(prompt));
 

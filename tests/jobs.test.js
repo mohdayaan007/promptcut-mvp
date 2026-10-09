@@ -24,7 +24,7 @@ import { extractSpeechAudio, transcribeSource, wordAnnotations, SpokenTranscript
 import { FONT_CATALOG, resolveFontId, resolveSemanticFontIntent } from "@/lib/title-config";
 import { buildAssDocument } from "@/lib/title-renderer";
 import { parseTitle } from "@/lib/title-parser";
-import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaptionCorrection, mapCaptionCuesToOutput, requestsCaptions } from "@/lib/editor-core/caption-engine";
+import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaptionCorrection, extractCaptionStyleRequest, mapCaptionCuesToOutput, requestsCaptions } from "@/lib/editor-core/caption-engine";
 
 const execFileAsync = promisify(execFile);
 
@@ -1914,6 +1914,45 @@ test("caption correction parsing supports targeted subtitle and sentence wording
   assert.deepEqual(extractCaptionCorrection("Change the subtitle or sentence ‘I am the founder of clip or not’ to ‘I am the founder of Cliponaut’ at 0:07"), expected);
   assert.deepEqual(extractCaptionCorrection('Change the sentence “I am the founder of clip or not” to “I am the founder of Cliponaut” at 0:07'), expected);
   assert.equal(requestsCaptions("Change the sentence 'I am the founder of clip or not' to 'I am the founder of Cliponaut' at 0:07"), true);
+});
+
+test("caption intent reconciliation preserves explicit prompt styling after Gemini planning", async () => {
+  const prompt = "Add subtitles using Inter, #677DEC, larger text at the bottom center";
+  const explicitStyle = { font: "inter", color: "#677DEC", size: "large", position: "bottom-center" };
+  assert.deepEqual(extractCaptionStyleRequest(prompt), explicitStyle);
+  assert.deepEqual(createEditPlan({ prompt }).operations.find((operation) => operation.type === "captions"), { type: "captions", ...explicitStyle });
+  assert.equal(createEditPlan({ prompt: "Add subtitles" }).operations.filter((operation) => operation.type === "captions").length, 1);
+  assert.equal(createEditPlan({ prompt: 'Change the subtitle "old text" to "new text" at 0:07' }).operations.filter((operation) => operation.type === "captions").length, 1);
+
+  const omitted = createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] }) });
+  const omittedResult = await withGeminiKey(() => createAiEditPlan({
+    prompt, sourceCatalog: [sourceCatalog[0]], sourceInputs: plannerSources([sourceCatalog[0]]), aiClient: omitted
+  }));
+  assert.deepEqual(omittedResult.plan.operations, [{ type: "color_grade", style: "bw" }, { type: "captions", ...explicitStyle }]);
+
+  const conflicting = createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [{
+    type: "captions", font: "jetbrainsMono", fontIntent: "serif", color: "#E94B4B", size: "small", position: "top-left", weight: "bold"
+  }] }) });
+  const conflictResult = await withGeminiKey(() => createAiEditPlan({
+    prompt, sourceCatalog: [sourceCatalog[0]], sourceInputs: plannerSources([sourceCatalog[0]]), aiClient: conflicting
+  }));
+  assert.deepEqual(conflictResult.plan.operations, [{ type: "captions", ...explicitStyle, weight: "bold" }]);
+
+  const unspecified = createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [{
+    type: "captions", font: "instrumentSerif", color: "#F6D365", size: "small", position: "top-left", weight: "bold"
+  }] }) });
+  const unspecifiedResult = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Add subtitles", sourceCatalog: [sourceCatalog[0]], sourceInputs: plannerSources([sourceCatalog[0]]), aiClient: unspecified
+  }));
+  assert.deepEqual(unspecifiedResult.plan.operations, [{
+    type: "captions", font: "instrumentSerif", color: "#F6D365", size: "small", position: "top-left", weight: "bold"
+  }]);
+
+  const nonCaption = createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] }) });
+  const nonCaptionResult = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Make the video black and white", sourceCatalog: [sourceCatalog[0]], sourceInputs: plannerSources([sourceCatalog[0]]), aiClient: nonCaption
+  }));
+  assert.equal(nonCaptionResult.plan.operations.some((operation) => operation.type === "captions"), false);
 });
 
 test("styled captions preserve dialogue events and render with server-owned final cues", { timeout: 15_000 }, async () => {

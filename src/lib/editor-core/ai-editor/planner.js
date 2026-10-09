@@ -5,6 +5,7 @@ import { buildAiEditorPrompt, buildSemanticSourceClassificationPrompt, buildSema
 import { findPhraseOccurrences, pairPhraseOccurrences } from "@/lib/editor-core/spoken-transcript";
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
 import { EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
+import { reconcileCaptionOperation } from "@/lib/editor-core/caption-engine";
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
 const FILE_PROCESSING_TIMEOUT_MS = 60_000;
@@ -665,6 +666,7 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
       throw new UnsupportedEditRequestError("This source description could not be identified confidently");
     }
     validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources);
+    plan = reconcileCaptionOperation(plan, prompt);
     return { plan: addAutomaticMerge(collapseGlobalSourceColorGrades(plan), hasMultipleVideos), transcripts };
   } finally {
     await Promise.all(uploadedFiles.filter((file) => file?.name).map((file) =>
