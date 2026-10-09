@@ -6,7 +6,7 @@ import { createAiEditPlan, UnsupportedEditRequestError } from "@/lib/editor-core
 import { createExecutionController, EditExecutionCancelledError, executeEditPlan } from "@/lib/editor-core/edit-executor";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
-import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaptionCorrection, mapCaptionCuesToOutput, requestsCaptions } from "@/lib/editor-core/caption-engine";
+import { CaptionError, createCaptionCues, extractCaptionCorrection, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
 import { is4kCapableMedia } from "@/lib/media/media-config";
 import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
@@ -112,14 +112,12 @@ async function processJob(job) {
         }
         captionCues.push(...createCaptionCues(transcript));
       }
-      captionCues = mapCaptionCuesToOutput(captionCues, editPlan, sourceCatalog);
       if (!captionCues.length) throw new CaptionError("CAPTION_NO_USABLE_SPEECH");
-      const correction = extractCaptionCorrection(job.prompt);
-      if (correction) captionCues = applyCaptionCorrection(captionCues, correction);
     }
+    const captionCorrection = captionOperation ? extractCaptionCorrection(job.prompt) : null;
     await throwIfCancelled(job.id);
     if (!await setJobStatus(job.id, workerId, "rendering")) throw new JobCancelledError();
-    const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality, executionController, captionCues });
+    const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality, executionController, captionCues, captionCorrection });
     await throwIfCancelled(job.id);
     outputKey = outputObjectKey(job.id);
     await uploadOutput(outputKey, outputPath);

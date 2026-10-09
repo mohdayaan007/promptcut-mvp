@@ -1916,21 +1916,57 @@ test("caption correction parsing supports targeted subtitle and sentence wording
   assert.equal(requestsCaptions("Change the sentence 'I am the founder of clip or not' to 'I am the founder of Cliponaut' at 0:07"), true);
 });
 
-test("validated captions use typography defaults and render with server-owned final cues", { timeout: 15_000 }, async () => {
+test("styled captions preserve dialogue events and render with server-owned final cues", { timeout: 15_000 }, async () => {
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-caption-render-"));
   const inputPath = path.join(tempDirectory, "source.mp4");
   try {
     await makeMixedFrameRateSource(inputPath, 30, 2);
     const media = [{ duration: 2, width: 160, height: 90, hasAudio: true, frameRate: 30 }];
-    const plan = { version: "1", operations: [{ type: "captions", font: "inter", position: "bottom-center", size: 24, color: "#677DEC", weight: "regular" }] };
+    const plan = { version: "1", operations: [
+      { type: "title", text: "Existing title", start: 0.1, end: 0.5, position: "top-center", size: "small", color: "white", weight: "bold", font: "inter" },
+      { type: "captions", font: "inter", position: "bottom-center", size: "large", color: "#677DEC", weight: "regular" }
+    ] };
     validateEditPlan(plan);
-    assert.deepEqual(plan.operations[0], { type: "captions", font: "inter", position: "bottom-center", size: 24, color: "#677DEC", weight: "regular" });
+    assert.deepEqual(plan.operations[1], { type: "captions", font: "inter", position: "bottom-center", size: "large", color: "#677DEC", weight: "regular" });
     assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "captions" }, { type: "captions" }] }), /only one captions/);
-    const output = await executeWithWatchdog({ inputPaths: [inputPath], media, tempDirectory, plan, captionCues: [{ text: "കേരള {\\pos(1,1)}", start: 0.2, end: 1.2 }] });
+    const sourceCatalog = [{ sourceId: "source-1", index: 0, duration: 2, hasAudio: true }];
+    const output = await executeWithWatchdog({ inputPaths: [inputPath], media, sourceCatalog, tempDirectory, plan, captionCues: [{ sourceId: "source-1", text: "കേരള {\\pos(1,1)}", start: 0.2, end: 1.2 }] });
     const ass = await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8");
+    assert.equal(ass.match(/^Dialogue: /gm)?.length, 2);
+    assert.match(ass, /^Dialogue: /m);
+    assert.match(ass, /\\an2\\pos\(80,76\)/);
+    assert.match(ass, /\\fnInter\\fs9/);
     assert.match(ass, /കേരള ｛＼pos\(1,1\)｝/);
     assert.match(ass, /\\c&H00EC7D67&/);
     assert.ok((await stat(output)).size > 0);
+  } finally { await rm(tempDirectory, { recursive: true, force: true }); }
+});
+
+test("executor renders global-speed captions on the final output timeline", { timeout: 20_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-caption-speed-"));
+  const inputPath = path.join(tempDirectory, "source.mp4");
+  try {
+    await makeMixedFrameRateSource(inputPath, 30, 15);
+    const media = [{ duration: 15, width: 160, height: 90, hasAudio: true, frameRate: 30 }];
+    const catalog = [{ sourceId: "source-1", index: 0, duration: 15, hasAudio: true }];
+    const plan = { version: "1", operations: [{ type: "speed", factor: 1.5 }, { type: "captions" }] };
+    validateEditPlan(plan, { sourceCatalog: catalog });
+    const output = await executeWithWatchdog({
+      inputPaths: [inputPath], media, sourceCatalog: catalog, tempDirectory, plan,
+      captionCues: [{ sourceId: "source-1", text: "Caption at ten seconds", start: 10, end: 11 }]
+    }, { watchdogMs: 15_000 });
+    const ass = await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8");
+    assert.match(ass, /Dialogue: 0,0:00:06\.67,0:00:07\.33/);
+    assert.ok((await probeRenderedVideo(output)).duration > 9.9 && (await probeRenderedVideo(output)).duration < 10.1);
+    const trimPlan = { version: "1", operations: [{ type: "trim", start: 5, end: 15 }, { type: "captions" }] };
+    validateEditPlan(trimPlan, { sourceCatalog: catalog });
+    const trimmed = await executeWithWatchdog({
+      inputPaths: [inputPath], media, sourceCatalog: catalog, tempDirectory, plan: trimPlan,
+      captionCues: [{ sourceId: "source-1", text: "Caption at ten seconds", start: 10, end: 11 }]
+    }, { watchdogMs: 15_000 });
+    const trimAss = await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8");
+    assert.match(trimAss, /Dialogue: 0,0:00:05\.00,0:00:06\.00/);
+    assert.ok((await probeRenderedVideo(trimmed)).duration > 9.9 && (await probeRenderedVideo(trimmed)).duration < 10.1);
   } finally { await rm(tempDirectory, { recursive: true, force: true }); }
 });
 

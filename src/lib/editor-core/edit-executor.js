@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import path from "path";
 import { COLOR_PRESETS } from "@/lib/color-presets";
+import { applyCaptionCorrection, CaptionError, mapCaptionCuesToOutput } from "@/lib/editor-core/caption-engine";
 import { buildAssFilter, writeTitleAssFile } from "@/lib/title-renderer";
 import { buildNormalizationFilter, createMediaProfile, getCropSettings } from "@/lib/editor-core/media-profile";
 
@@ -251,7 +252,7 @@ async function applyTitles(input, output, titles, { width, height, tempDirectory
 }
 
 /** Executes only capabilities registered in the validated edit plan. */
-export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog = [], tempDirectory, exportQuality = "standard", executionController, captionCues = [] }) {
+export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog = [], tempDirectory, exportQuality = "standard", executionController, captionCues = [], captionCorrection = null }) {
   const sequence = plan.operations.find((operation) => operation.type === "sequence");
   const crop = plan.operations.find((operation) => operation.type === "crop");
   const sourceById = new Map(sourceCatalog.map((source) => [source.sourceId, source]));
@@ -324,7 +325,12 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
   const timedVideo = await applyTemporalOperations(processed, path.join(tempDirectory, "timed.mp4"), trim, speed, executionController);
   const titles = plan.operations.filter((operation) => operation.type === "title");
   const captionStyle = plan.operations.find((operation) => operation.type === "captions");
-  const captionLayers = captionStyle ? captionCues.map((cue) => ({
+  // Captions must use the final output timeline of the exact plan that just rendered
+  // trim/speed, rather than a separately transformed worker-side schedule.
+  let finalCaptionCues = captionStyle ? mapCaptionCuesToOutput(captionCues, plan, sourceCatalog) : [];
+  if (captionStyle && !finalCaptionCues.length) throw new CaptionError("CAPTION_NO_USABLE_SPEECH");
+  if (captionCorrection) finalCaptionCues = applyCaptionCorrection(finalCaptionCues, captionCorrection);
+  const captionLayers = captionStyle ? finalCaptionCues.map((cue) => ({
     text: cue.text, start: cue.start, end: cue.end, position: captionStyle.position,
     runs: [{ text: cue.text, font: captionStyle.font, size: captionStyle.size, color: captionStyle.color, weight: captionStyle.weight }]
   })) : [];
