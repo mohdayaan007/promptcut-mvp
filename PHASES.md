@@ -1234,6 +1234,25 @@ Initial scope should include:
 - compatibility with semantic moment selection
 - compatibility with multi-moment composition
 - burned-in subtitles in exported MP4
+- editable structured caption data before final rendering
+- targeted subtitle text correction by timestamp and/or matching text
+- global subtitle find-and-replace across all caption cues
+- preservation of existing caption timing when only text is corrected
+- safe failure when the requested subtitle text cannot be matched confidently
+
+Example correction prompts should include:
+
+> Change the subtitle "I am the founder of clip or not" to "I am the founder of Cliponaut" at 0:07.
+
+> Change "clip or not" everywhere to "Cliponaut" in the video.
+
+Subtitle correction must modify caption text only. It must not alter the underlying spoken audio.
+
+When a timestamp is provided, the correction should target the matching cue at or around that final-output timestamp.
+
+When the user explicitly says "everywhere", the correction should apply to every matching caption cue.
+
+If multiple possible matches exist and the user did not provide enough information to disambiguate them, Cliponaut should fail safely rather than edit an arbitrary cue.
 
 Titles may be expressive while subtitles should default to highly readable typography unless the user explicitly requests otherwise.
 
