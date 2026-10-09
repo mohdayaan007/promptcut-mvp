@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1643,6 +1643,25 @@ async function makeMixedFrameRateSource(output, frameRate, duration) {
   ]);
 }
 
+async function makeSolidCaptionSource(output, duration) {
+  await execFileAsync("ffmpeg", [
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
+    "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+    "-t", duration.toString(), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", output
+  ]);
+}
+
+async function captionRegionDifference(videoPath, firstTime, secondTime) {
+  const { stdout } = await execFileAsync("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-ss", firstTime.toString(), "-i", videoPath,
+    "-ss", secondTime.toString(), "-i", videoPath,
+    "-filter_complex", "[0:v][1:v]blend=all_mode=difference,crop=768:216:256:468",
+    "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"
+  ], { encoding: "buffer", maxBuffer: 2 * 1024 * 1024 });
+  return [...stdout].reduce((sum, value) => sum + value, 0);
+}
+
 async function executeWithWatchdog(options, { watchdogMs = 8_000 } = {}) {
   const executionController = createExecutionController({ gracePeriodMs: 500 });
   let watchdogFired = false;
@@ -1979,6 +1998,37 @@ test("styled captions preserve dialogue events and render with server-owned fina
     assert.match(ass, /\\c&H00EC7D67&/);
     assert.ok((await stat(output)).size > 0);
   } finally { await rm(tempDirectory, { recursive: true, force: true }); }
+});
+
+test("default and production-styled captions visibly alter the final 1280x720 pixels", { timeout: 30_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-caption-pixels-"));
+  const inputPath = path.join(root, "source.mp4");
+  const media = [{ duration: 4, width: 1280, height: 720, hasAudio: true, frameRate: 30 }];
+  const sourceCatalog = [{ sourceId: "source-1", index: 0, duration: 4, hasAudio: true }];
+  const cue = [{ sourceId: "source-1", text: "Cliponaut caption test", start: 1, end: 3 }];
+  try {
+    await makeSolidCaptionSource(inputPath, 4);
+    for (const [name, operation] of [
+      ["default", { type: "captions", font: "inter", color: "#FFFFFF", size: "medium", position: "bottom-center", weight: "regular" }],
+      ["styled", { type: "captions", font: "inter", color: "#677DEC", size: "large", position: "bottom-center", weight: "regular" }]
+    ]) {
+      const tempDirectory = path.join(root, name);
+      await mkdir(tempDirectory);
+      const output = await executeWithWatchdog({
+        inputPaths: [inputPath], media, sourceCatalog, tempDirectory,
+        plan: { version: "1", operations: [operation] }, captionCues: cue
+      }, { watchdogMs: 20_000 });
+      const duringDifference = await captionRegionDifference(output, 0.5, 2);
+      const outsideCueDifference = await captionRegionDifference(output, 0.5, 3.5);
+      assert.ok(duringDifference > 50_000, `${name} caption should visibly alter the bottom-center region`);
+      assert.ok(outsideCueDifference < 5_000, `${name} caption should not alter the region outside its cue window`);
+      if (name === "styled") {
+        const ass = await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8");
+        assert.match(ass, /Dialogue: 0,0:00:01\.00,0:00:03\.00/);
+        assert.match(ass, /\\fnInter\\fs72\\c&H00EC7D67&/);
+      }
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("executor renders global-speed captions on the final output timeline", { timeout: 20_000 }, async () => {

@@ -117,7 +117,7 @@ async function processJob(job) {
     const captionCorrection = captionOperation ? extractCaptionCorrection(job.prompt) : null;
     await throwIfCancelled(job.id);
     if (!await setJobStatus(job.id, workerId, "rendering")) throw new JobCancelledError();
-    const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality, executionController, captionCues, captionCorrection });
+    const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality, executionController, captionCues, captionCorrection, jobId: job.id });
     await throwIfCancelled(job.id);
     outputKey = outputObjectKey(job.id);
     await uploadOutput(outputKey, outputPath);

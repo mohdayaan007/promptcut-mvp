@@ -3,6 +3,7 @@ import path from "path";
 import { COLOR_PRESETS } from "@/lib/color-presets";
 import { applyCaptionCorrection, CaptionError, mapCaptionCuesToOutput } from "@/lib/editor-core/caption-engine";
 import { buildAssFilter, writeTitleAssFile } from "@/lib/title-renderer";
+import { FONT_CATALOG, titleFontSize } from "@/lib/title-config";
 import { buildNormalizationFilter, createMediaProfile, getCropSettings } from "@/lib/editor-core/media-profile";
 
 const FFMPEG = "ffmpeg";
@@ -241,18 +242,33 @@ async function applyFade(input, output, fade, executionController) {
   return output;
 }
 
-async function applyTitles(input, output, titles, { width, height, tempDirectory, executionController }) {
+function safeRendererWarnings(stderr = "") {
+  return stderr.split(/\r?\n/)
+    .filter((line) => /(?:libass|font)/i.test(line))
+    .slice(0, 5)
+    .map((line) => line
+      .replace(/(?:[A-Za-z]:)?[/\\][^\s'\"]+/g, "[redacted-path]")
+      .slice(0, 240));
+}
+
+async function applyTitles(input, output, titles, { width, height, tempDirectory, executionController, captionDiagnostics = null }) {
   if (!titles.length) return input;
   const assPath = await writeTitleAssFile(titles, { width, height, tempDirectory });
-  await exec(FFMPEG, [
-    "-y", "-hide_banner", "-loglevel", "error", "-i", input,
+  const { stderr } = await exec(FFMPEG, [
+    "-y", "-hide_banner", "-loglevel", captionDiagnostics ? "warning" : "error", "-i", input,
     "-vf", buildAssFilter(assPath), ...VIDEO_ENCODING_ARGS, output
   ], { executionController });
+  if (captionDiagnostics) {
+    console.info("Caption ASS render completed:", {
+      ...captionDiagnostics,
+      rendererWarnings: safeRendererWarnings(stderr)
+    });
+  }
   return output;
 }
 
 /** Executes only capabilities registered in the validated edit plan. */
-export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog = [], tempDirectory, exportQuality = "standard", executionController, captionCues = [], captionCorrection = null }) {
+export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog = [], tempDirectory, exportQuality = "standard", executionController, captionCues = [], captionCorrection = null, jobId = null }) {
   const sequence = plan.operations.find((operation) => operation.type === "sequence");
   const crop = plan.operations.find((operation) => operation.type === "crop");
   const sourceById = new Map(sourceCatalog.map((source) => [source.sourceId, source]));
@@ -334,8 +350,27 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
     text: cue.text, start: cue.start, end: cue.end, position: captionStyle.position,
     runs: [{ text: cue.text, font: captionStyle.font, size: captionStyle.size, color: captionStyle.color, weight: captionStyle.weight }]
   })) : [];
+  const firstCaptionCue = finalCaptionCues[0];
+  const lastCaptionCue = finalCaptionCues.at(-1);
+  const captionDiagnostics = captionStyle ? {
+    jobId,
+    sourceCueCount: captionCues.length,
+    finalCueCount: finalCaptionCues.length,
+    firstCue: firstCaptionCue ? { start: firstCaptionCue.start, end: firstCaptionCue.end } : null,
+    lastCue: lastCaptionCue ? { start: lastCaptionCue.start, end: lastCaptionCue.end } : null,
+    assLayerCount: captionLayers.length,
+    renderWidth: cropSettings.width,
+    renderHeight: cropSettings.height,
+    fontId: captionStyle.font,
+    fontFamily: FONT_CATALOG[captionStyle.font]?.family || null,
+    resolvedSize: titleFontSize(captionStyle.size, cropSettings.height),
+    color: captionStyle.color,
+    position: captionStyle.position,
+    weight: captionStyle.weight
+  } : null;
+  if (captionDiagnostics) console.info("Caption render prepared:", captionDiagnostics);
   const titledVideo = await applyTitles(timedVideo, path.join(tempDirectory, "titled.mp4"), [...titles, ...captionLayers], {
-    width: cropSettings.width, height: cropSettings.height, tempDirectory, executionController
+    width: cropSettings.width, height: cropSettings.height, tempDirectory, executionController, captionDiagnostics
   });
   return applyFade(titledVideo, path.join(tempDirectory, "faded.mp4"), fade, executionController);
 }
