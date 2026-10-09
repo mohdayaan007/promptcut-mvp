@@ -15,6 +15,7 @@ export const CAPABILITY_REGISTRY = {
   title: {
     requiredFields: ["text", "start", "end", "position", "size", "color", "weight", "font"]
   },
+  captions: { requiredFields: [] },
   trim: { requiredFields: ["start", "end"] },
   zoom: { requiredFields: ["start", "end", "amount"], limits: CAPABILITY_LIMITS.zoom },
   speed: { requiredFields: ["factor"], limits: CAPABILITY_LIMITS.speed },
@@ -37,6 +38,12 @@ export function getAiCapabilityContract({ hasMultipleVideos = false, supportsSeq
       weights: ["regular", "bold"],
       numericSizeBounds: TITLE_SIZE_LIMITS,
       requiredFields: CAPABILITY_REGISTRY.title.requiredFields
+    },
+    captions: {
+      fonts: Object.values(FONT_CATALOG).map(({ id, family, aliases, tags, weights }) => ({ id, family, aliases, tags, weights })),
+      positions: Object.keys(POSITION_MAP), sizes: Object.keys(SIZE_MAP), colors: Object.keys(COLOR_MAP),
+      weights: ["regular", "bold"], numericSizeBounds: TITLE_SIZE_LIMITS,
+      note: "Captions use only server-owned transcript text and final-output cue timestamps. Never include caption text or cue timestamps in the edit plan."
     },
     trim: { requiredFields: CAPABILITY_REGISTRY.trim.requiredFields },
     zoom: { requiredFields: CAPABILITY_REGISTRY.zoom.requiredFields, ...CAPABILITY_REGISTRY.zoom.limits },

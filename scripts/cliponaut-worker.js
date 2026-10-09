@@ -6,6 +6,8 @@ import { createAiEditPlan, UnsupportedEditRequestError } from "@/lib/editor-core
 import { createExecutionController, EditExecutionCancelledError, executeEditPlan } from "@/lib/editor-core/edit-executor";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
+import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaptionCorrection, mapCaptionCuesToOutput, requestsCaptions } from "@/lib/editor-core/caption-engine";
+import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
 import { is4kCapableMedia } from "@/lib/media/media-config";
 import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
 import { jobConfig } from "@/lib/jobs/job-config";
@@ -25,6 +27,11 @@ function safeError(error) {
   if (error instanceof MediaProbeError) return error.message;
   if (error instanceof UnsupportedEditRequestError) return error.message;
   if (/4K export requires every uploaded video to be 4K-capable/.test(error?.message)) return error.message;
+  if (error instanceof CaptionError) {
+    if (error.message === "CAPTION_CORRECTION_AMBIGUOUS") return "The subtitle correction matches more than one caption.";
+    if (error.message === "CAPTION_CORRECTION_NO_MATCH") return "I couldn't find that subtitle text to replace.";
+    return "This video has no usable speech for subtitles.";
+  }
   return "Unable to process this video. Please try again.";
 }
 class JobCancelledError extends Error {}
@@ -81,15 +88,38 @@ async function processJob(job) {
     if (job.exportQuality === "4k" && !media.every(is4kCapableMedia)) {
       throw new Error("4K export requires every uploaded video to be 4K-capable");
     }
-    const { plan } = await createAiEditPlan({
+    const planning = await createAiEditPlan({
       inputPath: inputPaths[0], inputMimeType: sources[0].type,
       sourceInputs: sources.map((source) => ({ inputPath: inputPaths[source.index], inputMimeType: source.type, source: sourceCatalog.find((entry) => entry.index === source.index) })),
       prompt: job.prompt, hasMultipleVideos: inputPaths.length > 1, sourceCatalog, scratchDirectory: scratch, executionController
     });
+    const plan = planning.plan;
+    if (requestsCaptions(job.prompt) && !plan.operations.some((operation) => operation.type === "captions")) plan.operations.push({ type: "captions" });
     const editPlan = validateEditPlan(plan, { sourceCatalog });
+    const captionOperation = editPlan.operations.find((operation) => operation.type === "captions");
+    let captionCues = [];
+    if (captionOperation) {
+      const transcripts = planning.transcripts || new Map();
+      const sequence = editPlan.operations.find((operation) => operation.type === "sequence");
+      const captionSourceIds = sequence ? [...new Set(sequence.clips.map((clip) => clip.sourceId))] : sourceCatalog.map((source) => source.sourceId);
+      for (const sourceId of captionSourceIds) {
+        const source = sourceCatalog.find((entry) => entry.sourceId === sourceId);
+        if (!source?.hasAudio) continue;
+        let transcript = transcripts.get(sourceId);
+        if (!transcript) {
+          transcript = await transcribeSource({ inputPath: inputPaths[source.index], scratchDirectory: scratch, sourceId, duration: source.duration, executionController });
+          transcripts.set(sourceId, transcript);
+        }
+        captionCues.push(...createCaptionCues(transcript));
+      }
+      captionCues = mapCaptionCuesToOutput(captionCues, editPlan, sourceCatalog);
+      if (!captionCues.length) throw new CaptionError("CAPTION_NO_USABLE_SPEECH");
+      const correction = extractCaptionCorrection(job.prompt);
+      if (correction) captionCues = applyCaptionCorrection(captionCues, correction);
+    }
     await throwIfCancelled(job.id);
     if (!await setJobStatus(job.id, workerId, "rendering")) throw new JobCancelledError();
-    const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality, executionController });
+    const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality, executionController, captionCues });
     await throwIfCancelled(job.id);
     outputKey = outputObjectKey(job.id);
     await uploadOutput(outputKey, outputPath);

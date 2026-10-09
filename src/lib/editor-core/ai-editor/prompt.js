@@ -54,6 +54,7 @@ export function buildAiEditorPrompt({ prompt, hasMultipleVideos = false, sourceC
     "Zoom must be a smooth center-based zoom with a start, end, and safe amount. Speed may be global or a single source-time range.",
     "Fade is applied on the final output timeline, so use it only for beginning/end fades.",
     "Title timestamps use the final assembled output timeline after sequence, trim, and speed. A title may include rich runs; concatenate every run's text to reproduce title.text exactly. Select exact fonts only from the catalog. For a stylistic font request, set fontIntent to a catalog-supported semantic tag while still providing a catalog font fallback. Never invent font files, colors, positions, or renderer syntax.",
+    "For subtitles or captions, emit one captions operation with optional styling only. Never emit transcript text, words, source timestamps, or caption cues: the server owns all speech text and final-output timing.",
     sourceCatalog.length
       ? "For an explicit or visual source request, return version 2 with exactly one sequence operation. Each sequence clip uses source-local timestamps. " +
         "Use sourceId only from the authoritative catalog: video 1, first video, and source-1 all mean source-1. Explicit ordinal/source references are authoritative. " +

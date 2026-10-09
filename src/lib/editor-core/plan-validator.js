@@ -1,4 +1,4 @@
-import { FONT_CATALOG, normalizeTitleColor, normalizeTitlePosition, normalizeTitleSize, normalizeTitleWeight, resolveFontId, resolveSemanticFontIntent } from "@/lib/title-config";
+import { CAPTION_DEFAULTS, FONT_CATALOG, normalizeTitleColor, normalizeTitlePosition, normalizeTitleSize, normalizeTitleWeight, resolveFontId, resolveSemanticFontIntent } from "@/lib/title-config";
 import { CAPABILITY_LIMITS, getCapability } from "@/lib/editor-core/capability-registry";
 
 function validationError(message) {
@@ -44,6 +44,17 @@ function validateTitle(operation) {
   });
   if (operation.runs.map((run) => run.text).join("") !== operation.text) {
     throw validationError("title runs must reproduce title text exactly");
+  }
+}
+
+function validateCaptions(operation) {
+  operation.position = normalizeTitlePosition(operation.position ?? CAPTION_DEFAULTS.position);
+  operation.size = normalizeTitleSize(operation.size ?? CAPTION_DEFAULTS.size);
+  operation.color = normalizeTitleColor(operation.color ?? CAPTION_DEFAULTS.color);
+  operation.weight = normalizeTitleWeight(operation.weight ?? CAPTION_DEFAULTS.weight);
+  operation.font = operation.fontIntent ? resolveSemanticFontIntent(operation.fontIntent) : resolveFontId(operation.font ?? CAPTION_DEFAULTS.font);
+  if (!operation.position || !operation.size || !operation.color || !operation.weight || !operation.font || !FONT_CATALOG[operation.font]?.weights.includes(operation.weight)) {
+    throw validationError("caption style is unsupported");
   }
 }
 
@@ -108,7 +119,7 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
       }
     }
 
-    if (["merge", "color_grade", "trim", "speed", "fade", "crop"].includes(operation.type)) {
+    if (["merge", "color_grade", "trim", "speed", "fade", "crop", "captions"].includes(operation.type)) {
       if (seenSingletons.has(operation.type)) throw validationError(`only one ${operation.type} operation is allowed`);
       seenSingletons.add(operation.type);
     }
@@ -118,6 +129,7 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
     }
     if (operation.type === "trim") validateTimedOperation(operation, "trim");
     if (operation.type === "title") validateTitle(operation);
+    if (operation.type === "captions") validateCaptions(operation);
     if (operation.type === "zoom") {
       validateTimedOperation(operation, "zoom");
       if (!isNonNegativeNumber(operation.amount) || operation.amount < CAPABILITY_LIMITS.zoom.minAmount || operation.amount > CAPABILITY_LIMITS.zoom.maxAmount) {

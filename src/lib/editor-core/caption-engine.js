@@ -1,0 +1,140 @@
+import { normalizePhrase } from "@/lib/editor-core/spoken-transcript";
+
+const MAX_WORDS = 8;
+const MAX_CHARACTERS = 48;
+const MAX_DURATION = 5;
+const PAUSE_SECONDS = 0.65;
+
+export class CaptionError extends Error {}
+
+function sentenceEnd(word) { return /[.!?](?:[\]"')}]*)$/.test(word.text); }
+
+/** Builds short, readable server-owned cues from canonical transcript words. */
+export function createCaptionCues(transcript) {
+  const words = transcript?.segments?.flatMap((segment) => segment.words) || [];
+  const cues = [];
+  let current = [];
+  for (const word of words) {
+    const previous = current.at(-1);
+    const text = [...current, word].map((entry) => entry.text).join(" ");
+    const shouldBreak = current.length && (
+      word.start - previous.end >= PAUSE_SECONDS ||
+      current.length >= MAX_WORDS ||
+      text.length > MAX_CHARACTERS ||
+      word.end - current[0].start > MAX_DURATION
+    );
+    if (shouldBreak) { cues.push(current); current = []; }
+    current.push(word);
+    if (sentenceEnd(word)) { cues.push(current); current = []; }
+  }
+  if (current.length) cues.push(current);
+  return cues.map((cue) => ({
+    sourceId: transcript.sourceId,
+    text: cue.map((word) => word.text).join(" "),
+    start: cue[0].start,
+    end: cue.at(-1).end
+  }));
+}
+
+function sourcePieces(plan, sourceCatalog) {
+  const sequence = plan.operations.find((operation) => operation.type === "sequence");
+  const clips = sequence?.clips || (plan.operations.some((operation) => operation.type === "merge")
+    ? sourceCatalog.map((source) => ({ sourceId: source.sourceId, start: 0, end: source.duration }))
+    : sourceCatalog.slice(0, 1).map((source) => ({ sourceId: source.sourceId, start: 0, end: source.duration })));
+  let outputStart = 0;
+  return clips.map((clip) => {
+    const result = { ...clip, outputStart, outputEnd: outputStart + clip.end - clip.start };
+    outputStart = result.outputEnd;
+    return result;
+  });
+}
+
+function outputTimeMapper(plan) {
+  const trim = plan.operations.find((operation) => operation.type === "trim");
+  const speed = plan.operations.find((operation) => operation.type === "speed");
+  const trimStart = trim?.start ?? 0;
+  const trimEnd = trim?.end ?? Infinity;
+  if (!speed) return { trimStart, trimEnd, map: (time) => time - trimStart, breaks: [trimStart, trimEnd] };
+  if (speed.start === undefined) return { trimStart, trimEnd, map: (time) => (time - trimStart) / speed.factor, breaks: [trimStart, trimEnd] };
+  const speedStart = Math.max(trimStart, speed.start);
+  const speedEnd = Math.min(trimEnd, speed.end);
+  const map = (time) => {
+    if (time <= speedStart) return time - trimStart;
+    const before = speedStart - trimStart;
+    if (time <= speedEnd) return before + (time - speedStart) / speed.factor;
+    return before + (speedEnd - speedStart) / speed.factor + time - speedEnd;
+  };
+  return { trimStart, trimEnd, map, breaks: [trimStart, speedStart, speedEnd, trimEnd] };
+}
+
+/** Maps source-local cues through sequence/merge, trim, and speed into final output time. */
+export function mapCaptionCuesToOutput(cues, plan, sourceCatalog) {
+  const pieces = sourcePieces(plan, sourceCatalog);
+  const temporal = outputTimeMapper(plan);
+  const result = [];
+  for (const cue of cues) {
+    for (const piece of pieces.filter((entry) => entry.sourceId === cue.sourceId)) {
+      const sourceStart = Math.max(cue.start, piece.start);
+      const sourceEnd = Math.min(cue.end, piece.end);
+      if (sourceEnd <= sourceStart) continue;
+      const baseStart = piece.outputStart + sourceStart - piece.start;
+      const baseEnd = piece.outputStart + sourceEnd - piece.start;
+      const visibleStart = Math.max(baseStart, temporal.trimStart);
+      const visibleEnd = Math.min(baseEnd, temporal.trimEnd);
+      if (visibleEnd <= visibleStart) continue;
+      const points = [visibleStart, ...temporal.breaks.filter((point) => point > visibleStart && point < visibleEnd), visibleEnd];
+      for (let index = 1; index < points.length; index += 1) {
+        const start = temporal.map(points[index - 1]);
+        const end = temporal.map(points[index]);
+        if (end > start) result.push({ text: cue.text, start, end });
+      }
+    }
+  }
+  return result.sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+function replaceCueText(text, from, to) {
+  const exact = new RegExp(from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+  if (exact.test(text)) return text.replace(exact, to);
+  return normalizePhrase(text) === normalizePhrase(from) ? to : null;
+}
+
+/** Applies a server-validated correction without changing cue timing. */
+export function applyCaptionCorrection(cues, correction) {
+  const matches = cues.map((cue, index) => ({ index, text: replaceCueText(cue.text, correction.from, correction.to) }))
+    .filter((entry) => entry.text !== null)
+    .filter((entry) => correction.scope === "all" || correction.at === undefined || (cues[entry.index].start <= correction.at && correction.at <= cues[entry.index].end));
+  if (!matches.length || correction.scope !== "all" && matches.length !== 1) {
+    throw new CaptionError(matches.length ? "CAPTION_CORRECTION_AMBIGUOUS" : "CAPTION_CORRECTION_NO_MATCH");
+  }
+  const selected = new Set(matches.map((entry) => entry.index));
+  const replacements = new Map(matches.map((entry) => [entry.index, entry.text]));
+  return cues.map((cue, index) => selected.has(index) ? { ...cue, text: replacements.get(index) } : cue);
+}
+
+export function extractCaptionCorrection(prompt = "") {
+  const quoted = String.raw`(?:"([^"]+)"|'([^']+)'|“([^”]+)”|‘([^’]+)’)`;
+  const value = (matches, offset) => matches.slice(offset, offset + 4).find((entry) => entry !== undefined);
+
+  const everywhere = prompt.match(new RegExp(`\\bchange\\s+${quoted}\\s+everywhere\\s+to\\s+${quoted}`, "i"));
+  if (everywhere) return { from: value(everywhere, 1), to: value(everywhere, 5), scope: "all" };
+
+  const unquotedEverywhere = prompt.match(/\bchange\s+(.+?)\s+everywhere\s+to\s+(.+?)(?:\s+in\s+the\s+video)?[.!?]*\s*$/i);
+  if (unquotedEverywhere) {
+    return {
+      from: unquotedEverywhere[1].trim(),
+      to: unquotedEverywhere[2].trim(),
+      scope: "all"
+    };
+  }
+
+  const targeted = prompt.match(new RegExp(`\\bchange\\s+(?:the\\s+)?(?:subtitle\\s+or\\s+sentence|subtitle|sentence)\\s+${quoted}\\s+to\\s+${quoted}\\s+at\\s+(\\d+):(\\d+)`, "i"));
+  return targeted
+    ? { from: value(targeted, 1), to: value(targeted, 5), scope: "one", at: Number(targeted[9]) * 60 + Number(targeted[10]) }
+    : null;
+}
+
+export function requestsCaptions(prompt = "") {
+  return /\b(?:add|show|make)\s+(?:auto(?:matic)?\s+)?(?:subtitles|captions)\b/i.test(prompt)
+    || extractCaptionCorrection(prompt) !== null;
+}

@@ -665,7 +665,7 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
       throw new UnsupportedEditRequestError("This source description could not be identified confidently");
     }
     validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources);
-    return addAutomaticMerge(collapseGlobalSourceColorGrades(plan), hasMultipleVideos);
+    return { plan: addAutomaticMerge(collapseGlobalSourceColorGrades(plan), hasMultipleVideos), transcripts };
   } finally {
     await Promise.all(uploadedFiles.filter((file) => file?.name).map((file) =>
       ai.files.delete({ name: file.name }).catch((error) => {
@@ -690,7 +690,7 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
 
   try {
     return {
-      plan: await createGeminiPlan({ sourceInputs: planningSources, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions }),
+      ...(await createGeminiPlan({ sourceInputs: planningSources, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions })),
       source: "gemini"
     };
   } catch (error) {

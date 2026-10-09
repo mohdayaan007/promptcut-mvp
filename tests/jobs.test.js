@@ -24,6 +24,7 @@ import { extractSpeechAudio, transcribeSource, wordAnnotations, SpokenTranscript
 import { FONT_CATALOG, resolveFontId, resolveSemanticFontIntent } from "@/lib/title-config";
 import { buildAssDocument } from "@/lib/title-renderer";
 import { parseTitle } from "@/lib/title-parser";
+import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaptionCorrection, mapCaptionCuesToOutput, requestsCaptions } from "@/lib/editor-core/caption-engine";
 
 const execFileAsync = promisify(execFile);
 
@@ -1849,4 +1850,102 @@ test("rich ASS titles render after a sequence and temporal trim on the final out
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });
   }
+});
+
+test("captions segment canonical transcript words into readable server-owned cues", () => {
+  const cues = createCaptionCues(createCanonicalTranscript({ sourceId: "source-1", duration: 10, words: [
+    { text: "Welcome", start: 0, end: 0.3 }, { text: "to", start: 0.3, end: 0.45 }, { text: "Kerala.", start: 0.45, end: 0.9 },
+    { text: "This", start: 2, end: 2.2 }, { text: "is", start: 2.2, end: 2.35 }, { text: "Cliponaut.", start: 2.35, end: 2.9 }
+  ] }));
+  assert.deepEqual(cues, [
+    { sourceId: "source-1", text: "Welcome to Kerala.", start: 0, end: 0.9 },
+    { sourceId: "source-1", text: "This is Cliponaut.", start: 2, end: 2.9 }
+  ]);
+  assert.deepEqual(createCaptionCues({ sourceId: "source-2", segments: [] }), []);
+});
+
+test("caption timing maps source cues through repeated V2 clips, trim, and speed", () => {
+  const catalog = [{ sourceId: "source-1", index: 0, duration: 10, hasAudio: true }];
+  const cues = [{ sourceId: "source-1", text: "Hello", start: 2, end: 4 }];
+  const repeated = { version: "2", operations: [{ type: "sequence", clips: [
+    { sourceId: "source-1", start: 0, end: 5 }, { sourceId: "source-1", start: 1, end: 5 }
+  ] }] };
+  assert.deepEqual(mapCaptionCuesToOutput(cues, repeated, catalog), [
+    { text: "Hello", start: 2, end: 4 }, { text: "Hello", start: 6, end: 8 }
+  ]);
+  const temporal = { version: "2", operations: [...repeated.operations, { type: "trim", start: 1, end: 7 }, { type: "speed", factor: 2 }] };
+  assert.deepEqual(mapCaptionCuesToOutput(cues, temporal, catalog), [
+    { text: "Hello", start: 0.5, end: 1.5 }, { text: "Hello", start: 2.5, end: 3 }
+  ]);
+  const ranged = { version: "1", operations: [{ type: "speed", start: 1, end: 3, factor: 2 }] };
+  assert.deepEqual(mapCaptionCuesToOutput(cues, ranged, catalog), [
+    { text: "Hello", start: 1.5, end: 2 }, { text: "Hello", start: 2, end: 3 }
+  ]);
+});
+
+test("caption corrections preserve timings and reject unsafe no-match or ambiguous replacements", () => {
+  const cues = [
+    { text: "I am the founder of clip or not", start: 6.5, end: 7.5 },
+    { text: "Clip or not helps editors", start: 8, end: 9 }
+  ];
+  const corrected = applyCaptionCorrection(cues, { from: "I am the founder of Cliponaut", to: "I am the founder of Cliponaut", scope: "one", at: 7 });
+  assert.equal(corrected[0].text, "I am the founder of Cliponaut");
+  assert.deepEqual(corrected.map(({ start, end }) => ({ start, end })), cues.map(({ start, end }) => ({ start, end })));
+  const everywhere = applyCaptionCorrection(cues, { from: "clip or not", to: "Cliponaut", scope: "all" });
+  assert.deepEqual(everywhere.map((cue) => cue.text), ["I am the founder of Cliponaut", "Cliponaut helps editors"]);
+  assert.throws(() => applyCaptionCorrection(cues, { from: "clip or not", to: "Cliponaut", scope: "one" }),
+    (error) => error instanceof CaptionError && error.message === "CAPTION_CORRECTION_AMBIGUOUS");
+  assert.throws(() => applyCaptionCorrection(cues, { from: "missing", to: "new", scope: "one" }),
+    (error) => error instanceof CaptionError && error.message === "CAPTION_CORRECTION_NO_MATCH");
+  assert.throws(() => applyCaptionCorrection(cues, { from: "missing", to: "new", scope: "all" }),
+    (error) => error instanceof CaptionError && error.message === "CAPTION_CORRECTION_NO_MATCH");
+  assert.deepEqual(extractCaptionCorrection('Change "clip or not" everywhere to "Cliponaut" in the video.'), { from: "clip or not", to: "Cliponaut", scope: "all" });
+  assert.deepEqual(extractCaptionCorrection("Change clip or not everywhere to Cliponaut in the video"), { from: "clip or not", to: "Cliponaut", scope: "all" });
+  assert.equal(requestsCaptions("Change clip or not everywhere to Cliponaut in the video"), true);
+  assert.equal(requestsCaptions('Change "clip or not" everywhere to "Cliponaut" in the video.'), true);
+});
+
+test("caption correction parsing supports targeted subtitle and sentence wording", () => {
+  const expected = { from: "I am the founder of clip or not", to: "I am the founder of Cliponaut", scope: "one", at: 7 };
+  assert.deepEqual(extractCaptionCorrection("Change the subtitle or sentence 'I am the founder of clip or not' to 'I am the founder of Cliponaut' at 0:07"), expected);
+  assert.deepEqual(extractCaptionCorrection('Change the subtitle "I am the founder of clip or not" to "I am the founder of Cliponaut" at 0:07'), expected);
+  assert.deepEqual(extractCaptionCorrection("Change the sentence 'I am the founder of clip or not' to 'I am the founder of Cliponaut' at 0:07"), expected);
+  assert.deepEqual(extractCaptionCorrection("Change the subtitle 'I am the founder of clip or not' to 'I am the founder of Cliponaut' at 0:07"), expected);
+  assert.deepEqual(extractCaptionCorrection("Change the subtitle or sentence ‘I am the founder of clip or not’ to ‘I am the founder of Cliponaut’ at 0:07"), expected);
+  assert.deepEqual(extractCaptionCorrection('Change the sentence “I am the founder of clip or not” to “I am the founder of Cliponaut” at 0:07'), expected);
+  assert.equal(requestsCaptions("Change the sentence 'I am the founder of clip or not' to 'I am the founder of Cliponaut' at 0:07"), true);
+});
+
+test("validated captions use typography defaults and render with server-owned final cues", { timeout: 15_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-caption-render-"));
+  const inputPath = path.join(tempDirectory, "source.mp4");
+  try {
+    await makeMixedFrameRateSource(inputPath, 30, 2);
+    const media = [{ duration: 2, width: 160, height: 90, hasAudio: true, frameRate: 30 }];
+    const plan = { version: "1", operations: [{ type: "captions", font: "inter", position: "bottom-center", size: 24, color: "#677DEC", weight: "regular" }] };
+    validateEditPlan(plan);
+    assert.deepEqual(plan.operations[0], { type: "captions", font: "inter", position: "bottom-center", size: 24, color: "#677DEC", weight: "regular" });
+    assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "captions" }, { type: "captions" }] }), /only one captions/);
+    const output = await executeWithWatchdog({ inputPaths: [inputPath], media, tempDirectory, plan, captionCues: [{ text: "കേരള {\\pos(1,1)}", start: 0.2, end: 1.2 }] });
+    const ass = await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8");
+    assert.match(ass, /കേരള ｛＼pos\(1,1\)｝/);
+    assert.match(ass, /\\c&H00EC7D67&/);
+    assert.ok((await stat(output)).size > 0);
+  } finally { await rm(tempDirectory, { recursive: true, force: true }); }
+});
+
+test("spoken selection retains its job-local transcript for caption reuse", async () => {
+  const catalog = speechCatalog([sourceCatalog[0]]);
+  const aiClient = createMockGemini({
+    responses: [JSON.stringify({ version: "1", operations: [{ type: "captions" }] })],
+    transcriptionInteractions: [interaction([{ text: "Welcome", start_offset: "1s", end_offset: "1.4s" }])]
+  });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: 'Use the part where I say "Welcome" and add subtitles.', sourceCatalog: catalog,
+    sourceInputs: plannerSources(catalog), aiClient, scratchDirectory: "/scratch",
+    transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.equal(aiClient.interactionRequests.length, 1);
+  assert.equal(result.transcripts.get("source-1").segments[0].text, "Welcome");
+  assert.ok(result.plan.operations.some((operation) => operation.type === "captions"));
 });

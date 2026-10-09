@@ -251,7 +251,7 @@ async function applyTitles(input, output, titles, { width, height, tempDirectory
 }
 
 /** Executes only capabilities registered in the validated edit plan. */
-export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog = [], tempDirectory, exportQuality = "standard", executionController }) {
+export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog = [], tempDirectory, exportQuality = "standard", executionController, captionCues = [] }) {
   const sequence = plan.operations.find((operation) => operation.type === "sequence");
   const crop = plan.operations.find((operation) => operation.type === "crop");
   const sourceById = new Map(sourceCatalog.map((source) => [source.sourceId, source]));
@@ -323,7 +323,12 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
   const fade = plan.operations.find((operation) => operation.type === "fade");
   const timedVideo = await applyTemporalOperations(processed, path.join(tempDirectory, "timed.mp4"), trim, speed, executionController);
   const titles = plan.operations.filter((operation) => operation.type === "title");
-  const titledVideo = await applyTitles(timedVideo, path.join(tempDirectory, "titled.mp4"), titles, {
+  const captionStyle = plan.operations.find((operation) => operation.type === "captions");
+  const captionLayers = captionStyle ? captionCues.map((cue) => ({
+    text: cue.text, start: cue.start, end: cue.end, position: captionStyle.position,
+    runs: [{ text: cue.text, font: captionStyle.font, size: captionStyle.size, color: captionStyle.color, weight: captionStyle.weight }]
+  })) : [];
+  const titledVideo = await applyTitles(timedVideo, path.join(tempDirectory, "titled.mp4"), [...titles, ...captionLayers], {
     width: cropSettings.width, height: cropSettings.height, tempDirectory, executionController
   });
   return applyFade(titledVideo, path.join(tempDirectory, "faded.mp4"), fade, executionController);

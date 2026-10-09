@@ -53,6 +53,7 @@ export const COLOR_MAP = {
 };
 
 export const TITLE_DEFAULTS = { position: "center", size: "medium", color: "white", weight: "regular", font: "inter" };
+export const CAPTION_DEFAULTS = { position: "bottom-center", size: "medium", color: "white", weight: "regular", font: "inter" };
 export const TITLE_SIZE_LIMITS = { min: 12, max: 200 };
 
 function normalizedFontName(value = "") {

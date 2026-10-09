@@ -35,6 +35,20 @@ const titleFields = {
   additionalProperties: false
 };
 
+const captionFields = {
+  type: "object",
+  properties: {
+    type: { type: "string", enum: ["captions"] },
+    position: { type: "string", enum: Object.keys(POSITION_MAP) },
+    size: { anyOf: [{ type: "string", enum: Object.keys(SIZE_MAP) }, { type: "number", minimum: TITLE_SIZE_LIMITS.min, maximum: TITLE_SIZE_LIMITS.max }] },
+    color: { type: "string", pattern: "^(?:#[0-9A-Fa-f]{6}|white|black|yellow|red|blue|green|orange|purple|pink)$" },
+    weight: { type: "string", enum: ["regular", "bold"] },
+    font: { type: "string", enum: Object.keys(FONT_CATALOG) },
+    fontIntent: { type: "string", maxLength: 64 }
+  },
+  required: ["type"], additionalProperties: false
+};
+
 export function createEditPlanJsonSchema({ sourceIds = [] } = {}) {
   const supportsSourceAwarePlans = sourceIds.length > 0;
   const sourceId = { type: "string", enum: sourceIds };
@@ -82,6 +96,7 @@ export function createEditPlanJsonSchema({ sourceIds = [] } = {}) {
       additionalProperties: false
     },
     titleFields,
+    captionFields,
     {
       type: "object",
       properties: {
