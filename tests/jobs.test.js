@@ -1643,10 +1643,10 @@ async function makeMixedFrameRateSource(output, frameRate, duration) {
   ]);
 }
 
-async function makeSolidCaptionSource(output, duration) {
+async function makeSolidCaptionSource(output, duration, { width = 1280, height = 720 } = {}) {
   await execFileAsync("ffmpeg", [
     "-y", "-hide_banner", "-loglevel", "error",
-    "-f", "lavfi", "-i", "color=c=black:size=1280x720:rate=30",
+    "-f", "lavfi", "-i", `color=c=black:size=${width}x${height}:rate=30`,
     "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
     "-t", duration.toString(), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", output
   ]);
@@ -2000,32 +2000,34 @@ test("styled captions preserve dialogue events and render with server-owned fina
   } finally { await rm(tempDirectory, { recursive: true, force: true }); }
 });
 
-test("default and production-styled captions visibly alter the final 1280x720 pixels", { timeout: 30_000 }, async () => {
+test("default and production-styled captions visibly alter final pixels at local and production canvas sizes", { timeout: 30_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-caption-pixels-"));
-  const inputPath = path.join(root, "source.mp4");
-  const media = [{ duration: 4, width: 1280, height: 720, hasAudio: true, frameRate: 30 }];
   const sourceCatalog = [{ sourceId: "source-1", index: 0, duration: 4, hasAudio: true }];
   const cue = [{ sourceId: "source-1", text: "Cliponaut caption test", start: 1, end: 3 }];
   try {
-    await makeSolidCaptionSource(inputPath, 4);
-    for (const [name, operation] of [
-      ["default", { type: "captions", font: "inter", color: "#FFFFFF", size: "medium", position: "bottom-center", weight: "regular" }],
-      ["styled", { type: "captions", font: "inter", color: "#677DEC", size: "large", position: "bottom-center", weight: "regular" }]
-    ]) {
-      const tempDirectory = path.join(root, name);
-      await mkdir(tempDirectory);
-      const output = await executeWithWatchdog({
-        inputPaths: [inputPath], media, sourceCatalog, tempDirectory,
-        plan: { version: "1", operations: [operation] }, captionCues: cue
-      }, { watchdogMs: 20_000 });
-      const duringDifference = await captionRegionDifference(output, 0.5, 2);
-      const outsideCueDifference = await captionRegionDifference(output, 0.5, 3.5);
-      assert.ok(duringDifference > 50_000, `${name} caption should visibly alter the bottom-center region`);
-      assert.ok(outsideCueDifference < 5_000, `${name} caption should not alter the region outside its cue window`);
-      if (name === "styled") {
-        const ass = await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8");
-        assert.match(ass, /Dialogue: 0,0:00:01\.00,0:00:03\.00/);
-        assert.match(ass, /\\fnInter\\fs72\\c&H00EC7D67&/);
+    for (const { width, height } of [{ width: 1280, height: 720 }, { width: 854, height: 480 }]) {
+      const inputPath = path.join(root, `source-${width}x${height}.mp4`);
+      const media = [{ duration: 4, width, height, hasAudio: true, frameRate: 30 }];
+      await makeSolidCaptionSource(inputPath, 4, { width, height });
+      for (const [name, operation] of [
+        ["default", { type: "captions", font: "inter", color: "#FFFFFF", size: "medium", position: "bottom-center", weight: "regular" }],
+        ["styled", { type: "captions", font: "inter", color: "#677DEC", size: "large", position: "bottom-center", weight: "regular" }]
+      ]) {
+        const tempDirectory = path.join(root, `${width}x${height}-${name}`);
+        await mkdir(tempDirectory);
+        const output = await executeWithWatchdog({
+          inputPaths: [inputPath], media, sourceCatalog, tempDirectory,
+          plan: { version: "1", operations: [operation] }, captionCues: cue
+        }, { watchdogMs: 20_000 });
+        const duringDifference = await captionRegionDifference(output, 0.5, 2);
+        const outsideCueDifference = await captionRegionDifference(output, 0.5, 3.5);
+        assert.ok(duringDifference > 50_000, `${width}x${height} ${name} caption should visibly alter the bottom-center region`);
+        assert.ok(outsideCueDifference < 5_000, `${width}x${height} ${name} caption should not alter the region outside its cue window`);
+        if (name === "styled") {
+          const ass = await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8");
+          assert.match(ass, /Dialogue: 0,0:00:01\.00,0:00:03\.00/);
+          assert.match(ass, new RegExp(`\\\\fnInter\\\\fs${Math.round(height * 0.1)}\\\\c&H00EC7D67&`));
+        }
       }
     }
   } finally { await rm(root, { recursive: true, force: true }); }
