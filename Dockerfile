@@ -1,4 +1,4 @@
-FROM node:22-bookworm
+FROM public.ecr.aws/docker/library/node:22-bookworm-slim
 
 # System dependencies
 RUN apt-get update && apt-get install -y \
