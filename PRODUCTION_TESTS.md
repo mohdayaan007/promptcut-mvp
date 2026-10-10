@@ -1917,4 +1917,71 @@ The parent:
 
 `Phase 3B — Text, Captions & Audio`
 
-remains `🚧 IN PROGRESS` pending Phase 3B-B and Phase 3B-C.
+remains `🚧 IN PROGRESS` pending Phase 3B-C.
+
+---
+
+# Phase 3B-B — Captions / Subtitles Production Acceptance
+
+Production acceptance date: 2026-10-10
+
+## Core Acceptance Matrix
+
+- A — basic subtitles — PASS
+  Job: `8de981a1-db70-4fe6-a3c1-1335861defb6`
+- B — styled subtitles — PASS
+  Job: `72fd0921-c161-4dc0-8eb3-c131e6cb5ff5`
+- C — trim + captions — PASS
+  Job: `3b26e009-953f-4051-b9ba-b864f1a59f25`
+- D — speed + captions — PASS
+  Job: `f9d00c24-8a8f-4b25-a9f5-4e771827740b`
+- E — multi-source sequence + captions — PASS
+  Job: `0cf2e817-29e3-4409-b94c-ebbc26f2a85a`
+- F — targeted subtitle correction — PASS
+  Job: `9a2d2c2a-8285-4aaa-aeae-e2dcd4c135ca`
+- G — global subtitle replacement — PASS
+  Job: `71db31f4-e319-4e5f-ace5-a3ef0d492d36`
+- H — title + captions coexist — PASS
+  Job: `eeecb631-b8f8-4fec-976c-e7b09a2a5188`
+- R — non-caption regression — PASS
+  Job: `0f8712fa-7d70-4db8-a179-8b142d6fa91b`
+- I — no-usable-speech fixture — SKIPPED because no convenient dedicated silent fixture was used for this acceptance batch.
+
+## Correction Planner Blocker
+
+Initial F/G attempts failed before rendering with:
+
+`This edit is not supported yet`
+
+Root cause: server-authorized caption reconciliation occurred after the planner's empty-operation unsupported check.
+
+Fix:
+
+`d7b9c2a423c2f6280e1cd56ba8e2ef339477e4f4`
+`Fix subtitle correction planning`
+
+After deployment, both final correction tests passed:
+
+- F — Job: `9a2d2c2a-8285-4aaa-aeae-e2dcd4c135ca`
+- G — Job: `71db31f4-e319-4e5f-ace5-a3ef0d492d36`
+
+## Styled-Caption Investigation and Cleanup
+
+Temporary pixel-render diagnostics were introduced during styled-caption verification to distinguish rendering failures from bad visual sampling times. The investigation proved that styled captions were present in the final artifact when inspected inside actual cue intervals.
+
+The heavy runtime diagnostics were removed after acceptance in:
+
+`179c3c119008dcc505635e09cdba17655fdbc2d5`
+`Remove heavy caption render diagnostics`
+
+Lightweight caption diagnostics and automated pixel-render regression coverage, including exact `854x480` production geometry, remain.
+
+Post-cleanup smoke test:
+
+Job: `5bbd1e3f-dda8-438b-b3dd-46ae646d82bc`
+
+`3B-B POST-CLEANUP SMOKE PASS` — 17.03s output; burned-in subtitles visible and synchronized; audio/video playable; lightweight diagnostics present; heavy pixel-difference diagnostics absent.
+
+`PHASE 3B-B CORE ACCEPTANCE PASSED`
+
+`Phase 3B-B — Captions / Subtitles: ✅ COMPLETE`
