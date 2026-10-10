@@ -657,6 +657,9 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
       authoritativeSequenceOptions.rejectSourceScopedOperations = true;
     }
     if (localizedMoments.length) plan = applyAuthoritativeMomentSequence(plan, localizedMoments, authoritativeSequenceOptions);
+    // Caption/correction intent is server-authorized. Reconcile it before deciding whether an
+    // otherwise empty Gemini response is unsupported, so text-only caption corrections render.
+    plan = reconcileCaptionOperation(plan, prompt);
     if (!plan.operations.length) {
       if (requiresVisualUnderstanding) logSemanticFinalPlanMismatch(plan);
       throw new UnsupportedEditRequestError("This edit is not supported yet");
@@ -666,7 +669,6 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
       throw new UnsupportedEditRequestError("This source description could not be identified confidently");
     }
     validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources);
-    plan = reconcileCaptionOperation(plan, prompt);
     return { plan: addAutomaticMerge(collapseGlobalSourceColorGrades(plan), hasMultipleVideos), transcripts };
   } finally {
     await Promise.all(uploadedFiles.filter((file) => file?.name).map((file) =>

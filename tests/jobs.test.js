@@ -1935,6 +1935,27 @@ test("caption correction parsing supports targeted subtitle and sentence wording
   assert.equal(requestsCaptions("Change the sentence 'I am the founder of clip or not' to 'I am the founder of Cliponaut' at 0:07"), true);
 });
 
+test("recognized caption corrections survive an empty Gemini plan while unrelated requests remain unsupported", async () => {
+  const prompts = [
+    "Change the subtitle or sentence 'I am the founder of clip or not' to 'I am the founder of Cliponaut' at 0:07",
+    "Change clip or not everywhere to Cliponaut in the video"
+  ];
+  for (const prompt of prompts) {
+    const result = await withGeminiKey(() => createAiEditPlan({
+      prompt, sourceCatalog: [sourceCatalog[0]], sourceInputs: plannerSources([sourceCatalog[0]]),
+      aiClient: createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [] }) })
+    }));
+    assert.deepEqual(result.plan.operations, [{ type: "captions" }]);
+  }
+  await withGeminiKey(() => assert.rejects(
+    () => createAiEditPlan({
+      prompt: "Make this video feel magical", sourceCatalog: [sourceCatalog[0]], sourceInputs: plannerSources([sourceCatalog[0]]),
+      aiClient: createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [] }) })
+    }),
+    UnsupportedEditRequestError
+  ));
+});
+
 test("caption intent reconciliation preserves explicit prompt styling after Gemini planning", async () => {
   const prompt = "Add subtitles using Inter, #677DEC, larger text at the bottom center";
   const explicitStyle = { font: "inter", color: "#677DEC", size: "large", position: "bottom-center" };
