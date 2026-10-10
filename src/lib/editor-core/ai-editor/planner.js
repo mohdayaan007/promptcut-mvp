@@ -6,6 +6,7 @@ import { findPhraseOccurrences, pairPhraseOccurrences } from "@/lib/editor-core/
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
 import { EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 import { reconcileCaptionOperation } from "@/lib/editor-core/caption-engine";
+import { reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
 const FILE_PROCESSING_TIMEOUT_MS = 60_000;
@@ -660,6 +661,7 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     // Caption/correction intent is server-authorized. Reconcile it before deciding whether an
     // otherwise empty Gemini response is unsupported, so text-only caption corrections render.
     plan = reconcileCaptionOperation(plan, prompt);
+    plan = reconcileAudioControls(plan, prompt);
     if (!plan.operations.length) {
       if (requiresVisualUnderstanding) logSemanticFinalPlanMismatch(plan);
       throw new UnsupportedEditRequestError("This edit is not supported yet");

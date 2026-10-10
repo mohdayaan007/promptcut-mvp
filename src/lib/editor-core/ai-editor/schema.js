@@ -142,6 +142,25 @@ export function createEditPlanJsonSchema({ sourceIds = [] } = {}) {
     {
       type: "object",
       properties: {
+        type: { type: "string", enum: ["audio_volume"] },
+        factor: { type: "number", minimum: CAPABILITY_LIMITS.audioVolume.minFactor, maximum: CAPABILITY_LIMITS.audioVolume.maxFactor }
+      },
+      required: ["type", "factor"],
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: ["audio_fade"] },
+        mode: { type: "string", enum: ["in", "out", "both"] },
+        duration: { type: "number", minimum: CAPABILITY_LIMITS.fade.minDuration, maximum: CAPABILITY_LIMITS.fade.maxDuration }
+      },
+      required: ["type", "mode", "duration"],
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      properties: {
         type: { type: "string", enum: ["crop"] },
         aspect_ratio: { type: "string", enum: CAPABILITY_LIMITS.aspectRatios }
       },

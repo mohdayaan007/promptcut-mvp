@@ -119,7 +119,7 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
       }
     }
 
-    if (["merge", "color_grade", "trim", "speed", "fade", "crop", "captions"].includes(operation.type)) {
+    if (["merge", "color_grade", "trim", "speed", "fade", "audio_volume", "audio_fade", "crop", "captions"].includes(operation.type)) {
       if (seenSingletons.has(operation.type)) throw validationError(`only one ${operation.type} operation is allowed`);
       seenSingletons.add(operation.type);
     }
@@ -150,6 +150,17 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
       if (!getCapability("fade").modes.includes(operation.mode)) throw validationError("fade mode is unsupported");
       if (!isNonNegativeNumber(operation.duration) || operation.duration < CAPABILITY_LIMITS.fade.minDuration || operation.duration > CAPABILITY_LIMITS.fade.maxDuration) {
         throw validationError(`fade duration must be between ${CAPABILITY_LIMITS.fade.minDuration} and ${CAPABILITY_LIMITS.fade.maxDuration}`);
+      }
+    }
+    if (operation.type === "audio_volume") {
+      if (typeof operation.factor !== "number" || !Number.isFinite(operation.factor) || operation.factor < CAPABILITY_LIMITS.audioVolume.minFactor || operation.factor > CAPABILITY_LIMITS.audioVolume.maxFactor) {
+        throw validationError(`audio volume factor must be between ${CAPABILITY_LIMITS.audioVolume.minFactor} and ${CAPABILITY_LIMITS.audioVolume.maxFactor}`);
+      }
+    }
+    if (operation.type === "audio_fade") {
+      if (!getCapability("audio_fade").modes.includes(operation.mode)) throw validationError("audio fade mode is unsupported");
+      if (!isNonNegativeNumber(operation.duration) || operation.duration < CAPABILITY_LIMITS.fade.minDuration || operation.duration > CAPABILITY_LIMITS.fade.maxDuration) {
+        throw validationError(`audio fade duration must be between ${CAPABILITY_LIMITS.fade.minDuration} and ${CAPABILITY_LIMITS.fade.maxDuration}`);
       }
     }
     if (operation.type === "crop" && !CAPABILITY_LIMITS.aspectRatios.includes(operation.aspect_ratio)) {

@@ -13,6 +13,7 @@ const VIDEO_ENCODING_ARGS = [
   "-threads", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
   "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2"
 ];
+const AUDIO_ONLY_ENCODING_ARGS = ["-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart"];
 
 export class EditExecutionCancelledError extends Error {
   constructor() {
@@ -242,6 +243,24 @@ async function applyFade(input, output, fade, executionController) {
   return output;
 }
 
+async function applyAudioControls(input, output, volume, audioFade, executionController) {
+  if (!volume && !audioFade) return input;
+  const audioFilters = [];
+  if (volume) audioFilters.push(`volume=${volume.factor}`);
+  if (audioFade) {
+    const duration = await getDuration(input, executionController);
+    const requestedDuration = audioFade.mode === "both" ? audioFade.duration * 2 : audioFade.duration;
+    if (requestedDuration > duration) throw new Error("Audio fade duration exceeds the resulting video duration");
+    if (audioFade.mode === "in" || audioFade.mode === "both") audioFilters.push(`afade=t=in:st=0:d=${audioFade.duration}`);
+    if (audioFade.mode === "out" || audioFade.mode === "both") audioFilters.push(`afade=t=out:st=${Math.max(0, duration - audioFade.duration)}:d=${audioFade.duration}`);
+  }
+  await exec(FFMPEG, [
+    "-y", "-hide_banner", "-loglevel", "error", "-i", input, "-map", "0:v:0", "-map", "0:a:0",
+    "-af", audioFilters.join(","), ...AUDIO_ONLY_ENCODING_ARGS, output
+  ], { executionController });
+  return output;
+}
+
 function safeRendererWarnings(stderr = "") {
   return stderr.split(/\r?\n/)
     .filter((line) => /(?:libass|font)/i.test(line))
@@ -337,6 +356,8 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
 
   const trim = plan.operations.find((operation) => operation.type === "trim");
   const speed = plan.operations.find((operation) => operation.type === "speed");
+  const audioVolume = plan.operations.find((operation) => operation.type === "audio_volume");
+  const audioFade = plan.operations.find((operation) => operation.type === "audio_fade");
   const fade = plan.operations.find((operation) => operation.type === "fade");
   const timedVideo = await applyTemporalOperations(processed, path.join(tempDirectory, "timed.mp4"), trim, speed, executionController);
   const titles = plan.operations.filter((operation) => operation.type === "title");
@@ -372,7 +393,13 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
   const titledVideo = await applyTitles(timedVideo, path.join(tempDirectory, "titled.mp4"), [...titles, ...captionLayers], {
     width: cropSettings.width, height: cropSettings.height, tempDirectory, executionController, captionDiagnostics
   });
-  const finalVideo = await applyFade(titledVideo, path.join(tempDirectory, "faded.mp4"), fade, executionController);
-  if (captionDiagnostics) console.info("Caption final output:", { jobId, finalOutputUsesTitledVideo: finalVideo === titledVideo });
+  const audioControlledVideo = await applyAudioControls(titledVideo, path.join(tempDirectory, "audio-controlled.mp4"), audioVolume, audioFade, executionController);
+  const finalVideo = await applyFade(audioControlledVideo, path.join(tempDirectory, "faded.mp4"), fade, executionController);
+  if (captionDiagnostics) console.info("Caption final output:", {
+    jobId,
+    captionsRendered: true,
+    audioOnlyPostProcessApplied: Boolean(audioVolume || audioFade),
+    audiovisualFadeApplied: Boolean(fade)
+  });
   return finalVideo;
 }

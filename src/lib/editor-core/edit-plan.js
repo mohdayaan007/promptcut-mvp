@@ -1,6 +1,7 @@
 import { getIntentPattern, understandPrompt } from "@/lib/prompt-understanding";
 import { parseTitle } from "@/lib/title-parser";
 import { createCaptionOperation, requestsCaptions } from "@/lib/editor-core/caption-engine";
+import { reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 
 function detectColor(intents = []) {
   if (intents.includes("blackWhite")) return "bw";
@@ -125,7 +126,7 @@ const MOMENT_MODES = {
 
 const COMPOSITION_CLAUSE_PREFIX = /^(?:(?:from\s+(?:(?:video\s*|source[-\s]?)(?:\d+)|(?:the\s+)?[a-z][a-z\s-]{1,48}\s+(?:video|clip|footage|shot))\s*,?\s*)?)(?:(?:use|show|keep|trim(?:\s+to)?)\s+)?(?:the\s+)?(?:part|bit|section|moment|clip)\s+(?:where|when)\b/i;
 const COMPOSITION_SEPARATOR = /(?:,\s*|\s+)(?:and\s+then|then|followed\s+by)\s+(?=(?:(?:from\s+(?:(?:video\s*|source[-\s]?)(?:\d+)|(?:the\s+)?[a-z][a-z\s-]{1,48}\s+(?:video|clip|footage|shot))\s*,?\s*)?)(?:(?:use|show|keep|trim(?:\s+to)?)\s+)?(?:the\s+)?(?:part|bit|section|moment|clip)\s+(?:where|when)\b)/gi;
-const TRAILING_COMPOSITION_EDIT = /(?:,?\s+and\s+)(?:make|turn|change|add|fade|crop|speed|zoom)\b.*$/gi;
+const TRAILING_COMPOSITION_EDIT = /(?:,?\s+and\s+)(?:make|turn|change|add|fade|crop|speed|zoom|mute|reduce|set|increase|decrease|lower)\b.*$/gi;
 
 function quotedRanges(text = "") {
   const ranges = [];
@@ -393,7 +394,7 @@ export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipl
   const sourceAwarePlan = sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle);
   if (sourceAwarePlan) {
     if (requestsCaptions(prompt)) sourceAwarePlan.operations.push(createCaptionOperation(prompt));
-    return sourceAwarePlan;
+    return reconcileAudioControls(sourceAwarePlan, prompt);
   }
 
   // Uploaded clips are merged automatically, independent of whether the prompt
@@ -405,5 +406,5 @@ export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipl
   if (trim) operations.push({ type: "trim", ...trim });
   operations.push(...parseFallbackCapabilities(prompt));
 
-  return { version: "1", operations };
+  return reconcileAudioControls({ version: "1", operations }, prompt);
 }

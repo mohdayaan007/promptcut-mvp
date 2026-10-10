@@ -25,6 +25,7 @@ import { FONT_CATALOG, resolveFontId, resolveSemanticFontIntent } from "@/lib/ti
 import { buildAssDocument } from "@/lib/title-renderer";
 import { parseTitle } from "@/lib/title-parser";
 import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaptionCorrection, extractCaptionStyleRequest, mapCaptionCuesToOutput, requestsCaptions } from "@/lib/editor-core/caption-engine";
+import { extractAudioControlIntent, reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 
 const execFileAsync = promisify(execFile);
 
@@ -1634,6 +1635,24 @@ test("multi-source compositions reject final planner source-scoped operations bu
   ]);
 });
 
+test("multi-moment authoritative sequences retain server-owned global audio controls", async () => {
+  const catalog = sourceCatalog.slice(0, 2);
+  const aiClient = createMockGemini({ responses: [
+    momentLocalizationResponse("source-1", [{ start: 1, end: 3 }], "moment-1"),
+    momentLocalizationResponse("source-2", [{ start: 4, end: 6 }], "moment-2"),
+    JSON.stringify({ version: "1", operations: [{ type: "audio_volume", factor: 1 }] })
+  ] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "From video 1, use the part where the person enters, then from video 2, use the part where the person exits and mute the video.",
+    hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient
+  }));
+  assert.deepEqual(result.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 3 }, { sourceId: "source-2", start: 4, end: 6 }] },
+    { type: "audio_volume", factor: 0 }
+  ]);
+  assert.doesNotThrow(() => validateEditPlan(result.plan, { sourceCatalog: catalog }));
+});
+
 async function makeMixedFrameRateSource(output, frameRate, duration) {
   await execFileAsync("ffmpeg", [
     "-y", "-hide_banner", "-loglevel", "error",
@@ -1690,6 +1709,132 @@ async function probeRenderedVideo(outputPath) {
     audio: probe.streams.find((stream) => stream.codec_type === "audio")
   };
 }
+
+async function audioMaxVolume(outputPath, { start, duration } = {}) {
+  const seek = start === undefined ? [] : ["-ss", start.toString()];
+  const limit = duration === undefined ? [] : ["-t", duration.toString()];
+  try {
+    const { stderr } = await execFileAsync("ffmpeg", ["-hide_banner", "-loglevel", "info", ...seek, "-i", outputPath, ...limit, "-af", "volumedetect", "-f", "null", "-"]);
+    const match = String(stderr).match(/max_volume:\s*(-?(?:\d+(?:\.\d+)?|inf))\s*dB/i);
+    if (!match) throw new Error("volumedetect did not produce a maximum volume");
+    return match[1] === "-inf" ? -Infinity : Number(match[1]);
+  } catch (error) {
+    const match = String(error.stderr || "").match(/max_volume:\s*(-?(?:\d+(?:\.\d+)?|inf))\s*dB/i);
+    if (!match) throw error;
+    return match[1] === "-inf" ? -Infinity : Number(match[1]);
+  }
+}
+
+async function videoFrameDifference(firstPath, secondPath, time = 1) {
+  const { stdout } = await execFileAsync("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-ss", time.toString(), "-i", firstPath,
+    "-ss", time.toString(), "-i", secondPath,
+    "-filter_complex", "[0:v][1:v]blend=all_mode=difference", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"
+  ], { encoding: "buffer", maxBuffer: 2 * 1024 * 1024 });
+  return [...stdout].reduce((sum, value) => sum + value, 0);
+}
+
+test("server-owned audio controls parse and reconcile deterministic 3B-C prompts", () => {
+  assert.deepEqual(extractAudioControlIntent("Mute the video."), { volume: { type: "audio_volume", factor: 0 } });
+  assert.deepEqual(extractAudioControlIntent("Reduce the volume to 50%."), { volume: { type: "audio_volume", factor: 0.5 } });
+  assert.deepEqual(extractAudioControlIntent("Set the audio volume to 120%."), { volume: { type: "audio_volume", factor: 1.2 } });
+  assert.deepEqual(extractAudioControlIntent("Make the audio quieter."), { volume: { type: "audio_volume", factor: 0.5 } });
+  assert.deepEqual(extractAudioControlIntent("Make the audio louder."), { volume: { type: "audio_volume", factor: 1.5 } });
+  assert.deepEqual(extractAudioControlIntent("Lower the volume."), { volume: { type: "audio_volume", factor: 0.5 } });
+  assert.deepEqual(extractAudioControlIntent("Decrease the volume."), { volume: { type: "audio_volume", factor: 0.5 } });
+  assert.deepEqual(extractAudioControlIntent("Increase the volume."), { volume: { type: "audio_volume", factor: 1.5 } });
+  assert.deepEqual(extractAudioControlIntent("Turn the volume down."), { volume: { type: "audio_volume", factor: 0.5 } });
+  assert.deepEqual(extractAudioControlIntent("Turn the volume up."), { volume: { type: "audio_volume", factor: 1.5 } });
+  assert.deepEqual(extractAudioControlIntent("Fade the audio in at the beginning."), { fade: { type: "audio_fade", mode: "in", duration: 1 } });
+  assert.deepEqual(extractAudioControlIntent("Fade the audio out at the end."), { fade: { type: "audio_fade", mode: "out", duration: 1 } });
+  assert.deepEqual(extractAudioControlIntent("Fade the audio in and out."), { fade: { type: "audio_fade", mode: "both", duration: 1 } });
+
+  const reconciled = reconcileAudioControls({ version: "1", operations: [
+    { type: "fade", mode: "out", duration: 1 }, { type: "audio_volume", factor: 1 }
+  ] }, "Reduce the volume to 50% and fade the audio out at the end.");
+  assert.deepEqual(reconciled.operations, [
+    { type: "audio_volume", factor: 0.5 }, { type: "audio_fade", mode: "out", duration: 1 }
+  ]);
+  assert.equal(extractAudioControlIntent("Fade out at the end."), null);
+  assert.equal(extractAudioControlIntent("Increase audio speed."), null);
+  assert.equal(extractAudioControlIntent("Lower audio pitch."), null);
+  assert.equal(extractAudioControlIntent("Increase audio quality."), null);
+  assert.deepEqual(createEditPlan({ prompt: "Fade out at the end." }).operations, [{ type: "fade", mode: "out", duration: 1 }]);
+  assert.deepEqual(createEditPlan({ prompt: "Fade the audio out at the end." }).operations, [{ type: "audio_fade", mode: "out", duration: 1 }]);
+  assert.equal(extractAudioControlIntent("Add background music."), null);
+});
+
+test("audio controls validate as global singleton final-output operations", () => {
+  assert.doesNotThrow(() => validateEditPlan({ version: "1", operations: [{ type: "audio_volume", factor: 0 }] }));
+  assert.doesNotThrow(() => validateEditPlan({ version: "1", operations: [{ type: "audio_volume", factor: 2 }, { type: "audio_fade", mode: "both", duration: 1 }] }));
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "audio_volume", factor: -0.1 }] }), /audio volume factor/);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "audio_volume", factor: 2.1 }] }), /audio volume factor/);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "audio_volume", factor: Number.NaN }] }), /audio volume factor/);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "audio_volume", factor: 1 }, { type: "audio_volume", factor: 0.5 }] }), /only one audio_volume/);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "audio_fade", mode: "sideways", duration: 1 }] }), /audio fade mode/);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "audio_fade", mode: "in", duration: 0 }] }), /audio fade duration/);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "audio_fade", mode: "in", duration: 1 }, { type: "audio_fade", mode: "out", duration: 1 }] }), /only one audio_fade/);
+  assert.throws(() => validateEditPlan({ version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 2 }] }, { type: "audio_volume", sourceId: "source-1", factor: 1 }] }, { sourceCatalog: [{ sourceId: "source-1", duration: 2 }] }), /sourceId/);
+});
+
+test("deterministic and Gemini planning preserve global audio controls", async () => {
+  const timedSources = sourceCatalog.slice(0, 2);
+  const deterministic = createEditPlan({
+    prompt: "Use the first 3 seconds of source-1, then the first 3 seconds of source-2 and make the audio quieter.",
+    hasMultipleVideos: true, sourceCatalog: timedSources
+  });
+  assert.equal(deterministic.version, "2");
+  assert.deepEqual(deterministic.operations.at(-1), { type: "audio_volume", factor: 0.5 });
+  validateEditPlan(deterministic, { sourceCatalog: timedSources });
+
+  const aiClient = createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [] }) });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Fade the audio out at the end.", sourceCatalog: [sourceCatalog[0]], sourceInputs: plannerSources([sourceCatalog[0]]), aiClient
+  }));
+  assert.deepEqual(result.plan.operations, [{ type: "audio_fade", mode: "out", duration: 1 }]);
+  assert.equal(aiClient.requests.length, 1);
+});
+
+test("executor applies audio-only controls without changing video pixels", { timeout: 20_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-audio-controls-"));
+  const inputPath = path.join(tempDirectory, "source.mp4");
+  const catalog = [{ sourceId: "source-1", index: 0, duration: 4, hasAudio: true }];
+  const media = [{ duration: 4, width: 160, height: 90, hasAudio: true, frameRate: 30 }];
+  try {
+    await makeMixedFrameRateSource(inputPath, 30, 4);
+    const baseline = await executeWithWatchdog({ inputPaths: [inputPath], media, sourceCatalog: catalog, tempDirectory, plan: { version: "1", operations: [] } }, { watchdogMs: 15_000 });
+    const controlledDirectory = path.join(tempDirectory, "controlled");
+    await mkdir(controlledDirectory);
+    const controlled = await executeWithWatchdog({
+      inputPaths: [inputPath], media, sourceCatalog: catalog, tempDirectory: controlledDirectory,
+      plan: { version: "1", operations: [{ type: "audio_volume", factor: 0.5 }, { type: "audio_fade", mode: "out", duration: 1 }] }
+    }, { watchdogMs: 15_000 });
+    const mutedDirectory = path.join(tempDirectory, "muted");
+    await mkdir(mutedDirectory);
+    const muted = await executeWithWatchdog({
+      inputPaths: [inputPath], media, sourceCatalog: catalog, tempDirectory: mutedDirectory,
+      plan: { version: "1", operations: [{ type: "audio_volume", factor: 0 }] }
+    }, { watchdogMs: 15_000 });
+
+    assert.ok((await probeRenderedVideo(controlled)).audio);
+    const baselineLevel = await audioMaxVolume(baseline, { start: 1, duration: 1 });
+    const controlledLevel = await audioMaxVolume(controlled, { start: 1, duration: 1 });
+    const fadedLevel = await audioMaxVolume(controlled, { start: 3.8, duration: 0.15 });
+    assert.ok(controlledLevel < baselineLevel - 4, "0.5 volume should measurably reduce amplitude");
+    assert.ok(fadedLevel < controlledLevel - 8, "audio fade-out should reduce amplitude at the final boundary");
+    assert.equal(await videoFrameDifference(baseline, controlled), 0, "audio-only controls must stream-copy video pixels");
+    assert.ok(await audioMaxVolume(muted) < -80, "mute should keep a valid effectively silent audio stream");
+
+    const temporalDirectory = path.join(tempDirectory, "temporal");
+    await mkdir(temporalDirectory);
+    const temporal = await executeWithWatchdog({
+      inputPaths: [inputPath], media, sourceCatalog: catalog, tempDirectory: temporalDirectory,
+      plan: { version: "1", operations: [{ type: "trim", start: 1, end: 4 }, { type: "speed", factor: 1.5 }, { type: "audio_fade", mode: "out", duration: 1 }] }
+    }, { watchdogMs: 15_000 });
+    assert.ok((await probeRenderedVideo(temporal)).duration > 1.9 && (await probeRenderedVideo(temporal)).duration < 2.1);
+    assert.ok(await audioMaxVolume(temporal, { start: 1.9, duration: 0.08 }) < -20, "audio fade should use the post-trim/post-speed final timeline");
+  } finally { await rm(tempDirectory, { recursive: true, force: true }); }
+});
 
 test("mixed 24fps and 30fps sequence concat preserves a bounded VFR output", { timeout: 15_000 }, async () => {
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-mixed-fps-"));
