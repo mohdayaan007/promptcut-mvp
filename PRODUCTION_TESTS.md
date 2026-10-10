@@ -1913,11 +1913,7 @@ Production acceptance confirms:
 
 No known blocking regression remains for Phase 3B-A.
 
-The parent:
-
-`Phase 3B — Text, Captions & Audio`
-
-remains `🚧 IN PROGRESS` pending Phase 3B-C.
+`Phase 3B — Text, Captions & Audio: ✅ COMPLETE` — Phases 3B-A, 3B-B, and 3B-C have completed production acceptance.
 
 ---
 
@@ -1988,25 +1984,74 @@ Job: `5bbd1e3f-dda8-438b-b3dd-46ae646d82bc`
 
 ---
 
-# Phase 3B-C — Basic Audio Controls Production Acceptance Plan
+# Phase 3B-C — Basic Audio Controls Production Acceptance
 
-Phase status: `🚧 IN PROGRESS`
+Production revision: `c31aac21672c24302591a973d7e10f5cc5c0c266`
+Implementation commit: `63268dba922019e3bdf8668a38f2c8150e71d1f5` — `Add Phase 3B-C basic audio controls`
 
-The following production matrix is required before Phase 3B-C can be marked complete:
+## Core Acceptance Matrix
 
-- A — mute: `Mute the video.`
-- B — exact 50%: `Reduce the volume to 50%.`
-- C — qualitative quieter: `Make the audio quieter.`
-- D — qualitative louder: `Make the audio louder.`
-- E — audio fade in: `Fade the audio in at the beginning.`
-- F — audio fade out: `Fade the audio out at the end.`
-- G — combined volume + fade: `Reduce the volume to 50% and fade the audio out at the end.`
-- H — trim + audio control
-- I — speed + audio control
-- J — multi-source sequence + global audio control
-- K — semantic / multi-moment composition + audio control
-- R1 — existing audiovisual fade regression: `Fade out at the end.` must still fade both video and audio.
-- R2 — non-audio regression: black-and-white editing remains unchanged.
-- R3 — text regression: titles and captions remain unchanged with audio controls.
+- A — mute — PASS
+  Job: `83a2d07c-0497-4097-b2e1-29296976bc10`
+  Evidence: mean −91.0 dB, AAC retained, playable.
+- B — exact 50% — PASS
+  Job: `32be45f9-daf4-451d-be88-d106782dc278`
+  Evidence: baseline −38.2 dB → −44.4 dB, approximately −6.2 dB.
+- C — quieter — PASS
+  Job: `117dd9b6-61a9-4677-8063-616f01fc1bbb`
+  Evidence: −44.4 dB mean / −12.6 dB peak, consistent with factor 0.5.
+- D — louder — PASS
+  Job: `500c153a-841b-4dba-8181-1d1682d7baa6`
+  Evidence: −34.9 dB vs −38.2 dB baseline, +3.3 dB, consistent with factor 1.5; no clipping evidence.
+- E — audio fade-in — PASS
+  Job: `e6b3ee3f-8eb2-4a1a-b18a-af8f096d68b3`
+  Evidence: first second −72.9 dB; normal section −36.3 dB.
+- F — audio fade-out — PASS
+  Job: `5a4909a7-9368-4d90-adff-d99cf459d5e7`
+  Evidence: mid-video −36.3 dB; final second −60.6 dB.
+- G — 50% + audio fade-out — PASS
+  Job: `175b3989-d4a6-4fa7-955c-b46673eaa1d7`
+  Evidence: mid-video −42.3 dB; final second −66.6 dB.
+- H — trim + audio — PASS
+  Job: `6ab40126-5983-4700-88c9-8b1108b22a41`
+  Evidence: 10.005s; opening section retained; audio consistent with 0.5 gain.
+- I — speed + audio — PASS
+  Job: `709eba2b-a5f0-49da-9835-448bd93ad409`
+  Evidence: 11.433s at 1.5x; audio consistent with 0.5; playable and synchronized.
+- J — multi-source sequence + global audio — PASS
+  Job: `524be2e1-fae3-4fb6-b86a-0c7f1bc4a92c`
+  Evidence: 6.016s; correct source order; approximately −5.8 dB and −6.2 dB across the two source sections.
+- K — semantic/multi-moment composition + global mute — PASS
+  Job: `868c5a7f-6a8a-44e3-b5c7-5cb7f9f92823`
+  Evidence: correct temple-walking → talking-to-camera order; AAC retained; −91.0 dB full-output mean/peak.
+- R1 — legacy audiovisual fade — PASS
+  Job: `9d9df021-24c1-4efa-a97a-07fa2b55bbd1`
+- R2 — black-and-white regression — PASS
+  Job: `d36b9651-360c-4cad-9653-1d8c729efd30`
+  Evidence: ~17s playable black-and-white output; no unintended audio-control behavior.
+- R3 — captions + audio — PASS
+  Job: `7c716b5b-9f25-480d-80f8-33ddcf4daa34`
+  Evidence: 5 source cues → 5 final cues; first cue 1.9–4.3s; last cue 13.2–15s; no renderer warnings; `captionsRendered: true`; `audioOnlyPostProcessApplied: true`; `audiovisualFadeApplied: false`; artifact recovered and audio measured.
 
-Acceptance must use measurable audio levels / FFmpeg statistics where practical, not listening alone, and must still inspect a playable final artifact. Audio-only fade acceptance must confirm that the video itself does not visually fade.
+## Upload Reliability Acceptance Blocker
+
+Initial Batch 1 testing exposed intermittent browser multipart-upload failures before worker pickup. This was not an audio-engine failure.
+
+`c31aac21672c24302591a973d7e10f5cc5c0c266`
+`Harden direct multipart uploads`
+
+The fix added:
+
+- a maximum of three PUT attempts
+- 500ms / 1000ms backoff
+- retries for network failures, HTTP 408, HTTP 429, and HTTP 5xx
+- no retry for ordinary permanent HTTP 4xx responses
+- abort-aware retry waiting
+- progress counted only after successful part confirmation
+- safer network-vs-HTTP diagnostics
+
+After deployment, the remaining production acceptance jobs completed without recurrence of the original user-facing direct-upload failure.
+
+`PHASE 3B-C CORE ACCEPTANCE PASSED`
+
+`Phase 3B-C — Basic Audio Controls: ✅ COMPLETE`
