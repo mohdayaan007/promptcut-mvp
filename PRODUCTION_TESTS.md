@@ -1985,3 +1985,28 @@ Job: `5bbd1e3f-dda8-438b-b3dd-46ae646d82bc`
 `PHASE 3B-B CORE ACCEPTANCE PASSED`
 
 `Phase 3B-B — Captions / Subtitles: ✅ COMPLETE`
+
+---
+
+# Phase 3B-C — Basic Audio Controls Production Acceptance Plan
+
+Phase status: `🚧 IN PROGRESS`
+
+The following production matrix is required before Phase 3B-C can be marked complete:
+
+- A — mute: `Mute the video.`
+- B — exact 50%: `Reduce the volume to 50%.`
+- C — qualitative quieter: `Make the audio quieter.`
+- D — qualitative louder: `Make the audio louder.`
+- E — audio fade in: `Fade the audio in at the beginning.`
+- F — audio fade out: `Fade the audio out at the end.`
+- G — combined volume + fade: `Reduce the volume to 50% and fade the audio out at the end.`
+- H — trim + audio control
+- I — speed + audio control
+- J — multi-source sequence + global audio control
+- K — semantic / multi-moment composition + audio control
+- R1 — existing audiovisual fade regression: `Fade out at the end.` must still fade both video and audio.
+- R2 — non-audio regression: black-and-white editing remains unchanged.
+- R3 — text regression: titles and captions remain unchanged with audio controls.
+
+Acceptance must use measurable audio levels / FFmpeg statistics where practical, not listening alone, and must still inspect a playable final artifact. Audio-only fade acceptance must confirm that the video itself does not visually fade.

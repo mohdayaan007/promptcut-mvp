@@ -1324,7 +1324,7 @@ Job: `5bbd1e3f-dda8-438b-b3dd-46ae646d82bc`
 
 ## Phase 3B-C — Basic Audio Controls
 
-Status: `⏳ PLANNED`
+Status: `🚧 IN PROGRESS`
 
 Purpose:
 
@@ -1349,9 +1349,52 @@ Representative prompts:
 
 > Fade the audio out at the end.
 
+### Operation Model
+
+`audio_volume` is a global final-output operation:
+
+```json
+{
+  "type": "audio_volume",
+  "factor": 0.5
+}
+```
+
+- maximum one operation
+- never source-scoped in 3B-C
+- finite factor range: `0` to `2`
+- `0` mute, `1` unchanged, `0.5` 50%, `1.5` 150%
+- deterministic relative defaults: quieter / lower / decrease → `0.5`; louder / increase → `1.5`
+
+`audio_fade` is a global final-output operation:
+
+```json
+{
+  "type": "audio_fade",
+  "mode": "out",
+  "duration": 1
+}
+```
+
+- maximum one operation
+- never source-scoped in 3B-C
+- modes: `in`, `out`, `both`
+- reuses existing safe fade-duration limits unless implementation establishes a concrete reason not to
+- may coexist with `audio_volume`
+
+### Timeline and Compatibility Rules
+
+Audio controls operate on the assembled final-output timeline after sequence / merge, visual operations, trim / speed, titles, and captions. They must compose safely with trim, speed, explicit sequences, semantic moment selection, multi-moment composition, titles, and captions.
+
+The existing `fade` operation remains unchanged: `Fade out at the end.` continues to fade both video and audio. `Fade the audio out at the end.` is audio-only and must use `audio_fade`.
+
+Implementation may combine audio filters into one FFmpeg pass where safe, and should avoid unnecessary video re-encoding.
+
 Deferred:
 
-- uploaded music / additional audio tracks
+- uploaded music / replacement music / additional audio tracks
+- per-source or per-clip volume
+- arbitrary time-ranged volume automation / keyframed volume
 - audio placement against individual output clips
 - music looping
 - automatic music selection
@@ -1359,9 +1402,30 @@ Deferred:
 - beat syncing
 - AI noise removal
 - silence removal
+- speaker isolation
+- dubbing
 - multi-track audio timeline editing
 
 These deferred capabilities should only be designed when product demand justifies the additional timeline and mixing architecture.
+
+### Production Acceptance Matrix
+
+- A — mute: `Mute the video.`
+- B — exact 50%: `Reduce the volume to 50%.`
+- C — qualitative quieter: `Make the audio quieter.`
+- D — qualitative louder: `Make the audio louder.`
+- E — audio fade in: `Fade the audio in at the beginning.`
+- F — audio fade out: `Fade the audio out at the end.`
+- G — combined volume + fade: `Reduce the volume to 50% and fade the audio out at the end.`
+- H — trim + audio control
+- I — speed + audio control
+- J — multi-source sequence + global audio control
+- K — semantic / multi-moment composition + audio control
+- R1 — audiovisual fade regression: `Fade out at the end.` must still fade both video and audio.
+- R2 — non-audio regression: black-and-white editing remains unchanged.
+- R3 — text regression: titles and captions remain unchanged with audio controls.
+
+Production verification must use measurable audio levels / FFmpeg statistics where practical, alongside playable artifact inspection. Audio-only fades must not visually fade the video.
 
 ---
 
