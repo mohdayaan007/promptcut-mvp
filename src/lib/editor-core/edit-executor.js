@@ -1,5 +1,4 @@
 import { spawn } from "child_process";
-import { readFile, unlink } from "fs/promises";
 import path from "path";
 import { COLOR_PRESETS } from "@/lib/color-presets";
 import { applyCaptionCorrection, CaptionError, mapCaptionCuesToOutput } from "@/lib/editor-core/caption-engine";
@@ -252,81 +251,6 @@ function safeRendererWarnings(stderr = "") {
       .slice(0, 240));
 }
 
-function summarizeAssDocument(document) {
-  const events = [...document.matchAll(/^Dialogue:\s*\d+,([^,]+),([^,]+)/gm)];
-  return {
-    assDialogueCount: events.length,
-    firstDialogue: events[0] ? { start: events[0][1], end: events[0][2] } : null,
-    lastDialogue: events.at(-1) ? { start: events.at(-1)[1], end: events.at(-1)[2] } : null
-  };
-}
-
-async function probeRenderedDimensions(input, executionController) {
-  const { stdout } = await exec(FFPROBE, [
-    "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
-    "-of", "csv=p=0:s=x", input
-  ], { executionController });
-  const [width, height] = stdout.trim().split("x").map(Number);
-  if (!Number.isInteger(width) || !Number.isInteger(height)) throw new Error("Invalid rendered dimensions");
-  return { width, height };
-}
-
-function captionRegions(width, height) {
-  const regionWidth = Math.max(2, Math.floor(width * 0.7 / 2) * 2);
-  const regionHeight = Math.max(2, Math.floor(height * 0.35 / 2) * 2);
-  const x = Math.floor((width - regionWidth) / 2);
-  return {
-    caption: { width: regionWidth, height: regionHeight, x, y: Math.min(height - regionHeight, Math.round(height * 0.55)) },
-    control: { width: regionWidth, height: regionHeight, x, y: Math.round(height * 0.05) }
-  };
-}
-
-async function pixelDifferenceAtTime(before, after, time, region, output, executionController) {
-  try {
-    await exec(FFMPEG, [
-      "-y", "-hide_banner", "-loglevel", "error", "-ss", time.toString(), "-i", before,
-      "-ss", time.toString(), "-i", after, "-filter_complex",
-      `[0:v][1:v]blend=all_mode=difference,crop=${region.width}:${region.height}:${region.x}:${region.y},format=gray`,
-      "-frames:v", "1", "-f", "rawvideo", output
-    ], { executionController });
-    const pixels = await readFile(output);
-    return pixels.reduce((sum, value) => sum + value, 0);
-  } finally {
-    await unlink(output).catch(() => {});
-  }
-}
-
-async function collectCaptionRenderEvidence({ assPath, untitledVideo, titledVideo, tempDirectory, cue, executionController }) {
-  try {
-    const [ass, dimensions] = await Promise.all([
-      readFile(assPath, "utf8"),
-      probeRenderedDimensions(titledVideo, executionController)
-    ]);
-    const time = (cue.start + cue.end) / 2;
-    const regions = captionRegions(dimensions.width, dimensions.height);
-    // The execution controller owns one active child, so diagnostics remain sequential.
-    const captionPixelDifference = await pixelDifferenceAtTime(
-      untitledVideo, titledVideo, time, regions.caption,
-      path.join(tempDirectory, "caption-pixel-difference.raw"), executionController
-    );
-    const controlPixelDifference = await pixelDifferenceAtTime(
-      untitledVideo, titledVideo, time, regions.control,
-      path.join(tempDirectory, "caption-control-difference.raw"), executionController
-    );
-    return {
-      ...summarizeAssDocument(ass),
-      titledWidth: dimensions.width,
-      titledHeight: dimensions.height,
-      pixelSampleTime: time,
-      captionRegionPixelDifference: captionPixelDifference,
-      controlRegionPixelDifference: controlPixelDifference
-    };
-  } catch {
-    // Rendering has already succeeded; observability must never replace it with a diagnostic failure.
-    return { renderEvidenceUnavailable: true };
-  }
-}
-
 async function applyTitles(input, output, titles, { width, height, tempDirectory, executionController, captionDiagnostics = null }) {
   if (!titles.length) return input;
   const assPath = await writeTitleAssFile(titles, { width, height, tempDirectory });
@@ -335,14 +259,9 @@ async function applyTitles(input, output, titles, { width, height, tempDirectory
     "-vf", buildAssFilter(assPath), ...VIDEO_ENCODING_ARGS, output
   ], { executionController });
   if (captionDiagnostics) {
-    const renderEvidence = await collectCaptionRenderEvidence({
-      assPath, untitledVideo: input, titledVideo: output, tempDirectory,
-      cue: captionDiagnostics.firstCue, executionController
-    });
     console.info("Caption ASS render completed:", {
       ...captionDiagnostics,
-      rendererWarnings: safeRendererWarnings(stderr),
-      ...renderEvidence
+      rendererWarnings: safeRendererWarnings(stderr)
     });
   }
   return output;
