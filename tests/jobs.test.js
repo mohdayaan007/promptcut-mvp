@@ -10,7 +10,7 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validat
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, isActiveJobStatus, isRecoverableJobStatus } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, isActiveJobStatus, isRecoverableJobStatus, PartUploadError, uploadAndQueueJob, uploadPartWithRetry } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
@@ -723,6 +723,74 @@ test("direct upload CORS permits only Cliponaut and local development", () => {
   assert.deepEqual(rule.AllowedOrigins, ["https://cliponaut.com", "http://localhost:3000"]);
   assert.deepEqual(rule.AllowedMethods, ["GET", "HEAD", "PUT"]);
   assert.deepEqual(rule.ExposeHeaders, ["ETag"]);
+});
+
+test("direct multipart part uploads retry only transient failures", async () => {
+  const delays = [];
+  const outcomes = [new TypeError("network unavailable"), new Response(null, { status: 503 }), new Response(null, { status: 200, headers: { etag: '"part-1"' } })];
+  const eTag = await uploadPartWithRetry({
+    url: "https://storage.example/signed-part", chunk: new Blob(["part"]),
+    fetchFn: async () => {
+      const outcome = outcomes.shift();
+      if (outcome instanceof Error) throw outcome;
+      return outcome;
+    },
+    sleepFn: async (delay) => { delays.push(delay); }
+  });
+  assert.equal(eTag, '"part-1"');
+  assert.deepEqual(delays, [500, 1_000]);
+
+  let calls = 0;
+  await assert.rejects(() => uploadPartWithRetry({
+    url: "https://storage.example/signed-part", chunk: new Blob(["part"]),
+    fetchFn: async () => { calls += 1; return new Response(null, { status: 503 }); }, sleepFn: async () => {}
+  }), (error) => error instanceof PartUploadError && error.kind === "http" && error.status === 503);
+  assert.equal(calls, 3);
+
+  calls = 0;
+  await assert.rejects(() => uploadPartWithRetry({
+    url: "https://storage.example/signed-part", chunk: new Blob(["part"]),
+    fetchFn: async () => { calls += 1; return new Response(null, { status: 403 }); }, sleepFn: async () => {}
+  }), (error) => error instanceof PartUploadError && error.status === 403);
+  assert.equal(calls, 1);
+});
+
+test("direct multipart retry observes cancellation and counts progress only after one successful part", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const startedAt = Date.now();
+  setTimeout(() => controller.abort(), 20);
+  await assert.rejects(() => uploadPartWithRetry({
+    url: "https://storage.example/signed-part", chunk: new Blob(["part"]), signal: controller.signal,
+    fetchFn: async () => { calls += 1; return new Response(null, { status: 429 }); }
+  }), (error) => error.name === "AbortError");
+  assert.ok(Date.now() - startedAt < 200, "cancellation must interrupt the 500ms retry wait");
+  assert.equal(calls, 1);
+
+  const progress = [];
+  let signedAttempts = 0;
+  const file = {
+    name: "source.mp4", size: 4, type: "video/mp4",
+    slice: () => new Blob([new Uint8Array([1, 2, 3, 4])])
+  };
+  const result = await uploadAndQueueJob({
+    videos: [file], prompt: "Mute the video.", exportQuality: "standard",
+    onProgress: (value) => progress.push(value),
+    sleepFn: async () => {},
+    fetchFn: async (url) => {
+      if (url === "/api/uploads") return Response.json({ id: "job-1", accessToken: "opaque-token", partSize: 5, uploads: [{ index: 0, key: "private-key", uploadId: "upload-1" }] });
+      if (url === "/api/uploads/job-1/parts") return Response.json({ parts: [{ partNumber: 1, url: "https://storage.example/signed-part" }] });
+      if (url === "https://storage.example/signed-part") {
+        signedAttempts += 1;
+        return signedAttempts === 1 ? new Response(null, { status: 503 }) : new Response(null, { status: 200, headers: { etag: '"part-1"' } });
+      }
+      if (url === "/api/uploads/job-1/complete") return Response.json({ id: "job-1", status: "queued" });
+      throw new Error(`Unexpected request: ${url}`);
+    }
+  });
+  assert.equal(result.status, "queued");
+  assert.equal(signedAttempts, 2);
+  assert.deepEqual(progress, [{ uploadedBytes: 4, totalBytes: 4 }]);
 });
 
 test("restored source metadata preserves order without storage keys", () => {
