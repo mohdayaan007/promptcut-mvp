@@ -1368,6 +1368,47 @@ test("semantic multi-source planning classifies each Gemini video independently 
   assert.match(aiClient.requests[3].contents.at(-1), /Authoritative resolved semantic sources/);
 });
 
+test("semantic visual adjustment scope preserves ordinary sequences without broadening real selections", async () => {
+  const catalog = sourceCatalog.slice(0, 2);
+  const classifications = [
+    classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: false }]),
+    classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: true }])
+  ];
+  const planFor = async (prompt, finalPlan = fullSequence(catalog, ["source-2"])) => withGeminiKey(() => createAiEditPlan({
+    prompt, hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog),
+    aiClient: createMockGemini({ responses: [...classifications, JSON.stringify(finalPlan)] })
+  }));
+
+  const scoped = await planFor("Make the greenery video slightly brighter.");
+  assert.deepEqual(scoped.plan.operations[0].clips.map((clip) => clip.sourceId), ["source-1", "source-2"]);
+  assert.deepEqual(scoped.plan.operations.at(-1), { type: "visual_adjustment", brightness: 0.12, sourceId: "source-2" });
+
+  const withAudio = await planFor("Make the greenery video slightly brighter and reduce the volume.");
+  assert.deepEqual(withAudio.plan.operations[0].clips.map((clip) => clip.sourceId), ["source-1", "source-2"]);
+  assert.deepEqual(withAudio.plan.operations.find((operation) => operation.type === "visual_adjustment"), { type: "visual_adjustment", brightness: 0.12, sourceId: "source-2" });
+  assert.deepEqual(withAudio.plan.operations.find((operation) => operation.type === "audio_volume"), { type: "audio_volume", factor: 0.5 });
+
+  const withCaptions = await planFor("Make the greenery video slightly brighter, then add subtitles.");
+  assert.deepEqual(withCaptions.plan.operations[0].clips.map((clip) => clip.sourceId), ["source-1", "source-2"]);
+  assert.deepEqual(withCaptions.plan.operations.find((operation) => operation.type === "visual_adjustment"), { type: "visual_adjustment", brightness: 0.12, sourceId: "source-2" });
+  assert.equal(withCaptions.plan.operations.some((operation) => operation.type === "captions"), true);
+
+  const selection = await planFor("Use the greenery video.");
+  assert.deepEqual(selection.plan.operations[0].clips.map((clip) => clip.sourceId), ["source-2"]);
+
+  const selectionWithAdjustment = await planFor("Use the greenery video and make it slightly brighter.");
+  assert.deepEqual(selectionWithAdjustment.plan.operations[0].clips.map((clip) => clip.sourceId), ["source-2"]);
+  assert.deepEqual(selectionWithAdjustment.plan.operations.at(-1), { type: "visual_adjustment", brightness: 0.12, sourceId: "source-2" });
+
+  const reordered = await planFor("Use video 2, then video 1, and make the greenery video slightly brighter.", fullSequence(catalog, ["source-2", "source-1"]));
+  assert.deepEqual(reordered.plan.operations[0].clips.map((clip) => clip.sourceId), ["source-2", "source-1"]);
+  assert.deepEqual(reordered.plan.operations.at(-1), { type: "visual_adjustment", brightness: 0.12, sourceId: "source-2" });
+
+  const explicit = createEditPlan({ prompt: "Make video 2 warmer.", hasMultipleVideos: true, sourceCatalog: catalog });
+  assert.deepEqual(explicit.operations[0].clips.map((clip) => clip.sourceId), ["source-1", "source-2"]);
+  assert.deepEqual(explicit.operations.at(-1), { type: "visual_adjustment", temperature: 0.2, sourceId: "source-2" });
+});
+
 test("ambiguous semantic sources reject safely without calling the final planner", async () => {
   const catalog = sourceCatalog.slice(0, 2);
   const aiClient = createMockGemini({ responses: [

@@ -7,7 +7,7 @@ import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
 import { EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 import { reconcileCaptionOperation } from "@/lib/editor-core/caption-engine";
 import { reconcileAudioControls } from "@/lib/editor-core/audio-controls";
-import { reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
+import { findVisualAdjustmentClause, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
 const FILE_PROCESSING_TIMEOUT_MS = 60_000;
@@ -530,6 +530,63 @@ function validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources) {
   }
 }
 
+function escapeRegExp(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function promptOutsideVisualAdjustmentClause(prompt, clause) {
+  const text = String(prompt);
+  const index = text.toLowerCase().lastIndexOf(String(clause).toLowerCase());
+  return index < 0 ? text : `${text.slice(0, index)} ${text.slice(index + clause.length)}`;
+}
+
+function semanticSelectionOutsideVisualClause(prompt, clause, resolvedSemanticSources) {
+  const outsideClause = promptOutsideVisualAdjustmentClause(prompt, clause);
+  if (/\b(?:video\s*|source[-\s]?)(\d+)\b|\b(?:first|second|third|fourth|fifth)\s+video\b/i.test(outsideClause)) return true;
+  return resolvedSemanticSources.some(({ description }) => {
+    const semanticDescription = escapeRegExp(description);
+    return new RegExp(`\\b(?:use|show|keep|select|only|put|append|followed\\s+by|start\\s+with|begin\\s+with)\\s+(?:the\\s+)?${semanticDescription}\\b`, "i").test(outsideClause);
+  });
+}
+
+function reconcileSemanticVisualAdjustmentSequence(plan, prompt, sourceCatalog, resolvedSemanticSources, { hasAuthoritativeMomentSequence = false } = {}) {
+  if (plan?.version !== "2" || !resolvedSemanticSources.length) return plan;
+  const adjustmentIndex = plan.operations.findIndex((operation) => operation.type === "visual_adjustment");
+  if (adjustmentIndex < 0) return plan;
+
+  const clause = findVisualAdjustmentClause(prompt);
+  const normalizedClause = clause.toLowerCase();
+  const scopedResolution = resolvedSemanticSources.find(({ sourceId, description }) =>
+    plan.operations[adjustmentIndex].sourceId === sourceId && normalizedClause.includes(String(description).toLowerCase())
+  );
+  const selectedResolution = resolvedSemanticSources.length === 1 && /\b(?:it|this|that)\b/i.test(clause)
+    ? resolvedSemanticSources[0]
+    : null;
+  const operationScope = scopedResolution || selectedResolution;
+  if (!operationScope) return plan;
+
+  const operations = plan.operations.map((operation, index) => index === adjustmentIndex && !operation.sourceId
+    ? { ...operation, sourceId: operationScope.sourceId }
+    : operation
+  );
+  const reconciledPlan = { ...plan, operations };
+
+  // A semantic source named inside a visual-adjustment clause scopes that
+  // operation. It does not select a subset unless the user independently asks
+  // to select or reorder footage. Localized moment sequences remain absolute.
+  if (!scopedResolution || hasAuthoritativeMomentSequence || semanticSelectionOutsideVisualClause(prompt, clause, resolvedSemanticSources)) {
+    return reconciledPlan;
+  }
+
+  return {
+    ...reconciledPlan,
+    operations: reconciledPlan.operations.map((operation) => operation.type === "sequence"
+      ? { type: "sequence", clips: sourceCatalog.map(({ sourceId, duration }) => ({ sourceId, start: 0, end: duration })) }
+      : operation
+    )
+  };
+}
+
 async function waitForActiveFile(ai, uploadedFile) {
   const deadline = Date.now() + FILE_PROCESSING_TIMEOUT_MS;
   let file = uploadedFile;
@@ -664,6 +721,9 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     plan = reconcileCaptionOperation(plan, prompt);
     plan = reconcileAudioControls(plan, prompt);
     plan = reconcileVisualAdjustments(plan, prompt, { sourceCatalog, resolvedSemanticSources });
+    plan = reconcileSemanticVisualAdjustmentSequence(plan, prompt, sourceCatalog, resolvedSemanticSources, {
+      hasAuthoritativeMomentSequence: localizedMoments.length > 0
+    });
     if (!plan.operations.length) {
       if (requiresVisualUnderstanding) logSemanticFinalPlanMismatch(plan);
       throw new UnsupportedEditRequestError("This edit is not supported yet");
