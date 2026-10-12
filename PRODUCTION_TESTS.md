@@ -2058,11 +2058,11 @@ After deployment, the remaining production acceptance jobs completed without rec
 
 ---
 
-# Phase 3C-A — Visual Adjustment Engine Production Acceptance Plan
+# Phase 3C-A — Visual Adjustment Engine Production Acceptance
 
-Phase status: `🚧 IN PROGRESS`
+Phase status: `✅ COMPLETE`
 
-Phase 3C-A is not complete until implementation, automated tests, build/lint/diff checks, deployment, and this production acceptance plan all pass. Exact objective measurement strategy for exposure, temperature, and tint will be finalized with the implementation; human inspection alone is insufficient. Production acceptance should combine objective frame/statistical evidence where practical with playable-artifact inspection.
+Implementation, automated verification, deployment, objective production checks where practical, and manual perceptual acceptance have passed. Production correctness was followed by manual perceptual acceptance after `4062bce2d4bd59fb02d10325d323480338fe3caa` (`Calibrate Phase 3C-A visual adjustment strength`).
 
 ## Core Acceptance Matrix
 
@@ -2131,3 +2131,50 @@ Phase 3C-A is not complete until implementation, automated tests, build/lint/dif
 - illegal source scoping is rejected
 - malformed AI output cannot reach FFmpeg
 - prompts unrelated to visual appearance do not accidentally create visual adjustments
+
+## Final Production Results
+
+Core acceptance passed:
+
+| Case | Result | Job |
+| --- | --- | --- |
+| A — explicit brightness | PASS | `e7d7ce31-83f2-43b9-94c2-a6e88230d089` |
+| B — qualitative brightness | PASS | `228aa9bd-a6a2-4d58-8753-7ec35e7d8f28` |
+| C — contrast | PASS | `8e75a80d-66d4-4ac5-ba25-a75f4219bbaf` |
+| D — saturation | PASS | `46cfa799-dc20-42a6-bfc3-7c16eff0d481` |
+| E — warm temperature | PASS | `ef2419b9-c6b6-4d2e-9ef0-97c6071f5420` |
+| F — cool temperature | PASS | `0c110393-d67b-4c8c-ad02-4087ee8f3eea` |
+| G — tint | PASS | `40a1caf0-0dac-44e1-8de7-a9b9f0b4072a` |
+| H — combined visual adjustment | PASS | `debd366c-aa92-42a4-b8e8-908a73944a87` |
+| I — existing color grade + adjustment | PASS | `3d4bf9bf-00cd-4572-9ebe-6edb5c7cc883` |
+| J — explicit source-specific adjustment | PASS | `1939c794-a05c-4cbe-829f-0f5750903b4c` |
+| K — semantic source-specific adjustment | PASS | `095bed80-bb6c-4764-90f4-abb7b5dfb3e8` |
+| L — trim + adjustment | PASS | `a7cd2b99-d094-44ad-920f-2067f621e70f` |
+| M — semantic/multi-moment + adjustment | PASS | `608e1e4c-7a99-4fe5-9585-45deef3d342c` |
+| N — title + adjustment | PASS | `9ef60a87-4971-43b8-8498-a8ac3391639e` |
+| N — captions + adjustment | PASS | `4d6cb465-5712-41a9-acb8-5fda6fc2d55b` |
+| O — audio + adjustment | PASS | `72863727-4eb5-4c52-9701-56ce8ca91044` |
+| R1 — existing color grade | PASS | `56a4f750-4e26-4af5-8b1f-bc89bdac3ff0` |
+| R2 — black and white | PASS | `23028089-574c-4a2a-8a72-e8f5ce47db77` |
+| R3 — non-visual prompt | PASS | `e9f41e50-0a85-41cd-b01c-1cd677a1be1a` |
+
+Negative and validator coverage also passed: non-finite and out-of-range values, unsupported fields, illegal source scope, empty adjustments, malformed AI output, and unrelated prompts were rejected before FFmpeg.
+
+### Semantic Source-Scope Regression
+
+The initial semantic source-specific prompt `Make the greenery video slightly brighter.` resolved the correct source but incorrectly narrowed the final sequence to greenery only (job `2b72f27b-325a-4aa0-a758-787a6fe11017`).
+
+`72f87650a75e596a7401b6655e9488480781036f`
+`Fix semantic visual adjustment source scope`
+
+The server now distinguishes semantic operation scope from semantic source selection. The final full-sequence regression passed as K above. Related semantic regressions also passed: true selection `858cb84d-d12c-49b9-948e-4f87ff410919`, selection plus brightness `72a94cb2-fdb1-47e7-b879-b491df9bedd3`, and explicit reorder plus semantic adjustment `c2ff40e5-8f7a-4b3e-8ee0-20e44cfe52a1`.
+
+### Perceptual Calibration
+
+`599e61cb6355851f2a6ea3c59af2f67542ed34d9` introduced the engine. Functional acceptance then showed that its visual effects were too subtle in real-footage manual product testing. `4062bce2d4bd59fb02d10325d323480338fe3caa` recalibrated the deterministic mappings from brightness `normalized × 0.25`, contrast/saturation `1 + normalized × 0.5`, and temperature/tint `normalized × 0.15` to brightness `normalized × 0.45`, contrast/saturation `1 + normalized × 0.9`, and temperature/tint `normalized × 0.32`; the server-facing `-1..1` contract did not change.
+
+Post-calibration manual acceptance confirmed noticeable explicit and qualitative brightness, effective contrast and saturation adjustment, perceptible warm/cool shifts, controlled magenta tint, and the combined request. These perceptual checks supplement—not replace—the objective correctness and artifact checks above.
+
+`PHASE 3C-A PRODUCTION ACCEPTANCE PASSED`
+
+`Phase 3C-A — Visual Adjustment Engine: ✅ COMPLETE`

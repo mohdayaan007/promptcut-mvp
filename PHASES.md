@@ -1489,8 +1489,8 @@ AI interprets. Server validates. FFmpeg executes.
 
 Phase 3C is divided into:
 
-1. Phase 3C-A — Visual Adjustment Engine
-2. Edit History v1 / Undo
+1. Phase 3C-A — Visual Adjustment Engine — COMPLETE
+2. Edit History v1 / Undo — NEXT
 3. Phase 3C-B — Filters & Reference Styling
 4. Phase 3C-C — Transitions & Timeline Effects
 
@@ -1498,7 +1498,7 @@ The parent Phase 3C remains `🚧 IN PROGRESS` until all required sub-phases are
 
 ## Phase 3C-A — Visual Adjustment Engine
 
-Status: `🚧 IN PROGRESS`
+Status: `✅ COMPLETE`
 
 Purpose:
 
@@ -1535,7 +1535,38 @@ Requirements:
 - Visual operations must not silently change duration or A/V synchronization.
 - Existing `color_grade` presets and black-and-white behavior remain backward compatible.
 
-The conceptual operation may be called `visual_adjustment`. Its exact schema and FFmpeg-safe numeric ranges will be finalized by the 3C-A architecture review rather than guessed here.
+### Completion sign-off
+
+Cliponaut now supports first-class `visual_adjustment` operations for brightness/exposure, contrast, saturation, temperature, and tint. Exact supported percentages and qualitative terms such as slightly brighter, warmer, cooler, and reduce saturation a little resolve to server-owned normalized values. The server validates the bounded `-1..1` contract and deterministic FFmpeg executes it; AI never generates arbitrary FFmpeg controls.
+
+Visual adjustments work globally and with explicit or semantic source scope. They compose with existing color grades, trim, semantic and multi-moment editing, titles, captions, and basic audio controls. Named warm/cool/cinematic-style presets and black and white remain existing `color_grade` behavior: `Make it warmer.` is `visual_adjustment.temperature`, while `Apply the warm filter.` remains the preset path.
+
+Initial scope intentionally permits one global **or** one source-scoped `visual_adjustment` per plan.
+
+#### Semantic source-scope correction
+
+Production initially exposed a distinction between source selection and operation scope. `Make the greenery video slightly brighter.` correctly resolved the greenery source but incorrectly narrowed the V2 sequence to that source (job `2b72f27b-325a-4aa0-a758-787a6fe11017`).
+
+`72f87650a75e596a7401b6655e9488480781036f`
+`Fix semantic visual adjustment source scope`
+
+The server-owned reconciliation now preserves the ordinary full sequence when a semantic description only scopes an adjustment. Genuine semantic selection, selection plus adjustment, explicit reorders, and authoritative semantic/moment sequences remain intact. Final regression jobs: full-sequence semantic adjustment `095bed80-bb6c-4764-90f4-abb7b5dfb3e8`; true selection `858cb84d-d12c-49b9-948e-4f87ff410919`; selection plus brightness `72a94cb2-fdb1-47e7-b879-b491df9bedd3`; explicit reorder plus semantic adjustment `c2ff40e5-8f7a-4b3e-8ee0-20e44cfe52a1`.
+
+#### Perceptual calibration
+
+The initial implementation was functionally correct, but real-footage manual testing found its FFmpeg mappings too subtle. This was product calibration rather than an architectural defect.
+
+`599e61cb6355851f2a6ea3c59af2f67542ed34d9`
+`Add Phase 3C-A visual adjustment engine`
+
+`4062bce2d4bd59fb02d10325d323480338fe3caa`
+`Calibrate Phase 3C-A visual adjustment strength`
+
+The final deterministic mapping changed from brightness `normalized × 0.25`, contrast/saturation `1 + normalized × 0.5`, and temperature/tint `normalized × 0.15` to brightness `normalized × 0.45`, contrast/saturation `1 + normalized × 0.9`, and temperature/tint `normalized × 0.32`. The validator contract remains `-1..1`.
+
+Manual product acceptance after calibration confirmed noticeable brightness, contrast, saturation, warm/cool temperature, controlled magenta tint, and combined adjustment results. Future strength tuning is normal product calibration and does not require reopening the 3C-A architecture when regressions remain safe.
+
+`Phase 3C-A — Visual Adjustment Engine: ✅ COMPLETE`
 
 ## Edit History v1 / Undo
 
