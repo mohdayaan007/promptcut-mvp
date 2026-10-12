@@ -1475,6 +1475,166 @@ It added a maximum of three PUT attempts, 500ms/1000ms backoff, retries for netw
 
 ---
 
+# Phase 3C — Advanced Visual Editing
+
+Status: `🚧 IN PROGRESS`
+
+Purpose:
+
+Extend Cliponaut from structural editing, footage understanding, typography, captions, and audio into creative visual finishing. Users should increasingly be able to describe how footage should look and feel without learning traditional color panels, filter controls, LUT terminology, or timeline effects.
+
+Phase 3C preserves the core rule:
+
+AI interprets. Server validates. FFmpeg executes.
+
+Phase 3C is divided into:
+
+1. Phase 3C-A — Visual Adjustment Engine
+2. Edit History v1 / Undo
+3. Phase 3C-B — Filters & Reference Styling
+4. Phase 3C-C — Transitions & Timeline Effects
+
+The parent Phase 3C remains `🚧 IN PROGRESS` until all required sub-phases are implemented and production accepted.
+
+## Phase 3C-A — Visual Adjustment Engine
+
+Status: `🚧 IN PROGRESS`
+
+Purpose:
+
+Introduce first-class bounded visual adjustments controlled through natural language.
+
+Initial product scope:
+
+- brightness / exposure
+- contrast
+- saturation
+- temperature
+- tint
+
+Both explicit and qualitative requests are in scope. Representative prompts include:
+
+- `Increase the brightness by 20%.`
+- `Make the video slightly brighter.`
+- `Increase the contrast.`
+- `Reduce the saturation a little.`
+- `Make it warmer.`
+- `Cool the footage down slightly.`
+- `Make it brighter, warmer, and slightly more contrasty.`
+- `Make video 2 warmer.`
+- `Make the greenery video slightly brighter and more saturated.`
+
+Requirements:
+
+- Visual adjustments are validated first-class editor operations, never arbitrary AI-generated FFmpeg.
+- Exact instructions map deterministically; qualitative terms use conservative server-owned defaults.
+- Values have bounded safe ranges; invalid, non-finite, and out-of-range values fail validation.
+- Adjustments may combine with each other and must support global application.
+- Explicit source-specific application is supported where safe; semantic source targeting reuses the existing source-resolution architecture.
+- Adjustments compose with sequence, semantic/multi-moment selection, trim, speed, titles, captions, audio controls, crop, zoom, and existing fades.
+- Visual operations must not silently change duration or A/V synchronization.
+- Existing `color_grade` presets and black-and-white behavior remain backward compatible.
+
+The conceptual operation may be called `visual_adjustment`. Its exact schema and FFmpeg-safe numeric ranges will be finalized by the 3C-A architecture review rather than guessed here.
+
+## Edit History v1 / Undo
+
+Status: `⏳ PLANNED`
+
+Purpose:
+
+Allow users to safely experiment with prompts and restore a previous successful edit state.
+
+Example:
+
+Original → `Increase brightness by 20%.` → accepted result → `Increase brightness by 30%.` → user dislikes result → Undo → restore the previous 20% result.
+
+Initial direction:
+
+- Restore a previous successful prompt result; repeated undo through earlier successful states should be architecturally possible.
+- Failed edits must not destroy the last successful state.
+- Avoid duplicate or confused job lineage.
+- Full branching/version-tree UX is deferred; Phase 4 may later evolve this into richer conversational edit history.
+
+Detailed production acceptance is deferred.
+
+## Phase 3C-B — Filters & Reference Styling
+
+Status: `⏳ PLANNED`
+
+Conceptual sub-phases:
+
+- B1 — Strong Cliponaut Looks / LUT Library
+- B2 — Reference Image Look Matching
+- B3 — Reference Typography
+- B4 — Supporting Visual Effects
+
+### B1 — Strong Cliponaut Looks / LUT Library
+
+Create a curated library of clearly differentiated Cliponaut-owned looks rather than relying only on the existing subtle presets. Potential categories include Cinematic, Dark Cinematic, Golden Hour, Warm Travel, Moody Teal, Clean Commercial, Soft Film, Faded Film, Vintage 90s, Cold Urban, Pastel, Vibrant, and Natural / Documentary. Look intensity/strength should eventually be controllable. The final catalog is deferred to implementation and production visual evaluation.
+
+### B2 — Reference Image Look Matching
+
+Users may attach a reference screenshot/image and request `Match this look.`, `Make video 2 look like the attached reference.`, or `Apply the attached look to the greenery video.` Reference matching is approximate visual matching, not exact reverse-engineering of another creator's filter.
+
+Product copy:
+
+> Reference matching is approximate and may not reproduce the original look exactly.
+
+Reference images are style references, not output media layers. Likely initial formats are JPG, PNG, and WebP. Reference-processing architecture is deferred.
+
+### B3 — Reference Typography
+
+Reference typography may guide selection of the closest supported Cliponaut font/style, for example `Use the same font style as the attached screenshot for the title at 0:10.` or `Match the font used for "SUMMER" in the screenshot.` Exact font cloning is not promised.
+
+Product copy:
+
+> Cliponaut matches the closest supported font style. Exact matches aren't guaranteed.
+
+Only registered/supported Cliponaut fonts may render. If multiple distinct font styles make the request ambiguous, fail safely/request clarification:
+
+> Multiple font styles were detected in the reference. Specify which text you'd like me to match.
+
+### B4 — Supporting Visual Effects
+
+Potential effects include film grain, vignette, blur, and sharpen. Detailed production acceptance for 3C-B is deferred until image-reference and look architecture is finalized.
+
+## Phase 3C-C — Transitions & Timeline Effects
+
+Status: `⏳ PLANNED`
+
+Initial direction:
+
+- Transitions: crossfade/dissolve, dip to black, and possibly dip to white after core transitions are stable.
+- Timeline/motion effects: freeze frame and controlled pan/motion.
+
+Representative prompts:
+
+- `Crossfade between the two clips.`
+- `Fade through black between video 1 and video 2.`
+- `Freeze the frame when I hold up the phone for two seconds.`
+- `Freeze when the person looks at the camera for two seconds.`
+- `Slowly pan from left to right.`
+
+Transitions are timeline operations, not merely visual filters. Their design must account for changed output duration caused by overlap, title and caption timing, audio synchronization, speed, semantic/multi-moment composition, fades, and final-output timeline semantics. Reference-based transition cloning is not required for Phase 3C. Detailed production acceptance is deferred until timeline architecture is finalized.
+
+## Phase 3C Out of Scope / Deferred
+
+Keep out of Phase 3C unless later deliberately approved:
+
+- arbitrary object masking
+- person/object-selective color grading
+- professional node-based color grading
+- arbitrary RGB/HSL curve editor UI
+- exact reconstruction of proprietary Instagram filters
+- exact cloning of unsupported/proprietary fonts
+- reference-video transition cloning
+- full Figma-style branching version history
+- generative image/video replacement
+- advanced compositing/layer stacks
+- picture-in-picture
+- logo/image overlays if reserved for a later layered-composition phase
+
 ---
 
 # Render Timeout

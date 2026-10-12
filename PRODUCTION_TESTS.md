@@ -2055,3 +2055,79 @@ After deployment, the remaining production acceptance jobs completed without rec
 `PHASE 3B-C CORE ACCEPTANCE PASSED`
 
 `Phase 3B-C — Basic Audio Controls: ✅ COMPLETE`
+
+---
+
+# Phase 3C-A — Visual Adjustment Engine Production Acceptance Plan
+
+Phase status: `🚧 IN PROGRESS`
+
+Phase 3C-A is not complete until implementation, automated tests, build/lint/diff checks, deployment, and this production acceptance plan all pass. Exact objective measurement strategy for exposure, temperature, and tint will be finalized with the implementation; human inspection alone is insufficient. Production acceptance should combine objective frame/statistical evidence where practical with playable-artifact inspection.
+
+## Core Acceptance Matrix
+
+- A — explicit brightness
+  Prompt: `Increase the brightness by 20%.`
+  Verify visibly/measurably brighter output, deterministic validated adjustment, unchanged duration, unaffected audio, and playable output.
+- B — qualitative brightness
+  Prompt: `Make the video slightly brighter.`
+  Verify a conservative server-owned default, visibly brighter output without excessive clipping/crushing, and a playable artifact.
+- C — contrast
+  Prompt: `Increase the contrast.`
+  Verify a visible contrast change, a valid bounded value, and unchanged duration/audio.
+- D — saturation
+  Prompt: `Reduce the saturation a little.`
+  Verify visible saturation reduction without monochrome output unless explicitly requested, and unchanged duration/audio.
+- E — temperature warm
+  Prompt: `Make the video warmer.`
+  Verify a clearly warmer appearance and bounded deterministic qualitative mapping.
+- F — temperature cool
+  Prompt: `Cool the footage down slightly.`
+  Verify a clearly cooler appearance and bounded deterministic qualitative mapping.
+- G — tint
+  Use an explicit, unambiguous tint request supported by the final operation contract.
+  Verify intended tint direction, bounded value, and no unrelated visual operation.
+- H — combined adjustments
+  Prompt: `Make it slightly brighter, warmer, and more contrasty.`
+  Verify all requested adjustments coexist without duplicate/conflicting operation corruption and yield a playable artifact.
+- I — existing-look + visual adjustment composition
+  Apply an existing supported color look and request a compatible visual adjustment, such as making it slightly brighter.
+  Verify `color_grade` remains functional and visual adjustment composes rather than silently replacing unrelated intent.
+- J — explicit source-specific adjustment
+  Two-video fixture; prompt: `Make video 2 warmer.`
+  Verify only source-2 is adjusted, source-1 remains visually unchanged apart from normal normalization/encoding, and sequence/order is unaffected.
+- K — semantic-source adjustment
+  Use a known fixture with an unambiguous semantic source; prompt: `Make the greenery video slightly brighter.`
+  Verify the existing semantic source resolver selects the correct source, only that source is adjusted, and source order is intact.
+- L — trim + adjustment
+  Combine trim with one visual adjustment.
+  Verify trim, adjustment, requested duration, and A/V synchronization are correct.
+- M — semantic/multi-moment composition + adjustment
+  Use previously proven 3A.5C fixtures.
+  Verify requested moments/order remain authoritative, adjustment applies at its intended scope, and semantic selection does not regress.
+- N — titles/captions + adjustment
+  Use a clear-speech fixture.
+  Verify titles/captions remain rendered and synchronized, text remains readable, ASS/libass rendering is intact, and output is playable.
+- O — audio + adjustment
+  Combine a visual adjustment with a proven basic audio control.
+  Verify visual result and audio control are independently correct with no A/V corruption.
+
+## Regression Matrix
+
+- R1 — existing color-grade regression
+  Run a supported preset such as cinematic, warm, or retro; verify existing behavior remains supported.
+- R2 — black-and-white regression
+  Prompt: `Make this video black and white.`
+  Verify proper monochrome output, no reinterpretation as generic saturation adjustment, and playable output.
+- R3 — non-visual regression
+  Use a representative existing operation such as trim or subtitles without visual-change intent.
+  Verify no `visual_adjustment` is invented and output remains normal.
+
+## Negative / Validation Coverage
+
+- non-finite values are rejected
+- out-of-range values are rejected
+- unsupported fields are rejected
+- illegal source scoping is rejected
+- malformed AI output cannot reach FFmpeg
+- prompts unrelated to visual appearance do not accidentally create visual adjustments
