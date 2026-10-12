@@ -6,6 +6,7 @@ export const CAPABILITY_LIMITS = {
   speed: { minFactor: 0.25, maxFactor: 4 },
   fade: { minDuration: 0.1, maxDuration: 10 },
   audioVolume: { minFactor: 0, maxFactor: 2 },
+  visualAdjustment: { min: -1, max: 1 },
   aspectRatios: ["16:9", "9:16", "1:1"]
 };
 
@@ -23,6 +24,7 @@ export const CAPABILITY_REGISTRY = {
   fade: { requiredFields: ["mode", "duration"], modes: ["in", "out", "both"], limits: CAPABILITY_LIMITS.fade },
   audio_volume: { requiredFields: ["factor"], limits: CAPABILITY_LIMITS.audioVolume },
   audio_fade: { requiredFields: ["mode", "duration"], modes: ["in", "out", "both"], limits: CAPABILITY_LIMITS.fade },
+  visual_adjustment: { requiredFields: [], limits: CAPABILITY_LIMITS.visualAdjustment },
   crop: { requiredFields: ["aspect_ratio"], aspectRatios: CAPABILITY_LIMITS.aspectRatios }
 };
 
@@ -58,6 +60,7 @@ export function getAiCapabilityContract({ hasMultipleVideos = false, supportsSeq
     fade: { requiredFields: CAPABILITY_REGISTRY.fade.requiredFields, modes: CAPABILITY_REGISTRY.fade.modes, ...CAPABILITY_REGISTRY.fade.limits },
     audio_volume: { requiredFields: CAPABILITY_REGISTRY.audio_volume.requiredFields, ...CAPABILITY_REGISTRY.audio_volume.limits, note: "Controls final-output audio only. Mute is factor 0; quieter/lower/decrease is 0.5; louder/increase is 1.5." },
     audio_fade: { requiredFields: CAPABILITY_REGISTRY.audio_fade.requiredFields, modes: CAPABILITY_REGISTRY.audio_fade.modes, ...CAPABILITY_REGISTRY.audio_fade.limits, note: "Fades final-output audio only; it never fades video." },
+    visual_adjustment: { fields: ["brightness", "contrast", "saturation", "temperature", "tint"], min: -1, max: 1, note: "Normalized visual controls only; positive temperature is warmer and positive tint is magenta. Never emit FFmpeg filters." },
     crop: { requiredFields: CAPABILITY_REGISTRY.crop.requiredFields, aspectRatios: CAPABILITY_REGISTRY.crop.aspectRatios },
     merge: hasMultipleVideos
       ? "Automatically added by the server because multiple videos were uploaded. Do not emit it."

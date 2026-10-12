@@ -62,6 +62,15 @@ export function createEditPlanJsonSchema({ sourceIds = [] } = {}) {
     required: ["type", "sourceId", "style"],
     additionalProperties: false
   };
+  const visualProperties = {
+    type: { type: "string", enum: ["visual_adjustment"] },
+    brightness: { type: "number", minimum: -1, maximum: 1 }, contrast: { type: "number", minimum: -1, maximum: 1 },
+    saturation: { type: "number", minimum: -1, maximum: 1 }, temperature: { type: "number", minimum: -1, maximum: 1 }, tint: { type: "number", minimum: -1, maximum: 1 }
+  };
+  // Gemini responseJsonSchema does not support minProperties. The validator
+  // independently rejects empty adjustment operations before execution.
+  const visualAdjustmentFields = { type: "object", properties: visualProperties, required: ["type"], additionalProperties: false };
+  const sourceVisualFields = { type: "object", properties: { ...visualProperties, sourceId }, required: ["type", "sourceId"], additionalProperties: false };
   const sequenceFields = {
     type: "object",
     properties: {
@@ -97,6 +106,7 @@ export function createEditPlanJsonSchema({ sourceIds = [] } = {}) {
     },
     titleFields,
     captionFields,
+    visualAdjustmentFields,
     {
       type: "object",
       properties: {
@@ -168,7 +178,7 @@ export function createEditPlanJsonSchema({ sourceIds = [] } = {}) {
       additionalProperties: false
     }
   ];
-  if (supportsSourceAwarePlans) operationSchemas.push(sourceColorFields, sequenceFields);
+  if (supportsSourceAwarePlans) operationSchemas.push(sourceColorFields, sourceVisualFields, sequenceFields);
 
   return {
     type: "object",

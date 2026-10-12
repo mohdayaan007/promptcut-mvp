@@ -2,12 +2,14 @@ import { getIntentPattern, understandPrompt } from "@/lib/prompt-understanding";
 import { parseTitle } from "@/lib/title-parser";
 import { createCaptionOperation, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { reconcileAudioControls } from "@/lib/editor-core/audio-controls";
+import { extractVisualAdjustmentIntent, findVisualAdjustmentClause, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
 
-function detectColor(intents = []) {
+function detectColor(intents = [], prompt = "") {
   if (intents.includes("blackWhite")) return "bw";
   if (intents.includes("cinematic")) return "cinematic";
-  if (intents.includes("cool")) return "blue";
-  if (intents.includes("warm")) return "warm";
+  const namedLook = /\b(?:apply|use)\s+(?:the\s+)?(?:warm|cool)\s+(?:filter|look)\b/i.test(prompt);
+  if (intents.includes("cool") && (!/\b(?:cool(?:\s+the)?\s+(?:footage|video)\s+down|make\s+it\s+cooler)\b/i.test(prompt) || namedLook)) return "blue";
+  if (intents.includes("warm") && (!/\b(?:make\s+it\s+)?warmer\b|\bincrease\s+(?:the\s+)?warmth\b/i.test(prompt) || namedLook)) return "warm";
   return null;
 }
 
@@ -351,8 +353,13 @@ function sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle) {
   }
 
   const references = [];
+  const visualIntent = extractVisualAdjustmentIntent(prompt);
+  // The adjustment clause can name a source purely for scope. Exclude that
+  // clause when deriving sequence order, while retaining genuine prior source
+  // selection/reordering references.
+  const selectionPrompt = visualIntent ? prompt.replace(findVisualAdjustmentClause(prompt), "") : prompt;
   const referencePattern = /\b(?:video\s*|source[-\s]?)(\d+)\b|\b(first|second|third|fourth|fifth)\s+video\b|\bthen\s+(?:the\s+)?(first|second|third|fourth|fifth)\b/gi;
-  for (const match of prompt.matchAll(referencePattern)) {
+  for (const match of selectionPrompt.matchAll(referencePattern)) {
     const ordinal = Number(match[1]) || ORDINALS[match[2]] || ORDINALS[match[3]];
     if (ordinal) references.push({ index: match.index, sourceId: sourceIdForOrdinal(ordinal) });
   }
@@ -366,6 +373,12 @@ function sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle) {
         { type: "color_grade", sourceId: sourceIdForOrdinal(Number(sourceOnlyMatch[1])), style: colorStyle }
       ]
     };
+  }
+
+  // A source mention that only scopes a visual adjustment is not a request to
+  // remove the other uploaded sources from the ordinary merged sequence.
+  if (visualIntent && !references.length && /\b(?:video\s*|source[-\s]?\d+|first|second|third|fourth|fifth\s+video)\b/i.test(prompt)) {
+    return { version: "2", operations: [{ type: "sequence", clips: fullSourceClips(sourceCatalog) }] };
   }
 
   if (references.length) {
@@ -388,13 +401,13 @@ function sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle) {
 export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipleVideos = hasSecondVideo, sourceCatalog = [] }) {
   const { intents } = understandPrompt(prompt);
   const operations = [];
-  const colorStyle = detectColor(intents);
+  const colorStyle = detectColor(intents, prompt);
   const trim = parseTrim(prompt, intents);
   const title = parseTitle(prompt);
   const sourceAwarePlan = sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle);
   if (sourceAwarePlan) {
     if (requestsCaptions(prompt)) sourceAwarePlan.operations.push(createCaptionOperation(prompt));
-    return reconcileAudioControls(sourceAwarePlan, prompt);
+    return reconcileAudioControls(reconcileVisualAdjustments(sourceAwarePlan, prompt, { sourceCatalog }), prompt);
   }
 
   // Uploaded clips are merged automatically, independent of whether the prompt
@@ -406,5 +419,5 @@ export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipl
   if (trim) operations.push({ type: "trim", ...trim });
   operations.push(...parseFallbackCapabilities(prompt));
 
-  return reconcileAudioControls({ version: "1", operations }, prompt);
+  return reconcileAudioControls(reconcileVisualAdjustments({ version: "1", operations }, prompt, { sourceCatalog }), prompt);
 }

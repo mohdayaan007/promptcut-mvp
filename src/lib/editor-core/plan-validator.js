@@ -107,8 +107,8 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
     }
 
     if (operation.sourceId !== undefined) {
-      if (!sourceAware || operation.type !== "color_grade") {
-        throw validationError("sourceId is supported only for version 2 color_grade operations");
+      if (!sourceAware || !["color_grade", "visual_adjustment"].includes(operation.type)) {
+        throw validationError("sourceId is supported only for version 2 color_grade or visual_adjustment operations");
       }
       if (!sources.has(operation.sourceId)) throw validationError(`unknown source: ${operation.sourceId}`);
     }
@@ -119,13 +119,22 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
       }
     }
 
-    if (["merge", "color_grade", "trim", "speed", "fade", "audio_volume", "audio_fade", "crop", "captions"].includes(operation.type)) {
+    if (["merge", "color_grade", "visual_adjustment", "trim", "speed", "fade", "audio_volume", "audio_fade", "crop", "captions"].includes(operation.type)) {
       if (seenSingletons.has(operation.type)) throw validationError(`only one ${operation.type} operation is allowed`);
       seenSingletons.add(operation.type);
     }
 
     if (operation.type === "color_grade" && !capability.supportedValues[operation.style]) {
       throw validationError(`unsupported color grade: ${operation.style}`);
+    }
+    if (operation.type === "visual_adjustment") {
+      const fields = ["brightness", "contrast", "saturation", "temperature", "tint"];
+      const present = fields.filter((field) => operation[field] !== undefined);
+      if (!present.length) throw validationError("visual_adjustment requires at least one adjustment");
+      for (const field of present) {
+        const value = operation[field];
+        if (typeof value !== "number" || !Number.isFinite(value) || value < CAPABILITY_LIMITS.visualAdjustment.min || value > CAPABILITY_LIMITS.visualAdjustment.max) throw validationError(`visual adjustment ${field} must be between -1 and 1`);
+      }
     }
     if (operation.type === "trim") validateTimedOperation(operation, "trim");
     if (operation.type === "title") validateTitle(operation);

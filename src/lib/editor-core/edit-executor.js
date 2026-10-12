@@ -130,6 +130,28 @@ async function applyColorGrade(input, output, style, executionController) {
   ], { executionController });
 }
 
+// Converts bounded server-facing controls to conservative FFmpeg filters. No
+// duration-changing filters are used here, and normalized values never reach
+// FFmpeg directly as user-controlled filter syntax.
+export function buildVisualAdjustmentFilters(operation) {
+  const filters = [];
+  const eq = [];
+  if (operation.brightness !== undefined) eq.push(`brightness=${(operation.brightness * 0.25).toFixed(4)}`);
+  if (operation.contrast !== undefined) eq.push(`contrast=${(1 + operation.contrast * 0.5).toFixed(4)}`);
+  if (operation.saturation !== undefined) eq.push(`saturation=${(1 + operation.saturation * 0.5).toFixed(4)}`);
+  if (eq.length) filters.push(`eq=${eq.join(":")}`);
+  if (operation.temperature !== undefined || operation.tint !== undefined) {
+    const temperature = operation.temperature || 0;
+    const tint = operation.tint || 0;
+    filters.push(`colorbalance=rs=${(temperature * 0.15).toFixed(4)}:bs=${(-temperature * 0.15).toFixed(4)}:gm=${(-tint * 0.15).toFixed(4)}`);
+  }
+  return filters;
+}
+
+async function applyVisualAdjustment(input, output, operation, executionController) {
+  await exec(FFMPEG, ["-y", "-hide_banner", "-loglevel", "error", "-i", input, "-vf", buildVisualAdjustmentFilters(operation).join(","), ...VIDEO_ENCODING_ARGS, output], { executionController });
+}
+
 async function cutClip(input, output, start, end, executionController) {
   await exec(FFMPEG, [
     "-y", "-hide_banner", "-loglevel", "error", "-ss", start.toString(), "-to", end.toString(), "-i", input,
@@ -304,12 +326,14 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
   }
 
   if (sequence) {
-    for (const operation of plan.operations) {
-      if (operation.type !== "color_grade" || !operation.sourceId) continue;
+    // Server-owned order: named grade first, then bounded adjustment.
+    for (const type of ["color_grade", "visual_adjustment"]) for (const operation of plan.operations) {
+      if (operation.type !== type || !operation.sourceId) continue;
       const source = sourceById.get(operation.sourceId);
-      const gradedPath = path.join(tempDirectory, `graded-${source.index}.mp4`);
-      await applyColorGrade(normalizedPaths.get(source.index), gradedPath, operation.style, executionController);
-      normalizedPaths.set(source.index, gradedPath);
+      const adjustedPath = path.join(tempDirectory, `${type}-${source.index}.mp4`);
+      if (type === "color_grade") await applyColorGrade(normalizedPaths.get(source.index), adjustedPath, operation.style, executionController);
+      else await applyVisualAdjustment(normalizedPaths.get(source.index), adjustedPath, operation, executionController);
+      normalizedPaths.set(source.index, adjustedPath);
     }
   }
 
@@ -339,10 +363,9 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
   // establish the final output timeline, so title timestamps are never shifted by trim or speed.
   const cropSettings = getCropSettings(crop, profile);
   const filters = cropSettings.filter ? [cropSettings.filter] : [];
-  for (const operation of plan.operations) {
-    if (operation.type === "zoom") filters.push(buildZoomFilter(operation, cropSettings));
-    if (operation.type === "color_grade" && !operation.sourceId) filters.push(...COLOR_PRESETS[operation.style]);
-  }
+  for (const operation of plan.operations) if (operation.type === "zoom") filters.push(buildZoomFilter(operation, cropSettings));
+  for (const operation of plan.operations) if (operation.type === "color_grade" && !operation.sourceId) filters.push(...COLOR_PRESETS[operation.style]);
+  for (const operation of plan.operations) if (operation.type === "visual_adjustment" && !operation.sourceId) filters.push(...buildVisualAdjustmentFilters(operation));
 
   let processed = baseVideo;
   if (filters.length) {
