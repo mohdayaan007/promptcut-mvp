@@ -49,7 +49,18 @@ test("3C-A visual adjustment intent, validation, source scope, and filters remai
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "visual_adjustment", brightness: 1.5 }] }), /between -1 and 1/);
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "visual_adjustment", brightness: -1.5 }] }), /between -1 and 1/);
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "visual_adjustment", brightness: Number.NaN }] }), /between -1 and 1/);
-  assert.match(buildVisualAdjustmentFilters({ brightness: 0.2, contrast: 0.2, saturation: -0.2, temperature: 0.2, tint: -0.2 }).join(","), /eq=.*colorbalance=/);
+  assert.deepEqual(buildVisualAdjustmentFilters({ brightness: 0.2, contrast: 0.2, saturation: -0.2, temperature: 0.2, tint: -0.2 }), [
+    "eq=brightness=0.0900:contrast=1.1800:saturation=0.8200",
+    "colorbalance=rs=0.0640:bs=-0.0640:gm=0.0640"
+  ]);
+  assert.deepEqual(buildVisualAdjustmentFilters({ brightness: -1, contrast: -1, saturation: -1, temperature: -1, tint: 1 }), [
+    "eq=brightness=-0.4500:contrast=0.1000:saturation=0.1000",
+    "colorbalance=rs=-0.3200:bs=0.3200:gm=-0.3200"
+  ]);
+  assert.deepEqual(buildVisualAdjustmentFilters({ brightness: 1, contrast: 1, saturation: 1, temperature: 1, tint: -1 }), [
+    "eq=brightness=0.4500:contrast=1.9000:saturation=1.9000",
+    "colorbalance=rs=0.3200:bs=-0.3200:gm=0.3200"
+  ]);
   assert.equal(createEditPlan({ prompt: "Make it warmer." }).operations.some((operation) => operation.type === "color_grade"), false);
   assert.deepEqual(createEditPlan({ prompt: "Make it warmer." }).operations, [{ type: "visual_adjustment", temperature: 0.2 }]);
   assert.deepEqual(createEditPlan({ prompt: "Apply the warm filter." }).operations, [{ type: "color_grade", style: "warm" }]);

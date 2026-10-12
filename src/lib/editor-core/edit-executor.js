@@ -130,20 +130,20 @@ async function applyColorGrade(input, output, style, executionController) {
   ], { executionController });
 }
 
-// Converts bounded server-facing controls to conservative FFmpeg filters. No
-// duration-changing filters are used here, and normalized values never reach
-// FFmpeg directly as user-controlled filter syntax.
+// Converts bounded server-facing controls to perceptible, still bounded FFmpeg
+// filters. No duration-changing filters are used here, and normalized values
+// never reach FFmpeg directly as user-controlled filter syntax.
 export function buildVisualAdjustmentFilters(operation) {
   const filters = [];
   const eq = [];
-  if (operation.brightness !== undefined) eq.push(`brightness=${(operation.brightness * 0.25).toFixed(4)}`);
-  if (operation.contrast !== undefined) eq.push(`contrast=${(1 + operation.contrast * 0.5).toFixed(4)}`);
-  if (operation.saturation !== undefined) eq.push(`saturation=${(1 + operation.saturation * 0.5).toFixed(4)}`);
+  if (operation.brightness !== undefined) eq.push(`brightness=${(operation.brightness * 0.45).toFixed(4)}`);
+  if (operation.contrast !== undefined) eq.push(`contrast=${(1 + operation.contrast * 0.9).toFixed(4)}`);
+  if (operation.saturation !== undefined) eq.push(`saturation=${(1 + operation.saturation * 0.9).toFixed(4)}`);
   if (eq.length) filters.push(`eq=${eq.join(":")}`);
   if (operation.temperature !== undefined || operation.tint !== undefined) {
     const temperature = operation.temperature || 0;
     const tint = operation.tint || 0;
-    filters.push(`colorbalance=rs=${(temperature * 0.15).toFixed(4)}:bs=${(-temperature * 0.15).toFixed(4)}:gm=${(-tint * 0.15).toFixed(4)}`);
+    filters.push(`colorbalance=rs=${(temperature * 0.32).toFixed(4)}:bs=${(-temperature * 0.32).toFixed(4)}:gm=${(-tint * 0.32).toFixed(4)}`);
   }
   return filters;
 }
