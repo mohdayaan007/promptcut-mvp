@@ -10,7 +10,7 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validat
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, consumeUndo, discardUndoActiveJob, emptyUndoState, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, consumeUndo, discardUndoActiveJob, emptyUndoState, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldShowUndoControl, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
@@ -931,6 +931,13 @@ test("single-step Undo only invalidates a previous job after a confirmed unavail
   const retry = resolveUndoRestoration(state, { status: "rendering" });
   assert.equal(retry.outcome, "retry");
   assert.deepEqual(retry.state, state, "temporary or unexpected retrieval results retain the previous undo target");
+});
+
+test("single-step Undo remains visible for a restored Original workspace without showing result actions", () => {
+  assert.equal(shouldShowUndoControl({ status: "done", resultUrl: "https://signed.example/output.mp4", current: null }), true, "completed results always show Undo");
+  assert.equal(shouldShowUndoControl({ status: "idle", resultUrl: null, current: { kind: "original" } }), true, "restored Original keeps its disabled Undo visible");
+  assert.equal(shouldShowUndoControl({ status: "idle", resultUrl: null, current: null }), false, "the fresh empty editor does not gain an Undo control");
+  assert.equal(shouldShowUndoControl({ status: "rendering", resultUrl: null, current: { kind: "original" } }), false, "processing does not expose Undo even when its prior state is Original");
 });
 
 test("restored source metadata preserves order without storage keys", () => {

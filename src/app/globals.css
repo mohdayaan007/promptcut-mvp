@@ -751,6 +751,12 @@ body {
   margin-top: 14px;
 }
 
+.cliponaut-undo-workspace-action {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
 .cliponaut-speed-control {
   display: inline-flex;
   align-items: center;

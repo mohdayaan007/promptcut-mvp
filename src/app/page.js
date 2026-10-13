@@ -21,6 +21,7 @@ import {
   resolveUndoRestoration,
   saveUndoState,
   setUndoActiveJob,
+  shouldShowUndoControl,
   uploadAndQueueJob,
 } from "@/lib/client/direct-upload";
 
@@ -73,6 +74,7 @@ export default function HomePage() {
   const hasWorkspace = Boolean(videos.length || images.length || activeJob || undoState?.current);
   const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
   const isProcessing = isActiveJobStatus(status);
+  const showUndoControl = shouldShowUndoControl({ status, resultUrl, current: undoState?.current });
 
   const persistUndoState = useCallback((nextState) => {
     const saved = saveUndoState(nextState);
@@ -447,7 +449,8 @@ export default function HomePage() {
             canUndo={Boolean(undoState?.previous)}
             onUndo={handleUndo}
             isUndoing={isUndoing}
-            restoredOriginal={undoState?.current?.kind === "original" && !videos.length}
+            isOriginalState={undoState?.current?.kind === "original"}
+            showUndoControl={showUndoControl}
             onBack={handleBackToEmptyState}
           />
           <div className="cliponaut-workspace-prompt-area">

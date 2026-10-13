@@ -117,6 +117,10 @@ export function resolveUndoRestoration(state, job) {
   return { outcome: "retry", state: normalized };
 }
 
+export function shouldShowUndoControl({ status, resultUrl, current }) {
+  return Boolean((status === "done" && resultUrl) || (status === "idle" && current?.kind === "original"));
+}
+
 function abortError() {
   const error = new Error("The upload was cancelled");
   error.name = "AbortError";

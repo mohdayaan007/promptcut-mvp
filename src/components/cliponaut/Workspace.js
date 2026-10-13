@@ -23,7 +23,8 @@ export function Workspace({
   canUndo,
   onUndo,
   isUndoing,
-  restoredOriginal,
+  isOriginalState,
+  showUndoControl,
   onBack,
 }) {
   return (
@@ -71,7 +72,7 @@ export function Workspace({
             Add images
           </button>
         </div>
-        <p className="cliponaut-media-note">{restoredOriginal ? "Your original upload list was restored. Re-upload the files to edit them again." : "Add up to five videos. Images are kept locally for a future editing feature and are not sent to render yet."}</p>
+        <p className="cliponaut-media-note">{isOriginalState && !videos.length ? "Your original upload list was restored. Re-upload the files to edit them again." : "Add up to five videos. Images are kept locally for a future editing feature and are not sent to render yet."}</p>
       </section>
 
       <PreviewPanel
@@ -87,6 +88,8 @@ export function Workspace({
         canUndo={canUndo}
         onUndo={onUndo}
         isUndoing={isUndoing}
+        isOriginalState={isOriginalState}
+        showUndoControl={showUndoControl}
       />
     </div>
     <ConversationFeedback messages={messages} status={status} />
@@ -140,7 +143,18 @@ function RestoredMediaCard({ source }) {
   );
 }
 
-function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain, canUndo, onUndo, isUndoing }) {
+function UndoControl({ canUndo, onUndo, isUndoing }) {
+  return (
+    <span className="cliponaut-undo-tooltip" tabIndex="0" data-tooltip="Undo restores your previous successful edit. After you use it, Undo resets until your next edit.">
+      <button className="cliponaut-undo-button" type="button" onClick={onUndo} disabled={!canUndo || isUndoing}>
+        <UndoIcon />
+        {isUndoing ? "Undoing…" : "Undo"}
+      </button>
+    </span>
+  );
+}
+
+function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain, canUndo, onUndo, isUndoing, showUndoControl }) {
   const videoRef = useRef(null);
   const [playbackRate, setPlaybackRate] = useState("1");
 
@@ -203,15 +217,15 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
             <DownloadIcon />
             Download MP4
           </a>
-          <span className="cliponaut-undo-tooltip" tabIndex="0" data-tooltip="Undo restores your previous successful edit. After you use it, Undo resets until your next edit.">
-            <button className="cliponaut-undo-button" type="button" onClick={onUndo} disabled={!canUndo || isUndoing}>
-              <UndoIcon />
-              {isUndoing ? "Undoing…" : "Undo"}
-            </button>
-          </span>
+          <UndoControl canUndo={canUndo} onUndo={onUndo} isUndoing={isUndoing} />
           <button className="cliponaut-edit-again" type="button" onClick={onEditAgain}>
             Edit again
           </button>
+        </div>
+      )}
+      {showUndoControl && !(status === "done" && resultUrl) && (
+        <div className="cliponaut-undo-workspace-action">
+          <UndoControl canUndo={canUndo} onUndo={onUndo} isUndoing={isUndoing} />
         </div>
       )}
     </section>
