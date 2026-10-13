@@ -1,11 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { AppHeader } from "@/components/cliponaut/AppHeader";
 import { EmptyEditorState } from "@/components/cliponaut/EmptyEditorState";
 import { PromptComposer } from "@/components/cliponaut/PromptComposer";
 import { PromptSuggestions } from "@/components/cliponaut/PromptSuggestions";
-import { UndoControl } from "@/components/cliponaut/UndoControl";
 import { Workspace } from "@/components/cliponaut/Workspace";
 import { JobRecoveryModal } from "@/components/cliponaut/JobRecoveryModal";
 import {
@@ -15,6 +15,7 @@ import {
   describeUndoRestoration,
   discardUndoActiveJob,
   emptyUndoState,
+  getInitialUndoAnchor,
   getJobStatus,
   isActiveJobStatus,
   isRecoverableJobStatus,
@@ -23,12 +24,16 @@ import {
   resolveUndoRestoration,
   saveUndoState,
   setUndoActiveJob,
-  shouldShowUndoControl,
   undoPreviewMode,
   uploadAndQueueJob,
 } from "@/lib/client/direct-upload";
 
 const MAX_VIDEO_COUNT = 5;
+
+function undoAnchorForCurrent(current, { consumed = false } = {}) {
+  if (current?.kind !== "job") return null;
+  return { jobId: current.session.id, prompt: current.prompt, consumed };
+}
 
 function getBrowserVideoMetadata(file) {
   return new Promise((resolve) => {
@@ -68,23 +73,25 @@ export default function HomePage() {
   const [recoveryError, setRecoveryError] = useState(null);
   const [isUndoing, setIsUndoing] = useState(false);
   const [isRestoringPrevious, setIsRestoringPrevious] = useState(false);
+  const [undoAnchor, setUndoAnchor] = useState(null);
 
   const videoInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const promptRef = useRef(null);
   const requestControllerRef = useRef(null);
   const undoStateRef = useRef(null);
+  const turnIdRef = useRef(0);
 
   const hasWorkspace = Boolean(videos.length || images.length || activeJob || undoState?.current);
   const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
   const isProcessing = isActiveJobStatus(status);
-  const showUndoControl = shouldShowUndoControl({ current: undoState?.current });
   const previewMode = undoPreviewMode({ isRestoring: isRestoringPrevious, current: undoState?.current, localVideoCount: videos.length });
 
   const persistUndoState = useCallback((nextState) => {
     const saved = saveUndoState(nextState);
     undoStateRef.current = saved;
     setUndoState(saved);
+    if (saved.current?.kind === "job" && saved.previous) setUndoAnchor(undoAnchorForCurrent(saved.current));
     return saved;
   }, []);
 
@@ -130,6 +137,7 @@ export default function HomePage() {
     const saved = loadUndoState();
     undoStateRef.current = saved;
     setUndoState(saved);
+    setUndoAnchor(getInitialUndoAnchor(saved));
     if (!saved.active?.id || !saved.active?.accessToken) {
       if (saved.current) restoreCurrentVersion(saved.current);
       return undefined;
@@ -171,6 +179,7 @@ export default function HomePage() {
         if (job.status === "completed") {
           if (job.outputUrl) {
             const next = persistUndoState(promoteSuccessfulJob(undoStateRef.current || emptyUndoState(), activeJob, job.sources));
+            setUndoAnchor(undoAnchorForCurrent(next.current));
             showCompletedJob(next.current.session, job);
             setMessages((current) => [...current, { role: "assistant", text: "Your edit is ready." }]);
           } else {
@@ -266,12 +275,13 @@ export default function HomePage() {
     if (!videos.length || !prompt.trim() || isProcessing) return;
 
     const submittedPrompt = prompt;
+    const turnId = `turn-${Date.now()}-${++turnIdRef.current}`;
     const controller = new AbortController();
     requestControllerRef.current?.abort();
     requestControllerRef.current = controller;
     setMessages((currentMessages) => [
       ...currentMessages,
-      { role: "user", text: submittedPrompt },
+      { role: "user", text: submittedPrompt, turnId },
     ]);
     setStatus("uploading");
     setError(null);
@@ -282,6 +292,7 @@ export default function HomePage() {
         onProgress: setUploadProgress,
         onSession: (session) => {
           persistUndoState(setUndoActiveJob(undoStateRef.current || emptyUndoState(), session, submittedPrompt));
+          setMessages((currentMessages) => currentMessages.map((message) => message.turnId === turnId ? { ...message, jobId: session.id } : message));
           setActiveJob(session);
           history.replaceState(null, "", `/?job=${session.id}`);
         }
@@ -332,6 +343,7 @@ export default function HomePage() {
     setRecovery(null);
     setRecoveryError(null);
     setIsResolvingRecovery(false);
+    setUndoAnchor(null);
     undoStateRef.current = null;
     setUndoState(null);
     clearUndoState();
@@ -362,6 +374,8 @@ export default function HomePage() {
       setStatus(job.status);
       setResultUrl(null);
     }
+    const current = undoStateRef.current?.current;
+    if (current?.kind === "job" && undoStateRef.current?.previous) setUndoAnchor(undoAnchorForCurrent(current));
     setRecovery(null);
     setRecoveryError(null);
   };
@@ -382,26 +396,33 @@ export default function HomePage() {
   const handleUndo = async () => {
     const previous = undoStateRef.current?.previous;
     if (!previous || isUndoing) return;
-    setIsUndoing(true);
+    const current = undoStateRef.current?.current;
     if (previous.kind === "original") {
-      const current = undoStateRef.current?.current;
+      setIsUndoing(true);
       const next = persistUndoState(consumeUndo(undoStateRef.current));
+      setUndoAnchor(undoAnchorForCurrent(current, { consumed: true }));
       showOriginal(next.current.sources);
       setMessages((messages) => [...messages, { role: "assistant", text: describeUndoRestoration({ current, previous }) }]);
       setIsUndoing(false);
       return;
     }
-    setIsRestoringPrevious(true);
+    // Commit this explicit click state before the authorized network request so
+    // the current result cannot remain visible while restoration is pending.
+    flushSync(() => {
+      setIsUndoing(true);
+      setIsRestoringPrevious(true);
+    });
     try {
-      const current = undoStateRef.current?.current;
       const job = await getJobStatus(previous.session);
       const resolution = resolveUndoRestoration(undoStateRef.current, job);
       if (resolution.outcome === "restored") {
         const next = persistUndoState(resolution.state);
+        setUndoAnchor(undoAnchorForCurrent(current, { consumed: true }));
         showCompletedJob(next.current.session, job);
         setMessages((messages) => [...messages, { role: "assistant", text: describeUndoRestoration({ current, previous }) }]);
       } else if (resolution.outcome === "unavailable") {
         persistUndoState(resolution.state);
+        setUndoAnchor(undoAnchorForCurrent(current, { consumed: true }));
         setMessages((messages) => [...messages, { role: "assistant", text: "The previous version is no longer available." }]);
       } else {
         setMessages((messages) => [...messages, { role: "assistant", text: "Couldn’t restore the previous version. Please try again." }]);
@@ -459,6 +480,10 @@ export default function HomePage() {
             isOriginalState={undoState?.current?.kind === "original"}
             previewMode={previewMode}
             originalVideo={previewMode === "original-source" ? videos[0] : null}
+            undoAnchor={undoAnchor}
+            canUndo={Boolean(undoState?.previous)}
+            isUndoing={isUndoing}
+            onUndo={handleUndo}
             onBack={handleBackToEmptyState}
           />
           <div className="cliponaut-workspace-prompt-area">
@@ -473,11 +498,6 @@ export default function HomePage() {
                 canGenerate={Boolean(videos.length && prompt.trim())}
                 compact
               />
-              {showUndoControl && (
-                <div className="cliponaut-prompt-undo-control">
-                  <UndoControl canUndo={Boolean(undoState?.previous)} isDisabled={isProcessing || isUndoing} isUndoing={isUndoing} onUndo={handleUndo} />
-                </div>
-              )}
             </div>
           </div>
         </section>

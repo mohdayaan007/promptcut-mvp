@@ -130,6 +130,31 @@ export function shouldShowUndoControl({ current }) {
   return Boolean(current);
 }
 
+/** Returns the enabled Undo anchor reconstructed from persisted successful state. */
+export function getInitialUndoAnchor(state) {
+  const { state: normalized } = normalizeUndoState(state);
+  const current = normalized.current;
+  if (current?.kind !== "job" || !normalized.previous) return null;
+
+  return {
+    jobId: current.session.id,
+    prompt: current.prompt,
+    consumed: false,
+  };
+}
+
+/** Finds the successful user turn that owns the one available Undo action. */
+export function findUndoTurnIndex(messages, anchor) {
+  if (!Array.isArray(messages)) return -1;
+  const { jobId, prompt } = anchor || {};
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "user") continue;
+    if (jobId ? message.jobId === jobId : prompt && message.text === prompt) return index;
+  }
+  return -1;
+}
+
 export function undoPreviewMode({ isRestoring, current, localVideoCount }) {
   if (isRestoring) return "restoring";
   if (current?.kind === "original" && localVideoCount === 1) return "original-source";

@@ -937,10 +937,10 @@ body {
   margin: 20px auto 0;
 }
 
-.cliponaut-prompt-undo-control {
+.cliponaut-turn-undo-control {
   display: flex;
   justify-content: flex-start;
-  margin: 8px 0 0 4px;
+  margin: 6px 0 0 4px;
 }
 
 .cliponaut-mobile-composer-dock {
@@ -1152,9 +1152,6 @@ body {
     margin: 0;
   }
 
-  .cliponaut-mobile-composer-dock .cliponaut-prompt-undo-control {
-    margin-top: 6px;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

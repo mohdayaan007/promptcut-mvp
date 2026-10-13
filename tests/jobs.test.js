@@ -10,7 +10,7 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validat
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldShowUndoControl, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldShowUndoControl, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
@@ -37,8 +37,20 @@ test("3C-A visual adjustment intent, validation, source scope, and filters remai
   assert.deepEqual(extractVisualAdjustmentIntent("Increase the brightness by 150%."), { type: "visual_adjustment", brightness: 1.5 });
   assert.deepEqual(extractVisualAdjustmentIntent("Reduce the brightness by 150%."), { type: "visual_adjustment", brightness: -1.5 });
   assert.deepEqual(extractVisualAdjustmentIntent("Reduce the saturation a little."), { type: "visual_adjustment", saturation: -0.12 });
+  assert.deepEqual(extractVisualAdjustmentIntent("Increase contrast slightly."), { type: "visual_adjustment", contrast: 0.12 });
+  assert.deepEqual(extractVisualAdjustmentIntent("Increase the contrast a little."), { type: "visual_adjustment", contrast: 0.12 });
+  assert.deepEqual(extractVisualAdjustmentIntent("Increase contrast."), { type: "visual_adjustment", contrast: 0.2 });
+  assert.deepEqual(extractVisualAdjustmentIntent("More contrast."), { type: "visual_adjustment", contrast: 0.2 });
+  assert.deepEqual(extractVisualAdjustmentIntent("Increase contrast by 20%."), { type: "visual_adjustment", contrast: 0.2 });
+  assert.deepEqual(extractVisualAdjustmentIntent("Add a slight magenta tint."), { type: "visual_adjustment", tint: 0.12 });
+  assert.deepEqual(extractVisualAdjustmentIntent("Add a slightly magenta tint."), { type: "visual_adjustment", tint: 0.12 });
+  assert.deepEqual(extractVisualAdjustmentIntent("Add a magenta tint."), { type: "visual_adjustment", tint: 0.2 });
+  assert.deepEqual(extractVisualAdjustmentIntent("Add a little green tint."), { type: "visual_adjustment", tint: -0.12 });
+  assert.deepEqual(extractVisualAdjustmentIntent("Add a green tint."), { type: "visual_adjustment", tint: -0.2 });
   assert.deepEqual(extractVisualAdjustmentIntent("Make it slightly brighter, warmer, and more contrasty."), { type: "visual_adjustment", brightness: 0.12, temperature: 0.2, contrast: 0.2 });
   assert.deepEqual(extractVisualAdjustmentIntent("Make it brighter and slightly warmer."), { type: "visual_adjustment", brightness: 0.2, temperature: 0.12 });
+  assert.deepEqual(extractVisualAdjustmentIntent("Make it a little warmer."), { type: "visual_adjustment", temperature: 0.12 });
+  assert.deepEqual(extractVisualAdjustmentIntent("Make it a little cooler."), { type: "visual_adjustment", temperature: -0.12 });
   assert.deepEqual(extractVisualAdjustmentIntent("Cool the footage down slightly."), { type: "visual_adjustment", temperature: -0.12 });
   assert.deepEqual(extractVisualAdjustmentIntent("Add a slight green tint."), { type: "visual_adjustment", tint: -0.12 });
   const scoped = reconcileVisualAdjustments({ version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 2 }] }] }, "Make video 2 warmer.", { sourceCatalog });
@@ -50,16 +62,16 @@ test("3C-A visual adjustment intent, validation, source scope, and filters remai
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "visual_adjustment", brightness: -1.5 }] }), /between -1 and 1/);
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "visual_adjustment", brightness: Number.NaN }] }), /between -1 and 1/);
   assert.deepEqual(buildVisualAdjustmentFilters({ brightness: 0.2, contrast: 0.2, saturation: -0.2, temperature: 0.2, tint: -0.2 }), [
-    "eq=brightness=0.1623:contrast=1.3246:saturation=0.6754",
-    "colorbalance=rs=0.0000:gs=0.1154:bs=-0.1154:rm=0.0000:gm=0.1154:bm=-0.1154:rh=0.0000:gh=0.1154:bh=-0.1154:pl=1"
+    "eq=brightness=0.1298:contrast=1.2662:saturation=0.6754",
+    "colorbalance=rs=0.0584:gs=0.0685:bs=-0.0584:rm=0.0779:gm=0.0685:bm=-0.0779:rh=0.0584:gh=0.0685:bh=-0.0584:pl=1"
   ]);
   assert.deepEqual(buildVisualAdjustmentFilters({ brightness: -1, contrast: -1, saturation: -1, temperature: -1, tint: 1 }), [
     "eq=brightness=-0.4500:contrast=0.1000:saturation=0.1000",
-    "colorbalance=rs=0.0000:gs=-0.3200:bs=0.3200:rm=0.0000:gm=-0.3200:bm=0.3200:rh=0.0000:gh=-0.3200:bh=0.3200:pl=1"
+    "colorbalance=rs=-0.1800:gs=-0.1900:bs=0.1800:rm=-0.2400:gm=-0.1900:bm=0.2400:rh=-0.1800:gh=-0.1900:bh=0.1800:pl=1"
   ]);
   assert.deepEqual(buildVisualAdjustmentFilters({ brightness: 1, contrast: 1, saturation: 1, temperature: 1, tint: -1 }), [
-    "eq=brightness=0.4500:contrast=1.9000:saturation=1.9000",
-    "colorbalance=rs=0.0000:gs=0.3200:bs=-0.3200:rm=0.0000:gm=0.3200:bm=-0.3200:rh=0.0000:gh=0.3200:bh=-0.3200:pl=1"
+    "eq=brightness=0.3600:contrast=1.7380:saturation=1.9000",
+    "colorbalance=rs=0.1620:gs=0.1900:bs=-0.1620:rm=0.2160:gm=0.1900:bm=-0.2160:rh=0.1620:gh=0.1900:bh=-0.1620:pl=1"
   ]);
   assert.equal(perceptualAdjustmentMagnitude(0), 0);
   assert.equal(perceptualAdjustmentMagnitude(1), 1);
@@ -68,27 +80,37 @@ test("3C-A visual adjustment intent, validation, source scope, and filters remai
   assert.ok(perceptualAdjustmentMagnitude(0.2) > 0.2, "normal adjustments receive a perceptual lift");
   assert.ok(perceptualAdjustmentMagnitude(0.2) < perceptualAdjustmentMagnitude(1), "the curve remains bounded and monotonic");
   assert.deepEqual(buildVisualAdjustmentFilters({ brightness: 0.12, contrast: 0.12, saturation: -0.12, temperature: 0.12, tint: -0.12 }), [
-    "eq=brightness=0.1202:contrast=1.2404:saturation=0.7596",
-    "colorbalance=rs=0.0000:gs=0.0855:bs=-0.0855:rm=0.0000:gm=0.0855:bm=-0.0855:rh=0.0000:gh=0.0855:bh=-0.0855:pl=1"
+    "eq=brightness=0.0962:contrast=1.1972:saturation=0.7596",
+    "colorbalance=rs=0.0433:gs=0.0508:bs=-0.0433:rm=0.0577:gm=0.0508:bm=-0.0577:rh=0.0433:gh=0.0508:bh=-0.0433:pl=1"
   ]);
   assert.deepEqual(buildVisualAdjustmentFilters({ brightness: -0.2, contrast: -0.2, saturation: 0.2 }), [
     "eq=brightness=-0.1623:contrast=0.6754:saturation=1.3246"
   ]);
   assert.deepEqual(buildVisualAdjustmentFilters({ temperature: 0.2 }), [
-    "colorbalance=rs=0.1154:gs=0.0000:bs=-0.1154:rm=0.1154:gm=0.0000:bm=-0.1154:rh=0.1154:gh=0.0000:bh=-0.1154:pl=1"
+    "colorbalance=rs=0.0649:gs=0.0000:bs=-0.0649:rm=0.0866:gm=0.0000:bm=-0.0866:rh=0.0649:gh=0.0000:bh=-0.0649:pl=1"
   ]);
   assert.deepEqual(buildVisualAdjustmentFilters({ temperature: -0.2 }), [
-    "colorbalance=rs=-0.1154:gs=0.0000:bs=0.1154:rm=-0.1154:gm=0.0000:bm=0.1154:rh=-0.1154:gh=0.0000:bh=0.1154:pl=1"
+    "colorbalance=rs=-0.0649:gs=0.0000:bs=0.0649:rm=-0.0866:gm=0.0000:bm=0.0866:rh=-0.0649:gh=0.0000:bh=0.0649:pl=1"
   ]);
   assert.deepEqual(buildVisualAdjustmentFilters({ tint: 0.12 }), [
-    "colorbalance=rs=0.0855:gs=-0.0855:bs=0.0000:rm=0.0855:gm=-0.0855:bm=0.0000:rh=0.0855:gh=-0.0855:bh=0.0000:pl=1"
+    "colorbalance=rs=0.0000:gs=-0.0508:bs=0.0000:rm=0.0000:gm=-0.0508:bm=0.0000:rh=0.0000:gh=-0.0508:bh=0.0000:pl=1"
   ]);
   assert.deepEqual(buildVisualAdjustmentFilters({ tint: -0.12 }), [
-    "colorbalance=rs=-0.0855:gs=0.0855:bs=0.0000:rm=-0.0855:gm=0.0855:bm=0.0000:rh=-0.0855:gh=0.0855:bh=0.0000:pl=1"
+    "colorbalance=rs=0.0000:gs=0.0508:bs=0.0000:rm=0.0000:gm=0.0508:bm=0.0000:rh=0.0000:gh=0.0508:bh=0.0000:pl=1"
   ]);
   assert.deepEqual(buildVisualAdjustmentFilters({ temperature: 1, tint: 1 }), [
-    "colorbalance=rs=0.3200:gs=-0.3200:bs=-0.3200:rm=0.3200:gm=-0.3200:bm=-0.3200:rh=0.3200:gh=-0.3200:bh=-0.3200:pl=1"
-  ], "combined temperature and tint remain within the existing colorbalance ceiling");
+    "colorbalance=rs=0.1800:gs=-0.1900:bs=-0.1800:rm=0.2400:gm=-0.1900:bm=-0.2400:rh=0.1800:gh=-0.1900:bh=-0.1800:pl=1"
+  ], "temperature and tint remain independently bounded without pink red boosting");
+  const standaloneBrightness = buildVisualAdjustmentFilters({ brightness: 0.2 });
+  const standaloneContrast = buildVisualAdjustmentFilters({ contrast: 0.2 });
+  const riskyCombination = { brightness: 0.2, contrast: 0.2, temperature: 0.2 };
+  assert.deepEqual(standaloneBrightness, ["eq=brightness=0.1623"]);
+  assert.deepEqual(standaloneContrast, ["eq=contrast=1.3246"]);
+  assert.deepEqual(buildVisualAdjustmentFilters(riskyCombination), [
+    "eq=brightness=0.1298:contrast=1.2662",
+    "colorbalance=rs=0.0584:gs=0.0000:bs=-0.0584:rm=0.0779:gm=0.0000:bm=-0.0779:rh=0.0584:gh=0.0000:bh=-0.0584:pl=1"
+  ]);
+  assert.deepEqual(riskyCombination, { brightness: 0.2, contrast: 0.2, temperature: 0.2 }, "headroom changes only rendered filter strength, never the normalized plan");
   assert.equal(createEditPlan({ prompt: "Make it warmer." }).operations.some((operation) => operation.type === "color_grade"), false);
   assert.deepEqual(createEditPlan({ prompt: "Make it warmer." }).operations, [{ type: "visual_adjustment", temperature: 0.2 }]);
   assert.deepEqual(createEditPlan({ prompt: "Apply the warm filter." }).operations, [{ type: "color_grade", style: "warm" }]);
@@ -979,6 +1001,43 @@ test("single-step Undo records concise prompt context without altering restorati
   assert.equal(describeUndoRestoration({ current, previous: original }), "Restored your original upload. Undid: “Make it 20% brighter.”");
   assert.equal(describeUndoRestoration({ current, previous }), "Restored previous edit: “Make it warmer.” Undid: “Make it 20% brighter.”");
   assert.equal(describeUndoRestoration({ current, previous: null }), "Restored your previous edit. Undid: “Make it 20% brighter.”");
+});
+
+test("single-step Undo anchors to its successful user turn rather than failed or duplicate prompts", () => {
+  const messages = [
+    { role: "user", text: "Make it warmer.", jobId: "job-a" },
+    { role: "assistant", text: "Your edit is ready." },
+    { role: "user", text: "Make it warmer.", jobId: "failed-job" },
+    { role: "assistant", text: "We couldn’t complete that edit." },
+    { role: "user", text: "Make it warmer.", jobId: "job-b" },
+  ];
+  assert.equal(findUndoTurnIndex(messages, { jobId: "job-a", prompt: "Make it warmer." }), 0, "a later failed duplicate cannot steal Undo from the successful job");
+  assert.equal(findUndoTurnIndex(messages, { jobId: "job-b", prompt: "Make it warmer." }), 4, "duplicate successful prompts use their matching latest turn");
+  assert.equal(findUndoTurnIndex(messages, { prompt: "Make it warmer." }), 4, "refresh fallback uses the latest prompt when no in-memory job ID exists");
+  assert.equal(findUndoTurnIndex(messages, { jobId: "missing", prompt: "Make it warmer." }), -1, "a known job ID never falls through to a potentially failed prompt");
+  assert.equal(findUndoTurnIndex(messages, null), -1, "a missing Undo anchor is safe");
+});
+
+test("single-step Undo hydration reconstructs an anchor only while a previous version is available", () => {
+  const current = {
+    kind: "job",
+    session: { id: "job-current", accessToken: "token-current" },
+    sources: [{ index: 0, name: "clip.mp4", type: "video/mp4", size: 100 }],
+    prompt: "Make it warmer.",
+  };
+  const previous = {
+    kind: "job",
+    session: { id: "job-previous", accessToken: "token-previous" },
+    sources: [{ index: 0, name: "clip.mp4", type: "video/mp4", size: 100 }],
+    prompt: "Make it brighter.",
+  };
+
+  assert.deepEqual(getInitialUndoAnchor({ ...emptyUndoState(), current, previous }), {
+    jobId: "job-current",
+    prompt: "Make it warmer.",
+    consumed: false,
+  });
+  assert.equal(getInitialUndoAnchor({ ...emptyUndoState(), current, previous: null }), null);
 });
 
 test("restored source metadata preserves order without storage keys", () => {

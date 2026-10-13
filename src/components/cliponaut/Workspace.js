@@ -2,6 +2,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AttachmentControls } from "@/components/cliponaut/AttachmentControls";
 import { ArrowLeftIcon, DownloadIcon, ImageIcon, PlusIcon, VideoIcon } from "@/components/cliponaut/icons";
+import { UndoControl } from "@/components/cliponaut/UndoControl";
+import { findUndoTurnIndex } from "@/lib/client/direct-upload";
 
 export function Workspace({
   videos,
@@ -23,6 +25,10 @@ export function Workspace({
   isOriginalState,
   previewMode,
   originalVideo,
+  undoAnchor,
+  canUndo,
+  isUndoing,
+  onUndo,
   onBack,
 }) {
   return (
@@ -87,7 +93,7 @@ export function Workspace({
         originalVideo={originalVideo}
       />
     </div>
-    <ConversationFeedback messages={messages} status={status} />
+    <ConversationFeedback messages={messages} status={status} undoAnchor={undoAnchor} canUndo={canUndo} isUndoing={isUndoing} onUndo={onUndo} />
     </>
   );
 }
@@ -217,17 +223,30 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
   );
 }
 
-function ConversationFeedback({ messages, status }) {
+function ConversationFeedback({ messages, status, undoAnchor, canUndo, isUndoing, onUndo }) {
   const isProcessing = ["uploading", "queued", "analyzing", "rendering"].includes(status);
-  const isVisible = messages.length || isProcessing;
+  const anchorIndex = findUndoTurnIndex(messages, undoAnchor);
+  const recoveredTurn = undoAnchor?.prompt && anchorIndex < 0
+    ? { role: "user", text: undoAnchor.prompt, recovered: true }
+    : null;
+  const conversationMessages = recoveredTurn ? [...messages, recoveredTurn] : messages;
+  const undoIndex = recoveredTurn ? conversationMessages.length - 1 : anchorIndex;
+  const isVisible = conversationMessages.length || isProcessing;
   if (!isVisible) return null;
 
   return (
     <section className="cliponaut-conversation" aria-live="polite" aria-label="Editing activity">
-      {messages.map((message, index) => (
-        <div className={`cliponaut-conversation-message is-${message.role}`} key={`${message.role}-${index}`}>
-          <span>{message.role === "user" ? "You" : "Cliponaut"}</span>
-          <p>{message.text}</p>
+      {conversationMessages.map((message, index) => (
+        <div className="cliponaut-conversation-turn" key={`${message.role}-${message.jobId || message.turnId || index}`}>
+          <div className={`cliponaut-conversation-message is-${message.role}`}>
+            <span>{message.role === "user" ? "You" : "Cliponaut"}</span>
+            <p>{message.text}</p>
+          </div>
+          {index === undoIndex && (
+            <div className="cliponaut-turn-undo-control">
+              <UndoControl canUndo={canUndo && !undoAnchor?.consumed} isDisabled={isProcessing || isUndoing || undoAnchor?.consumed} isUndoing={isUndoing} onUndo={onUndo} />
+            </div>
+          )}
         </div>
       ))}
       {isProcessing && (

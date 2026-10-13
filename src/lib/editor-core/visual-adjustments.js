@@ -18,18 +18,24 @@ export function extractVisualAdjustmentIntent(prompt = "") {
     if (positive !== null) adjustment[field] = positive;
     if (negative !== null) adjustment[field] = negative;
   }
-  if (/\bslightly\s+brighter\b/i.test(text)) adjustment.brightness ??= QUALITATIVE.slight;
+  if (/\b(?:slightly|a\s+little)\s+brighter\b|\b(?:increase|raise)\s+(?:the\s+)?(?:brightness|exposure)\s+(?:slightly|a\s+little)\b/i.test(text)) adjustment.brightness ??= QUALITATIVE.slight;
   else if (/\bbrighter\b|\bincrease\s+(?:the\s+)?brightness\b/i.test(text)) adjustment.brightness ??= QUALITATIVE.normal;
-  if (/\bslightly\s+darker\b/i.test(text)) adjustment.brightness ??= -QUALITATIVE.slight;
+  if (/\b(?:slightly|a\s+little)\s+darker\b|\b(?:reduce|decrease|lower)\s+(?:the\s+)?(?:brightness|exposure)\s+(?:slightly|a\s+little)\b/i.test(text)) adjustment.brightness ??= -QUALITATIVE.slight;
   else if (/\bdarker\b/i.test(text)) adjustment.brightness ??= -QUALITATIVE.normal;
-  if (/\b(?:increase\s+(?:the\s+)?contrast|more\s+contrasty)\b/i.test(text)) adjustment.contrast ??= QUALITATIVE.normal;
-  if (/\b(?:reduce\s+(?:the\s+)?saturation\s+(?:a\s+little|slightly)|less\s+saturated)\b/i.test(text)) adjustment.saturation ??= -QUALITATIVE.slight;
-  if (/\bslightly\s+warmer\b/i.test(text)) adjustment.temperature = QUALITATIVE.slight;
+  if (/\b(?:increase|raise)\s+(?:the\s+)?contrast\s+(?:slightly|a\s+little)\b/i.test(text)) adjustment.contrast ??= QUALITATIVE.slight;
+  else if (/\b(?:increase\s+(?:the\s+)?contrast|more\s+contrast(?:y)?|make\s+(?:it\s+)?more\s+contrasty)\b/i.test(text)) adjustment.contrast ??= QUALITATIVE.normal;
+  if (/\b(?:increase|raise)\s+(?:the\s+)?saturation\s+(?:a\s+little|slightly)\b/i.test(text)) adjustment.saturation ??= QUALITATIVE.slight;
+  else if (/\b(?:increase|raise)\s+(?:the\s+)?saturation\b/i.test(text)) adjustment.saturation ??= QUALITATIVE.normal;
+  if (/\b(?:reduce|decrease|lower)\s+(?:the\s+)?saturation\s+(?:a\s+little|slightly)\b|\bless\s+saturated\b/i.test(text)) adjustment.saturation ??= -QUALITATIVE.slight;
+  else if (/\b(?:reduce|decrease|lower)\s+(?:the\s+)?saturation\b/i.test(text)) adjustment.saturation ??= -QUALITATIVE.normal;
+  if (/\b(?:slightly|a\s+little)\s+warmer\b/i.test(text)) adjustment.temperature = QUALITATIVE.slight;
   else if (/\bwarmer\b|\bincrease\s+(?:the\s+)?warmth\b/i.test(text)) adjustment.temperature = QUALITATIVE.normal;
-  if (/\bcool(?:\s+the\s+(?:footage|video))?\s+down\s+slightly\b|\bslightly\s+cooler\b/i.test(text)) adjustment.temperature = -QUALITATIVE.slight;
+  if (/\bcool(?:\s+the\s+(?:footage|video))?\s+down\s+slightly\b|\b(?:slightly|a\s+little)\s+cooler\b/i.test(text)) adjustment.temperature = -QUALITATIVE.slight;
   else if (/\bcool(?:\s+the\s+(?:footage|video))?\s+down\b|\bcooler\b/i.test(text)) adjustment.temperature = -QUALITATIVE.normal;
-  if (/\b(?:slight\s+)?magenta\s+tint\b/i.test(text)) adjustment.tint = QUALITATIVE.slight;
-  if (/\b(?:slight\s+)?green\s+tint\b/i.test(text)) adjustment.tint = -QUALITATIVE.slight;
+  if (/\b(?:a\s+)?(?:slight(?:ly)?|a\s+little)\s+magenta\s+tint\b/i.test(text)) adjustment.tint = QUALITATIVE.slight;
+  else if (/\bmagenta\s+tint\b/i.test(text)) adjustment.tint = QUALITATIVE.normal;
+  if (/\b(?:a\s+)?(?:slight(?:ly)?|a\s+little)\s+green\s+tint\b/i.test(text)) adjustment.tint = -QUALITATIVE.slight;
+  else if (/\bgreen\s+tint\b/i.test(text)) adjustment.tint = -QUALITATIVE.normal;
   return Object.keys(adjustment).length ? { type: "visual_adjustment", ...adjustment } : null;
 }
 

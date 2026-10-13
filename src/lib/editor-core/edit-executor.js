@@ -139,8 +139,16 @@ export function perceptualAdjustmentMagnitude(value) {
   return Math.sign(value) * (0.35 * magnitude + 0.65 * Math.sqrt(magnitude));
 }
 
+const COLORBALANCE_MAX = 0.32;
+const TEMPERATURE_MAX = 0.24;
+const TINT_MAX = 0.19;
+const TEMPERATURE_SHADOW_HIGHLIGHT_WEIGHT = 0.75;
+const COMBINED_BRIGHTNESS_HEADROOM = 0.8;
+const COMBINED_CONTRAST_HEADROOM = 0.82;
+const THREE_WAY_TEMPERATURE_HEADROOM = 0.9;
+
 function boundedColorBalance(value) {
-  return Math.max(-0.32, Math.min(0.32, value));
+  return Math.max(-COLORBALANCE_MAX, Math.min(COLORBALANCE_MAX, value));
 }
 
 // Converts bounded server-facing controls to perceptible, still bounded FFmpeg
@@ -149,19 +157,27 @@ function boundedColorBalance(value) {
 export function buildVisualAdjustmentFilters(operation) {
   const filters = [];
   const eq = [];
-  if (operation.brightness !== undefined) eq.push(`brightness=${(perceptualAdjustmentMagnitude(operation.brightness) * 0.45).toFixed(4)}`);
-  if (operation.contrast !== undefined) eq.push(`contrast=${(1 + perceptualAdjustmentMagnitude(operation.contrast) * 0.9).toFixed(4)}`);
+  const brightnessAndPositiveContrast = operation.brightness > 0 && operation.contrast > 0;
+  const brightnessHeadroom = brightnessAndPositiveContrast ? COMBINED_BRIGHTNESS_HEADROOM : 1;
+  const contrastHeadroom = brightnessAndPositiveContrast ? COMBINED_CONTRAST_HEADROOM : 1;
+  const temperatureHeadroom = brightnessAndPositiveContrast && operation.temperature !== undefined
+    ? THREE_WAY_TEMPERATURE_HEADROOM
+    : 1;
+  if (operation.brightness !== undefined) eq.push(`brightness=${(perceptualAdjustmentMagnitude(operation.brightness) * 0.45 * brightnessHeadroom).toFixed(4)}`);
+  if (operation.contrast !== undefined) eq.push(`contrast=${(1 + perceptualAdjustmentMagnitude(operation.contrast) * 0.9 * contrastHeadroom).toFixed(4)}`);
   if (operation.saturation !== undefined) eq.push(`saturation=${(1 + perceptualAdjustmentMagnitude(operation.saturation) * 0.9).toFixed(4)}`);
   if (eq.length) filters.push(`eq=${eq.join(":")}`);
   if (operation.temperature !== undefined || operation.tint !== undefined) {
-    const temperature = perceptualAdjustmentMagnitude(operation.temperature || 0) * 0.32;
-    const tint = perceptualAdjustmentMagnitude(operation.tint || 0) * 0.32;
-    // Apply warm/cool and magenta/green consistently across shadows, midtones,
-    // and highlights; preserve lightness to avoid accidental exposure shifts.
-    const redMagenta = boundedColorBalance(temperature + tint);
+    const temperature = perceptualAdjustmentMagnitude(operation.temperature || 0) * TEMPERATURE_MAX * temperatureHeadroom;
+    const tint = perceptualAdjustmentMagnitude(operation.tint || 0) * TINT_MAX;
+    // Temperature is strongest through useful midtones and gentler in shadows
+    // and highlights. Tint moves the green↔magenta axis rather than adding red.
+    const redShadowHighlight = boundedColorBalance(temperature * TEMPERATURE_SHADOW_HIGHLIGHT_WEIGHT);
+    const redMidtone = boundedColorBalance(temperature);
     const green = boundedColorBalance(-tint);
-    const blue = boundedColorBalance(-temperature);
-    filters.push(`colorbalance=rs=${redMagenta.toFixed(4)}:gs=${green.toFixed(4)}:bs=${blue.toFixed(4)}:rm=${redMagenta.toFixed(4)}:gm=${green.toFixed(4)}:bm=${blue.toFixed(4)}:rh=${redMagenta.toFixed(4)}:gh=${green.toFixed(4)}:bh=${blue.toFixed(4)}:pl=1`);
+    const blueShadowHighlight = boundedColorBalance(-temperature * TEMPERATURE_SHADOW_HIGHLIGHT_WEIGHT);
+    const blueMidtone = boundedColorBalance(-temperature);
+    filters.push(`colorbalance=rs=${redShadowHighlight.toFixed(4)}:gs=${green.toFixed(4)}:bs=${blueShadowHighlight.toFixed(4)}:rm=${redMidtone.toFixed(4)}:gm=${green.toFixed(4)}:bm=${blueMidtone.toFixed(4)}:rh=${redShadowHighlight.toFixed(4)}:gh=${green.toFixed(4)}:bh=${blueShadowHighlight.toFixed(4)}:pl=1`);
   }
   return filters;
 }
