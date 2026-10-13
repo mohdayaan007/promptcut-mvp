@@ -854,6 +854,18 @@ Do not assume "push first, migrate later" is safe.
 
 ---
 
+## Single-Step Undo Architecture
+
+Single-Step Undo is intentionally browser-local state, not server-side history. It stores only Current and immediately Previous successful versions. Successful historical jobs are referenced by opaque `{ id, accessToken }`; signed output URLs are never persisted as history. Original is safe source metadata, not a rendered historical job.
+
+Undo is consumed once and re-armed by the next successful edit. Failed or cancelled jobs must not advance successful version state. Do not add a database history system, redo, branching, or a version tree without an explicitly approved product phase. Contextual prompt ownership is tied to successful job identity.
+
+Restoration UI must prevent the outgoing video from visibly lingering. Historical media stays covered until displayable, but no artificial delay is required when the correct replacement is already ready.
+
+## Visual Adjustment Rule
+
+Visual-adjustment intent remains bounded and validated. Qualitative intensity belongs in deterministic server-side mapping; combination headroom may protect output quality. Gemini must not invent FFmpeg parameters outside the validated contract. Future calibration may tune strength without redesigning the architecture.
+
 # 31. Agent Responsibilities
 
 ## Codex / Engineering Agent

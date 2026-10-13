@@ -1,5 +1,9 @@
 # Project Health Audit
 
+> **HISTORICAL DOCUMENT / NOT CURRENT ARCHITECTURE**
+>
+> This audit reflects an earlier Cliponaut implementation and is retained for historical context. For current architecture and status, use `CLIPONAUT_ENGINEERING.md`, `PHASES.md`, and `PRODUCTION_TESTS.md`. Statements below about no database, no queue, synchronous processing, or no automated tests may no longer describe the current system.
+
 **Scope:** Static review of the repository and a lint run. No source, configuration, or runtime behavior was changed. `npm run lint` completed with 0 errors and 1 warning (`<img>` in the editor page).
 
 ## 1. Executive Summary

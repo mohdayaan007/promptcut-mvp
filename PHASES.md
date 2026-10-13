@@ -1552,7 +1552,7 @@ Production initially exposed a distinction between source selection and operatio
 
 The server-owned reconciliation now preserves the ordinary full sequence when a semantic description only scopes an adjustment. Genuine semantic selection, selection plus adjustment, explicit reorders, and authoritative semantic/moment sequences remain intact. Final regression jobs: full-sequence semantic adjustment `095bed80-bb6c-4764-90f4-abb7b5dfb3e8`; true selection `858cb84d-d12c-49b9-948e-4f87ff410919`; selection plus brightness `72a94cb2-fdb1-47e7-b879-b491df9bedd3`; explicit reorder plus semantic adjustment `c2ff40e5-8f7a-4b3e-8ee0-20e44cfe52a1`.
 
-#### Perceptual calibration
+#### Final perceptual calibration and sign-off
 
 The initial implementation was functionally correct, but real-footage manual testing found its FFmpeg mappings too subtle. This was product calibration rather than an architectural defect.
 
@@ -1562,9 +1562,9 @@ The initial implementation was functionally correct, but real-footage manual tes
 `4062bce2d4bd59fb02d10325d323480338fe3caa`
 `Calibrate Phase 3C-A visual adjustment strength`
 
-The final deterministic mapping changed from brightness `normalized × 0.25`, contrast/saturation `1 + normalized × 0.5`, and temperature/tint `normalized × 0.15` to brightness `normalized × 0.45`, contrast/saturation `1 + normalized × 0.9`, and temperature/tint `normalized × 0.32`. The validator contract remains `-1..1`.
+The final deterministic mapping retains the validated `-1..1` server-facing contract, applies a bounded perceptual curve for ordinary requests, and applies headroom when positive brightness and contrast are combined. Temperature behaves as a controlled white-balance adjustment rather than a heavy filter; slight magenta/tint is materially weaker than its earlier calibration. Qualifiers such as `slight`, `slightly`, and `a little` intentionally produce weaker changes than normal requests.
 
-Manual product acceptance after calibration confirmed noticeable brightness, contrast, saturation, warm/cool temperature, controlled magenta tint, and combined adjustment results. Future strength tuning is normal product calibration and does not require reopening the 3C-A architecture when regressions remain safe.
+The final target is “first-glance confirmation, second-glance quality”: normal brightness and contrast are intentionally obvious while remaining natural, and combined adjustments avoid clipped-looking output. Founder manual acceptance passed for `Make it warmer.`, `Add a slight magenta tint.`, and `Make it 20% brighter, warmer, and increase contrast slightly.` Further aesthetic fine-tuning is intentionally deferred. Future strength tuning is product calibration, not an architecture reopening, unless behavior regresses.
 
 `Phase 3C-A — Visual Adjustment Engine: ✅ COMPLETE`
 
@@ -1591,11 +1591,19 @@ Current scope:
 
 ### Completion sign-off
 
-Production acceptance passed. Single-Step Undo stores only Current and Previous successful state: Undo is one-step, consumed after use, and re-armed by the next successful edit. Failed or cancelled jobs do not alter successful Undo state; refresh and same-browser reopen preserve Current/Previous; Start Fresh clears local state safely. Original remains an output-less source state and may require re-upload after refresh. Historical output restoration always requires its own job token.
+Production acceptance and post-acceptance polish passed. Single-Step Undo stores only Current and immediately Previous successful state: Undo is one-step, consumed after use, and re-armed by the next successful edit. Failed or cancelled jobs do not alter successful Undo state; refresh and same-browser reopen preserve Current/Previous; Start Fresh clears local state safely. Original remains an output-less source sentinel and may require re-upload after refresh. Historical output restoration always requires that historical job's opaque access token.
+
+Undo is contextual beneath the successful user turn that caused the current edit. Its consumed disabled control remains beneath that undone turn; duplicate prompt text resolves by job identity first; and refresh can reconstruct the minimal successful prompt turn when needed.
+
+The final restoration presentation was completed in `e9596c255f2acffb7b43e090abed72a62bc29bc6` (`Fix Undo restoration feedback`): clicking Undo immediately covers the outgoing result with an opaque `Restoring previous edit…` preview state, gives the browser a paint opportunity before restoration work, and keeps restored job media covered until `loadeddata`. Changed result URLs use fresh video identity so stale composited frames are not exposed; generic queued/analyzing/rendering states must not masquerade as Undo. There is no artificial minimum delay when the correct replacement is already ready: the invariant is that the outgoing/current edit must not visibly linger.
+
+Founder final manual sign-off passed: `Make it 20% brighter.` → `Make it warmer.` → Undo correctly removed B and restored A; a fresh `Increase contrast.` edit → Undo correctly restored Original. Post-acceptance Undo polish is complete.
 
 No multi-step history, redo, branching, cumulative conversational editing, or database history system was introduced. Detailed production evidence is in `PRODUCTION_TESTS.md`.
 
 `Single-Step Undo: ✅ COMPLETE`
+
+`Post-acceptance visual + Undo polish: ✅ COMPLETE`
 
 ## Phase 3C-B — Filters & Reference Styling
 

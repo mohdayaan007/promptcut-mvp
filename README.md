@@ -1,36 +1,39 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# Cliponaut
 
-## Getting Started
+Cliponaut is a natural-language video editor: edit video by meaning, not by timeline.
 
-First, run the development server:
+Upload footage, describe the edit in plain English, and Cliponaut plans, validates, renders, and returns an edited MP4.
+
+## Current capabilities
+
+- 1–5 video sources with source-aware sequencing and semantic selection safety
+- structural, visual, spoken, and multi-moment selection
+- color looks, titles, captions/subtitle correction, and basic audio controls
+- bounded visual adjustments and single-step browser-local Undo
+- Standard and eligible genuine 4K exports
+- durable background jobs, recovery, cancellation, and signed private result retrieval
+
+## Architecture
+
+Browser direct multipart upload → private object storage → PostgreSQL edit job → Railway worker → media validation, Gemini planning where required, strict plan validation, deterministic FFmpeg → private output storage → signed result URL.
+
+## Local commands
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run test:jobs
+npm run lint
+npm run build
+npm run worker
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Full local media processing needs system `ffmpeg`, `ffprobe`, and the required server-side environment configuration. This README is not a complete deployment runbook and must not contain credentials or production secrets.
 
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
+## Contributor references
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Read these before substantial work:
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `CLIPONAUT_ENGINEERING.md`
+- `PHASES.md`
+- `PRODUCTION_TESTS.md`
+- `AGENTS.md`

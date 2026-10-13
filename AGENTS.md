@@ -1,95 +1,95 @@
-# Project Overview
+# Cliponaut Agent Guide
 
-Cliponaut is a prompt-driven video editing application. Users upload one or two video clips, describe a supported edit in plain language, preview the generated MP4, and download it.
+## Read First
 
-# Product Goal
+Before substantial engineering work, read:
 
-Make short, straightforward video edits accessible without a timeline-based editor. The current product supports automatic merging, basic color looks, title overlays, and trimming through simple prompts.
+1. `CLIPONAUT_ENGINEERING.md`
+2. `PHASES.md`
+3. `PRODUCTION_TESTS.md`
 
-# Project Status
+These documents are the current architecture, roadmap, and production-evidence sources of truth.
 
-Cliponaut is a live MVP currently deployed in production.
+## Product and Architecture
 
-The current engineering focus is improving reliability, maintainability, and user experience before expanding the feature set.
+Cliponaut is a natural-language video editor: users edit video by describing intent rather than operating a timeline.
 
-# Tech Stack
+The production path is:
 
-- Next.js App Router and React
-- Tailwind CSS for styling
-- Node.js API route runtime
-- System FFmpeg for video normalization, concatenation, filtering, trimming, and encoding
-- Vercel Analytics
-- Docker for containerized deployment
+Browser / Next.js UI
+→ direct private multipart upload
+→ object storage
+→ durable PostgreSQL edit job
+→ Railway worker
+→ ffprobe/media validation
+→ Gemini understanding/planning where required
+→ strict server validation
+→ deterministic FFmpeg execution
+→ private output storage
+→ signed result URL
+→ browser
 
-# Repository Structure
+The browser does not keep an edit alive. Once queued, durable job processing continues independently of the browser session.
 
-- `src/app/page.js` — landing page and demo video controls.
-- `src/app/editor/page.js` — client-side upload, prompt, preview, and download experience.
-- `src/app/api/process-video/route.js` — multipart upload handling and FFmpeg processing pipeline.
-- `src/app/layout.js` — shared layout, metadata, font, and analytics.
-- `src/app/globals.css` — global styles and Tailwind import.
-- `public/` — static assets, including the demo video, logo, and existing output artifacts.
-- `luts/` — LUT files present in the repository; they are not currently used by the processing route.
-- `Dockerfile` — production image definition, including system FFmpeg.
+## Current Constraints
 
-# Video Processing Pipeline
+- Support up to five ordered video sources.
+- Stable `source-1` through `source-5` IDs are authoritative; filenames are descriptive only.
+- Preserve V1 behavior while extending V2 source-aware plans.
+- AI interprets. Server validates. FFmpeg executes.
+- Semantic uncertainty must reject safely; never silently choose a source or moment.
+- Preserve durable job, recovery, cancellation, and cleanup behavior.
+- Worker concurrency is intentionally `1`. Never hide queue or process-lifecycle bugs by blindly increasing it.
+- Keep storage private. Do not expose signed URLs, access tokens, Gemini file URIs, object keys, credentials, or secrets in logs or browser-visible output.
 
-1. The editor submits `video1`, optional `video2`, and `prompt` to `POST /api/process-video`.
-2. The API writes uploads to a uniquely named operating-system temporary directory.
-3. Each input is normalized to 1280×720, 30 fps, H.264 video, and AAC audio.
-4. When a second clip is provided, both normalized clips are concatenated.
-5. The prompt is parsed with fixed keyword and regular-expression rules for supported color looks, title overlays, and trims; it does not call an AI model.
-6. FFmpeg applies the selected filters, then any trim, performs a final encode, and returns an MP4 response.
-7. The browser creates an object URL for preview and download; API outputs are not persisted by the application.
+## Repository Map
 
-# Development Workflow
+- `src/app/page.js` — main Cliponaut client workspace, recovery, and browser-local Single-Step Undo presentation.
+- `src/app/api/uploads/` — upload-session, multipart part-signing, completion, and abort APIs.
+- `src/app/api/jobs/` — job status and cancellation APIs.
+- `src/lib/client/direct-upload.js` — browser direct-upload and local Undo state helpers.
+- `src/lib/jobs/` — job configuration, PostgreSQL store, storage client, and HTTP validation.
+- `src/lib/media/` — server-authoritative media configuration and probing.
+- `src/lib/editor-core/` — edit plans, AI planner, validation, transcription, captions, titles, visual/audio controls, and deterministic FFmpeg execution.
+- `scripts/cliponaut-worker.js` — durable queue worker.
+- `scripts/migrate-jobs.js` — edit-job schema initialization.
+- `tests/jobs.test.js` — focused automated regression suite.
+- `Dockerfile` — production image with Node, FFmpeg/ffprobe, and rendering dependencies.
 
-- `develop` is the primary development branch.
-- `main` is the production branch.
-- Develop and test changes on `develop` before merging them into `main`.
-- Use `npm run dev` for local development, `npm run lint` for linting, and `npm run build` to validate the production build.
-- Local and deployed processing requires the `ffmpeg` executable to be available to the Node.js process.
+## Workflow
 
-# Engineering Philosophy
+`main` is the production source-of-truth branch. Current practice uses reviewed, tested commits pushed directly to `main`; do not invent a `develop`-branch requirement.
 
-- Prioritize reliability before new features.
-- Prefer incremental improvements over large rewrites.
-- Understand existing code before modifying it.
-- Preserve existing behavior unless explicitly requested.
-- Explain significant architectural decisions before implementing them.
-- When proposing significant changes, explain the reasoning before implementation.
-- Avoid unnecessary dependencies.
-- Fix root causes rather than adding workarounds.
+For implementation work:
 
-# Coding Guidelines
+1. Inspect the current code and preserve production-proven behavior.
+2. Keep the change narrowly scoped; do not introduce new infrastructure without an approved need.
+3. Run relevant focused checks plus `npm run test:jobs`, `npm run lint`, and `npm run build` where applicable.
+4. Do not declare a phase complete on lint alone: production acceptance is required.
 
-- Keep page-specific UI in its App Router route and keep server-side processing in the API route.
-- Maintain the current input/output contract for `POST /api/process-video` unless a coordinated change is intended.
-- Treat prompt support as explicit parser behavior: only claim support for operations implemented in the route.
-- Keep FFmpeg commands deterministic and compatible with the container runtime.
-- Preserve the existing normalized output format when changing processing steps unless a format change is intentional and verified.
+Useful commands:
 
-# Safety Guidelines
+```bash
+npm run dev
+npm run test:jobs
+npm run lint
+npm run build
+npm run worker
+npm run migrate:jobs
+```
 
-- Inspect existing behavior and repository state before edits.
-- Do not delete or overwrite user uploads, sample assets, or generated artifacts without explicit authorization.
-- Treat uploaded video data as temporary processing input and avoid logging its contents.
-- Validate changes involving FFmpeg with representative clips, including one- and two-video workflows when relevant.
-- Be cautious with large uploads and long-running synchronous processing in the API route.
+Full local media processing needs system `ffmpeg`, `ffprobe`, and the required server-side environment configuration. Never commit environment values or production credentials.
 
-# Deployment Notes
+## Single-Step Undo
 
-- The Docker image uses Node 22 on Debian and installs system FFmpeg, Python, CPU Torch, and Whisper.
-- The current application code relies on system FFmpeg; it does not use the installed Torch or Whisper packages, FFprobe, or FFmpeg WebAssembly dependencies.
-- The API route declares the Node.js runtime and is not compatible with an Edge-only deployment.
-- The Dockerfile exposes port 8080, while `next start` uses its default port unless the deployment environment supplies `PORT`.
-- Vercel Analytics is included, but the repository has no Vercel-specific deployment configuration.
+Single-Step Undo is browser-local Current/Previous successful state, not database-backed history. It has no redo, branching, or version tree. Historical job restoration requires that job's opaque access token; Original is an output-less source sentinel. Failed/cancelled jobs do not advance successful state.
 
-# AI Collaboration
+The undo presentation must cover outgoing media until the restored media is displayable. Do not reintroduce stale-video flashes or generic job-status messaging during Undo restoration.
 
-Before implementing major changes:
+## Current Next Product Work
 
-1. Understand the existing implementation.
-2. Explain the proposed approach.
-3. Minimize the scope of changes.
-4. Preserve backwards compatibility where practical.
+Phase 3C remains in progress. The next planned sub-phase is **Phase 3C-B — Filters & Reference Styling**. It is not implemented or started by this document.
+
+## Safety
+
+Do not push, deploy, modify Railway, alter migrations, change worker concurrency, delete storage, or rotate secrets without explicit user authorization. Avoid destructive commands and preserve unrelated working-tree changes.

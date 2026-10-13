@@ -2171,7 +2171,7 @@ The server now distinguishes semantic operation scope from semantic source selec
 
 ### Perceptual Calibration
 
-`599e61cb6355851f2a6ea3c59af2f67542ed34d9` introduced the engine. Functional acceptance then showed that its visual effects were too subtle in real-footage manual product testing. `4062bce2d4bd59fb02d10325d323480338fe3caa` recalibrated the deterministic mappings from brightness `normalized × 0.25`, contrast/saturation `1 + normalized × 0.5`, and temperature/tint `normalized × 0.15` to brightness `normalized × 0.45`, contrast/saturation `1 + normalized × 0.9`, and temperature/tint `normalized × 0.32`; the server-facing `-1..1` contract did not change.
+`599e61cb6355851f2a6ea3c59af2f67542ed34d9` introduced the engine. Functional acceptance then showed that its visual effects were too subtle in real-footage manual product testing. `4062bce2d4bd59fb02d10325d323480338fe3caa` began the calibration work; the current implementation retains the server-facing `-1..1` contract while using bounded perceptual mapping and combination headroom rather than the earlier fixed formulas.
 
 Post-calibration manual acceptance confirmed noticeable explicit and qualitative brightness, effective contrast and saturation adjustment, perceptible warm/cool shifts, controlled magenta tint, and the combined request. These perceptual checks supplement—not replace—the objective correctness and artifact checks above.
 
@@ -2230,3 +2230,50 @@ The targeted production retest passed. Same-browser reopen, Start Fresh, active 
 `SINGLE-STEP UNDO PRODUCTION ACCEPTANCE PASSED`
 
 `Single-Step Undo: ✅ COMPLETE`
+
+---
+
+## Post-Acceptance Visual + Undo Polish
+
+Relevant production commits:
+
+`dd57dba482ed1fbe6c2166b4cddf5e9bfc0aa80e`
+`Refine visual adjustments and Undo UX`
+
+`e9596c255f2acffb7b43e090abed72a62bc29bc6`
+`Fix Undo restoration feedback`
+
+### Visual calibration verification
+
+Production verification passed:
+
+- 20% brighter: obvious and healthy.
+- Normal contrast: obvious and healthy.
+- Warmer: visibly present without corruption.
+- Slight magenta: materially weaker than the earlier over-strong version.
+- Slight contrast: measurably weaker than normal contrast.
+- Combined brightness + warmth + slight contrast: all present without obvious clipping or corruption.
+
+Founder manually accepted `Make it warmer.`, `Add a slight magenta tint.`, and the combined adjustment as good enough to close. Further aesthetic tuning is intentionally deferred.
+
+### Undo restoration-presentation verification
+
+Production verification confirmed:
+
+- contextual Undo remains beneath the successful user turn; no global composer Undo exists;
+- previous-job Undo enters immediate restoring presentation;
+- consumed Undo remains in its stable location and the next successful edit re-arms it;
+- duplicate prompts restore by job identity first;
+- refresh persistence/reconstruction and Start Fresh regression pass; and
+- failure semantics remain covered by automated tests.
+
+For `e9596c2` production checking, previous-job Undo passed: outgoing B was immediately covered, opaque `Restoring previous edit…` appeared while necessary, no queued/analyzing/rendering status appeared, A restored when ready, and no stale B flash was observed.
+
+For first edit → Original, the automated observer did not catch restoring text because the local Original became displayable immediately. This is not a product failure. Acceptance passes when, immediately after Undo, the outgoing/current edit stops being visibly presented and either the opaque restoring state is shown while replacement media loads or the correct restored media appears directly when already ready. No artificial minimum loading-state duration is required.
+
+Founder manually verified both A → B → Undo and first edit → Original; both passed.
+
+`POST-ACCEPTANCE VISUAL + UNDO POLISH: ✅ COMPLETE`
+
+`Single-Step Undo: ✅ COMPLETE`
+`Phase 3C-A — Visual Adjustment Engine: ✅ COMPLETE`
