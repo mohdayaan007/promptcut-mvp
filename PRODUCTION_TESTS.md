@@ -2181,9 +2181,9 @@ Post-calibration manual acceptance confirmed noticeable explicit and qualitative
 
 ---
 
-# Single-Step Undo Production Acceptance Plan
+# Single-Step Undo Production Acceptance
 
-Status: `🚧 IN PROGRESS`
+Status: `✅ COMPLETE`
 
 Single-Step Undo restores only the immediately previous successful rendered result. It is same-browser durable state, not a server-side edit-history system; Undo is consumed after one use and re-arms on the next successful edit.
 
@@ -2204,3 +2204,29 @@ Single-Step Undo restores only the immediately previous successful rendered resu
 | M — Recovery regression | Existing Continue, View edit, and Start fresh behavior remains correct. |
 | N — Cancellation regression | Active cancellation and worker-slot behavior remain unchanged. |
 | O — Render regression | Existing edit/render pipeline regressions remain green. |
+
+## Production results
+
+| Case | Result | Job / evidence |
+| --- | --- | --- |
+| A — first edit → Undo Original | PASS | `68b7b901-a387-44f3-83fd-d08db109e613` |
+| B — A → B → Undo | PASS | A: `2b74c454-4414-4dc4-ad3a-693e699c27c2`; B: `290df148-2b9c-4b5b-bf07-c9f3901e4f38` |
+| C — A → B → C → Undo | PASS | Undo restored B and then disabled. |
+| G — Undo then new successful edit | PASS | New success re-armed Undo. |
+| H — refresh persistence | PASS | Current and Previous restored. |
+| I — same-browser reopen persistence | PASS | B: `84350f33-27df-433b-b0f5-d37d61fd4f45` |
+| J — Start Fresh | PASS | Local Undo state cleared safely. |
+| N — active cancellation | PASS | `293c8200-5569-4d3f-8bc7-976d17ec8b74` |
+| M/O — general regressions | PASS | No regressions found. |
+| Tooltip/content behavior | PASS | Required disabled-state explanation remained available. |
+
+The first production pass found one UI acceptance failure: Undo disappeared after restoring Original because the completed-result actions were no longer rendered. This was fixed in:
+
+`167325a0a6277dffdf5642aa4ce4a9797f143aa0`
+`Keep Undo visible after restoring original`
+
+The targeted production retest passed. Same-browser reopen, Start Fresh, active cancellation, and general regressions also passed with no blockers remaining.
+
+`SINGLE-STEP UNDO PRODUCTION ACCEPTANCE PASSED`
+
+`Single-Step Undo: ✅ COMPLETE`

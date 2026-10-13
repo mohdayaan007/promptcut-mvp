@@ -1490,7 +1490,7 @@ AI interprets. Server validates. FFmpeg executes.
 Phase 3C is divided into:
 
 1. Phase 3C-A — Visual Adjustment Engine — COMPLETE
-2. Single-Step Undo — IN PROGRESS
+2. Single-Step Undo — COMPLETE
 3. Phase 3C-B — Filters & Reference Styling
 4. Phase 3C-C — Transitions & Timeline Effects
 
@@ -1570,7 +1570,7 @@ Manual product acceptance after calibration confirmed noticeable brightness, con
 
 ## Single-Step Undo
 
-Status: `🚧 IN PROGRESS`
+Status: `✅ COMPLETE`
 
 Purpose:
 
@@ -1589,7 +1589,13 @@ Current scope:
 - Original uploads are an output-less source sentinel, never a rendered job; after refresh they show source metadata and require re-upload before editing again.
 - No redo, multi-step history, branching, history tree, cumulative editing, database migration, or worker/rendering change is included.
 
-Detailed production acceptance is in `PRODUCTION_TESTS.md`.
+### Completion sign-off
+
+Production acceptance passed. Single-Step Undo stores only Current and Previous successful state: Undo is one-step, consumed after use, and re-armed by the next successful edit. Failed or cancelled jobs do not alter successful Undo state; refresh and same-browser reopen preserve Current/Previous; Start Fresh clears local state safely. Original remains an output-less source state and may require re-upload after refresh. Historical output restoration always requires its own job token.
+
+No multi-step history, redo, branching, cumulative conversational editing, or database history system was introduced. Detailed production evidence is in `PRODUCTION_TESTS.md`.
+
+`Single-Step Undo: ✅ COMPLETE`
 
 ## Phase 3C-B — Filters & Reference Styling
 
