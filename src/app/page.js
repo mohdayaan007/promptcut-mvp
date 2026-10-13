@@ -26,6 +26,7 @@ import {
   setUndoActiveJob,
   undoPreviewMode,
   uploadAndQueueJob,
+  waitForBrowserPaint,
 } from "@/lib/client/direct-upload";
 
 const MAX_VIDEO_COUNT = 5;
@@ -73,6 +74,8 @@ export default function HomePage() {
   const [recoveryError, setRecoveryError] = useState(null);
   const [isUndoing, setIsUndoing] = useState(false);
   const [isRestoringPrevious, setIsRestoringPrevious] = useState(false);
+  const [restoringOriginal, setRestoringOriginal] = useState(false);
+  const [restoringResultUrl, setRestoringResultUrl] = useState(null);
   const [undoAnchor, setUndoAnchor] = useState(null);
 
   const videoInputRef = useRef(null);
@@ -109,6 +112,13 @@ export default function HomePage() {
     setStatus("done");
     setResultUrl(job.outputUrl);
     setError(null);
+  }, []);
+
+  const finishUndoRestoration = useCallback(() => {
+    setIsRestoringPrevious(false);
+    setIsUndoing(false);
+    setRestoringOriginal(false);
+    setRestoringResultUrl(null);
   }, []);
 
   const restoreCurrentVersion = useCallback(async (current) => {
@@ -397,21 +407,25 @@ export default function HomePage() {
     const previous = undoStateRef.current?.previous;
     if (!previous || isUndoing) return;
     const current = undoStateRef.current?.current;
-    if (previous.kind === "original") {
+    // Commit the opaque restoring state before either an in-memory or network
+    // restoration path can replace the current preview.
+    flushSync(() => {
       setIsUndoing(true);
+      setIsRestoringPrevious(true);
+      setRestoringOriginal(previous.kind === "original");
+      setRestoringResultUrl(null);
+    });
+    await waitForBrowserPaint();
+
+    if (previous.kind === "original") {
       const next = persistUndoState(consumeUndo(undoStateRef.current));
       setUndoAnchor(undoAnchorForCurrent(current, { consumed: true }));
       showOriginal(next.current.sources);
       setMessages((messages) => [...messages, { role: "assistant", text: describeUndoRestoration({ current, previous }) }]);
-      setIsUndoing(false);
+      if (videos.length !== 1) finishUndoRestoration();
       return;
     }
-    // Commit this explicit click state before the authorized network request so
-    // the current result cannot remain visible while restoration is pending.
-    flushSync(() => {
-      setIsUndoing(true);
-      setIsRestoringPrevious(true);
-    });
+    let waitingForMedia = false;
     try {
       const job = await getJobStatus(previous.session);
       const resolution = resolveUndoRestoration(undoStateRef.current, job);
@@ -419,7 +433,9 @@ export default function HomePage() {
         const next = persistUndoState(resolution.state);
         setUndoAnchor(undoAnchorForCurrent(current, { consumed: true }));
         showCompletedJob(next.current.session, job);
+        setRestoringResultUrl(job.outputUrl);
         setMessages((messages) => [...messages, { role: "assistant", text: describeUndoRestoration({ current, previous }) }]);
+        waitingForMedia = true;
       } else if (resolution.outcome === "unavailable") {
         persistUndoState(resolution.state);
         setUndoAnchor(undoAnchorForCurrent(current, { consumed: true }));
@@ -430,10 +446,13 @@ export default function HomePage() {
     } catch {
       setMessages((messages) => [...messages, { role: "assistant", text: "Couldn’t restore the previous version. Please try again." }]);
     } finally {
-      setIsRestoringPrevious(false);
-      setIsUndoing(false);
+      if (!waitingForMedia) finishUndoRestoration();
     }
   };
+
+  const handleRestoredMediaReady = useCallback(() => {
+    if (isRestoringPrevious) finishUndoRestoration();
+  }, [finishUndoRestoration, isRestoringPrevious]);
 
   return (
     <main className={`cliponaut-shell ${hasWorkspace ? "is-workspace" : "is-empty"}`}>
@@ -479,7 +498,10 @@ export default function HomePage() {
             onEditAgain={handleEditAgain}
             isOriginalState={undoState?.current?.kind === "original"}
             previewMode={previewMode}
-            originalVideo={previewMode === "original-source" ? videos[0] : null}
+            originalVideo={videos[0] || null}
+            restoringOriginal={restoringOriginal}
+            restoringResultUrl={restoringResultUrl}
+            onRestoredMediaReady={handleRestoredMediaReady}
             undoAnchor={undoAnchor}
             canUndo={Boolean(undoState?.previous)}
             isUndoing={isUndoing}

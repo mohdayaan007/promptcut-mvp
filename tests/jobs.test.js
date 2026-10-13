@@ -10,7 +10,7 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validat
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldShowUndoControl, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldShowUndoControl, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
@@ -992,6 +992,22 @@ test("single-step Undo remains visible for a restored Original workspace without
   assert.equal(undoPreviewMode({ isRestoring: true, current: { kind: "job" }, localVideoCount: 1 }), "restoring", "authorized restoration masks the current result immediately");
   assert.equal(undoPreviewMode({ isRestoring: false, current: { kind: "original" }, localVideoCount: 1 }), "original-source", "one restored local source previews directly");
   assert.equal(undoPreviewMode({ isRestoring: false, current: { kind: "original" }, localVideoCount: 2 }), "normal", "multiple originals do not fabricate a merged preview");
+});
+
+test("Undo waits for two browser paint frames before beginning restoration work", async () => {
+  const frames = [];
+  let restorationStarted = false;
+  const paint = waitForBrowserPaint((callback) => frames.push(callback));
+  const afterPaint = paint.then(() => { restorationStarted = true; });
+
+  assert.equal(restorationStarted, false);
+  assert.equal(frames.length, 1, "the first RAF is scheduled immediately after the restoring commit");
+  frames.shift()();
+  assert.equal(restorationStarted, false);
+  assert.equal(frames.length, 1, "a second RAF gives the browser a paint opportunity before restoration starts");
+  frames.shift()();
+  await afterPaint;
+  assert.equal(restorationStarted, true);
 });
 
 test("single-step Undo records concise prompt context without altering restoration state", () => {

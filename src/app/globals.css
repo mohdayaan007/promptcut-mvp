@@ -618,6 +618,7 @@ body {
 
 .cliponaut-preview-stage {
   display: grid;
+  position: relative;
   min-height: clamp(220px, 27vw, 330px);
   place-items: center;
   overflow: hidden;
@@ -701,6 +702,14 @@ body {
   padding: 24px;
   color: #89837d;
   text-align: center;
+}
+
+.cliponaut-preview-restoring {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  justify-content: center;
+  background: #f7f4f1;
 }
 
 .cliponaut-preview-placeholder > svg {

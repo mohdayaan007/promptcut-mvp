@@ -25,6 +25,9 @@ export function Workspace({
   isOriginalState,
   previewMode,
   originalVideo,
+  restoringOriginal,
+  restoringResultUrl,
+  onRestoredMediaReady,
   undoAnchor,
   canUndo,
   isUndoing,
@@ -91,6 +94,9 @@ export function Workspace({
         onEditAgain={onEditAgain}
         previewMode={previewMode}
         originalVideo={originalVideo}
+        restoringOriginal={restoringOriginal}
+        restoringResultUrl={restoringResultUrl}
+        onRestoredMediaReady={onRestoredMediaReady}
       />
     </div>
     <ConversationFeedback messages={messages} status={status} undoAnchor={undoAnchor} canUndo={canUndo} isUndoing={isUndoing} onUndo={onUndo} />
@@ -144,12 +150,12 @@ function RestoredMediaCard({ source }) {
   );
 }
 
-function SourcePreview({ file }) {
+function SourcePreview({ file, onMediaReady }) {
   const sourceUrl = useObjectUrl(file);
-  return <video src={sourceUrl} controls playsInline className="cliponaut-result-video" aria-label="Original source preview" />;
+  return <video key={sourceUrl} src={sourceUrl} controls playsInline className="cliponaut-result-video" aria-label="Original source preview" onLoadedData={onMediaReady} />;
 }
 
-function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain, previewMode, originalVideo }) {
+function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain, previewMode, originalVideo, restoringOriginal, restoringResultUrl, onRestoredMediaReady }) {
   const videoRef = useRef(null);
   const [playbackRate, setPlaybackRate] = useState("1");
 
@@ -188,15 +194,17 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
         {!canExport4k && <p>4K is available when every source video is 4K.</p>}
       </fieldset>
 
-      <div className={`cliponaut-preview-stage is-${status}`}>
-        {previewMode === "restoring" && <PreviewRestoringState />}
-        {previewMode === "original-source" && originalVideo && <SourcePreview file={originalVideo} />}
+      <div className={`cliponaut-preview-stage is-${status} ${previewMode === "restoring" ? "is-restoring" : ""}`}>
+        {(previewMode === "original-source" || (previewMode === "restoring" && restoringOriginal)) && originalVideo && (
+          <SourcePreview file={originalVideo} onMediaReady={previewMode === "restoring" ? onRestoredMediaReady : undefined} />
+        )}
         {previewMode === "normal" && status === "idle" && <PreviewEmptyState />}
         {previewMode === "normal" && ["uploading", "queued", "analyzing", "rendering"].includes(status) && <PreviewProcessingState status={status} uploadProgress={uploadProgress} />}
         {previewMode === "normal" && status === "error" && <PreviewErrorState error={error} />}
-        {previewMode === "normal" && status === "done" && resultUrl && (
-          <video ref={videoRef} src={resultUrl} controls playsInline className="cliponaut-result-video" />
+        {status === "done" && resultUrl && (
+          <video key={resultUrl} ref={videoRef} src={resultUrl} controls playsInline className="cliponaut-result-video" onLoadedData={previewMode === "restoring" && resultUrl === restoringResultUrl ? onRestoredMediaReady : undefined} />
         )}
+        {previewMode === "restoring" && <PreviewRestoringState />}
       </div>
 
       {previewMode === "normal" && status === "done" && resultUrl && (
@@ -224,7 +232,7 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
 }
 
 function ConversationFeedback({ messages, status, undoAnchor, canUndo, isUndoing, onUndo }) {
-  const isProcessing = ["uploading", "queued", "analyzing", "rendering"].includes(status);
+  const isProcessing = !isUndoing && ["uploading", "queued", "analyzing", "rendering"].includes(status);
   const anchorIndex = findUndoTurnIndex(messages, undoAnchor);
   const recoveredTurn = undoAnchor?.prompt && anchorIndex < 0
     ? { role: "user", text: undoAnchor.prompt, recovered: true }
@@ -280,7 +288,7 @@ function PreviewProcessingState({ status, uploadProgress }) {
 
 function PreviewRestoringState() {
   return (
-    <div className="cliponaut-preview-placeholder">
+    <div className="cliponaut-preview-placeholder cliponaut-preview-restoring" aria-live="polite">
       <span className="cliponaut-processing-orbit" aria-hidden="true" />
       <p>Restoring previous edit…</p>
     </div>

@@ -143,6 +143,17 @@ export function getInitialUndoAnchor(state) {
   };
 }
 
+/** Lets a committed client-side restoring state reach the browser before work continues. */
+export function waitForBrowserPaint(requestFrame) {
+  const schedule = requestFrame || (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+    ? window.requestAnimationFrame.bind(window)
+    : (callback) => Promise.resolve().then(callback));
+
+  return new Promise((resolve) => {
+    schedule(() => schedule(resolve));
+  });
+}
+
 /** Finds the successful user turn that owns the one available Undo action. */
 export function findUndoTurnIndex(messages, anchor) {
   if (!Array.isArray(messages)) return -1;
