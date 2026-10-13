@@ -2178,3 +2178,29 @@ Post-calibration manual acceptance confirmed noticeable explicit and qualitative
 `PHASE 3C-A PRODUCTION ACCEPTANCE PASSED`
 
 `Phase 3C-A — Visual Adjustment Engine: ✅ COMPLETE`
+
+---
+
+# Single-Step Undo Production Acceptance Plan
+
+Status: `🚧 IN PROGRESS`
+
+Single-Step Undo restores only the immediately previous successful rendered result. It is same-browser durable state, not a server-side edit-history system; Undo is consumed after one use and re-arms on the next successful edit.
+
+| Case | Acceptance check |
+| --- | --- |
+| A — Original → A → Undo | Original source workspace returns and no result preview remains. |
+| B — Original → A → B → Undo | A returns; Undo is disabled afterward. |
+| C — Original → A → B → C → Undo | B returns; Undo is disabled afterward. |
+| D — A → failed B | A remains current and its Undo target is unchanged. |
+| E — A → B → failed C | B remains current; Undo restores A. |
+| F — A → B → cancelled C | B remains current; Undo restores A. |
+| G — A → B → Undo A → successful C | C can Undo back to A. |
+| H — Refresh at B | B restores and A remains the Undo target. |
+| I — Browser close/reopen | Same-browser current and previous results restore while retained. |
+| J — Start fresh | Local Undo state clears; only an active job is cancelled. |
+| K — Previous output expired | Current stays intact and the safe unavailable message appears. |
+| L — Unauthorized historical UUID | Historical output access is denied without its matching job token. |
+| M — Recovery regression | Existing Continue, View edit, and Start fresh behavior remains correct. |
+| N — Cancellation regression | Active cancellation and worker-slot behavior remain unchanged. |
+| O — Render regression | Existing edit/render pipeline regressions remain green. |

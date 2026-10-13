@@ -33,6 +33,15 @@ export function ArrowLeftIcon() {
   );
 }
 
+export function UndoIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
+      <path d="M9 8 5 12l4 4" />
+      <path d="M5 12h9a5 5 0 1 1-5 5" />
+    </svg>
+  );
+}
+
 export function PlusIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">

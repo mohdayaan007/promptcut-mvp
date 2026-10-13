@@ -10,7 +10,7 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validat
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, isActiveJobStatus, isRecoverableJobStatus, PartUploadError, uploadAndQueueJob, uploadPartWithRetry } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, consumeUndo, discardUndoActiveJob, emptyUndoState, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
@@ -863,6 +863,74 @@ test("direct multipart retry observes cancellation and counts progress only afte
   assert.equal(result.status, "queued");
   assert.equal(signedAttempts, 2);
   assert.deepEqual(progress, [{ uploadedBytes: 4, totalBytes: 4 }]);
+});
+
+test("single-step Undo state migrates legacy sessions and retains only current and previous successful states", () => {
+  const values = new Map([["cliponaut-active-job", JSON.stringify({ id: "legacy-job", accessToken: "legacy-token" })]]);
+  const storage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key)
+  };
+  const sources = [{ index: 1, name: "second.mp4", type: "video/mp4", size: 20 }, { index: 0, name: "first.mp4", type: "video/mp4", size: 10, key: "must-not-persist" }];
+  const legacy = loadUndoState(storage);
+  assert.deepEqual(legacy, { version: UNDO_STATE_VERSION, active: { id: "legacy-job", accessToken: "legacy-token" }, current: null, previous: null });
+  assert.deepEqual(JSON.parse(values.get("cliponaut-active-job")), legacy);
+  values.set("cliponaut-active-job", JSON.stringify({ version: UNDO_STATE_VERSION, active: null, current: { kind: "job", session: { id: "job-without-token" }, sources }, previous: null }));
+  assert.equal(loadUndoState(storage).current, null, "historical results require the matching access token");
+
+  const sessionA = { id: "job-a", accessToken: "token-a" };
+  const sessionB = { id: "job-b", accessToken: "token-b" };
+  const sessionC = { id: "job-c", accessToken: "token-c" };
+  const sessionD = { id: "job-d", accessToken: "token-d" };
+  let state = promoteSuccessfulJob(setUndoActiveJob(emptyUndoState(), sessionA), sessionA, sources);
+  assert.deepEqual(state.current.session, sessionA);
+  assert.deepEqual(state.previous, { kind: "original", sources: [{ index: 0, name: "first.mp4", type: "video/mp4", size: 10 }, { index: 1, name: "second.mp4", type: "video/mp4", size: 20 }] });
+
+  state = promoteSuccessfulJob(setUndoActiveJob(state, sessionB), sessionB, sources);
+  assert.deepEqual(state.current.session, sessionB);
+  assert.deepEqual(state.previous.session, sessionA);
+  state = promoteSuccessfulJob(setUndoActiveJob(state, sessionC), sessionC, sources);
+  assert.deepEqual(state.current.session, sessionC);
+  assert.deepEqual(state.previous.session, sessionB);
+  assert.equal(Object.hasOwn(state, "history"), false);
+  assert.equal(Array.isArray(state.current), false);
+  assert.equal(Array.isArray(state.previous), false);
+
+  const afterUndo = consumeUndo(state);
+  assert.deepEqual(afterUndo.current.session, sessionB);
+  assert.equal(afterUndo.previous, null);
+  const afterNewSuccess = promoteSuccessfulJob(setUndoActiveJob(afterUndo, sessionD), sessionD, sources);
+  assert.deepEqual(afterNewSuccess.current.session, sessionD);
+  assert.deepEqual(afterNewSuccess.previous.session, sessionB);
+  assert.deepEqual(discardUndoActiveJob(setUndoActiveJob(afterNewSuccess, { id: "failed", accessToken: "failed-token" })), { ...afterNewSuccess, active: null }, "failed active jobs preserve current and previous");
+  assert.deepEqual(discardUndoActiveJob(setUndoActiveJob(afterNewSuccess, { id: "cancelled", accessToken: "cancelled-token" })), { ...afterNewSuccess, active: null }, "cancelled active jobs preserve current and previous");
+  assert.deepEqual(invalidateUndoPrevious(afterNewSuccess), { ...afterNewSuccess, previous: null });
+
+  const originalUndo = consumeUndo(state = { ...emptyUndoState(), current: { kind: "job", session: sessionA, sources: [] }, previous: { kind: "original", sources } });
+  assert.equal(originalUndo.current.kind, "original");
+  assert.equal(originalUndo.previous, null);
+  assert.deepEqual(saveUndoState(afterNewSuccess, storage), afterNewSuccess);
+});
+
+test("single-step Undo only invalidates a previous job after a confirmed unavailable completed response", () => {
+  const current = { kind: "job", session: { id: "job-b", accessToken: "token-b" }, sources: [] };
+  const previous = { kind: "job", session: { id: "job-a", accessToken: "token-a" }, sources: [] };
+  const state = { ...emptyUndoState(), current, previous };
+
+  const restored = resolveUndoRestoration(state, { status: "completed", outputUrl: "https://signed.example/output.mp4" });
+  assert.equal(restored.outcome, "restored");
+  assert.deepEqual(restored.state.current, previous);
+  assert.equal(restored.state.previous, null);
+
+  const unavailable = resolveUndoRestoration(state, { status: "completed", outputUrl: null });
+  assert.equal(unavailable.outcome, "unavailable");
+  assert.deepEqual(unavailable.state.current, current);
+  assert.equal(unavailable.state.previous, null);
+
+  const retry = resolveUndoRestoration(state, { status: "rendering" });
+  assert.equal(retry.outcome, "retry");
+  assert.deepEqual(retry.state, state, "temporary or unexpected retrieval results retain the previous undo target");
 });
 
 test("restored source metadata preserves order without storage keys", () => {

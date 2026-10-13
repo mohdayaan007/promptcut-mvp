@@ -1,4 +1,5 @@
 const JOB_STORAGE_KEY = "cliponaut-active-job";
+export const UNDO_STATE_VERSION = 1;
 export const ACTIVE_JOB_STATUSES = ["uploading", "queued", "analyzing", "rendering"];
 const PART_UPLOAD_MAX_ATTEMPTS = 3;
 const PART_UPLOAD_RETRY_DELAYS_MS = [500, 1_000];
@@ -11,6 +12,110 @@ async function requestJson(url, options = {}, fetchFn = fetch) {
 }
 
 function jobHeaders(accessToken) { return { "x-cliponaut-job-token": accessToken }; }
+
+function browserStorage(storage) {
+  if (storage) return storage;
+  return typeof localStorage === "undefined" ? null : localStorage;
+}
+
+function validSession(session) {
+  return Boolean(session && typeof session.id === "string" && typeof session.accessToken === "string");
+}
+
+function safeSources(sources) {
+  return Array.isArray(sources)
+    ? sources.map(({ index, name, type, size }) => ({ index, name, type, size })).sort((left, right) => left.index - right.index)
+    : [];
+}
+
+export function emptyUndoState() {
+  return { version: UNDO_STATE_VERSION, active: null, current: null, previous: null };
+}
+
+function safeSuccessfulState(state) {
+  if (!state || typeof state !== "object") return null;
+  if (state.kind === "original") return { kind: "original", sources: safeSources(state.sources) };
+  if (state.kind === "job" && validSession(state.session)) {
+    return { kind: "job", session: { id: state.session.id, accessToken: state.session.accessToken }, sources: safeSources(state.sources) };
+  }
+  return null;
+}
+
+function normalizeUndoState(value) {
+  if (validSession(value) && value.version === undefined) {
+    return { state: { ...emptyUndoState(), active: { id: value.id, accessToken: value.accessToken } }, migrated: true };
+  }
+  if (!value || value.version !== UNDO_STATE_VERSION) return { state: emptyUndoState(), migrated: false };
+  return {
+    state: {
+      version: UNDO_STATE_VERSION,
+      active: validSession(value.active) ? { id: value.active.id, accessToken: value.active.accessToken } : null,
+      current: safeSuccessfulState(value.current),
+      previous: safeSuccessfulState(value.previous)
+    },
+    migrated: false
+  };
+}
+
+export function loadUndoState(storage) {
+  const target = browserStorage(storage);
+  if (!target) return emptyUndoState();
+  try {
+    const { state, migrated } = normalizeUndoState(JSON.parse(target.getItem(JOB_STORAGE_KEY) || "null"));
+    if (migrated) target.setItem(JOB_STORAGE_KEY, JSON.stringify(state));
+    return state;
+  } catch {
+    return emptyUndoState();
+  }
+}
+
+export function saveUndoState(state, storage) {
+  const target = browserStorage(storage);
+  const normalized = normalizeUndoState(state).state;
+  if (target) target.setItem(JOB_STORAGE_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+
+export function setUndoActiveJob(state, session) {
+  const normalized = normalizeUndoState(state).state;
+  return { ...normalized, active: validSession(session) ? { id: session.id, accessToken: session.accessToken } : null };
+}
+
+export function discardUndoActiveJob(state) {
+  return { ...normalizeUndoState(state).state, active: null };
+}
+
+export function promoteSuccessfulJob(state, session, sources) {
+  const normalized = normalizeUndoState(state).state;
+  const nextCurrent = { kind: "job", session: { id: session.id, accessToken: session.accessToken }, sources: safeSources(sources) };
+  return {
+    version: UNDO_STATE_VERSION,
+    active: null,
+    current: nextCurrent,
+    previous: normalized.current || { kind: "original", sources: safeSources(sources) }
+  };
+}
+
+export function consumeUndo(state) {
+  const normalized = normalizeUndoState(state).state;
+  if (!normalized.previous) return normalized;
+  return { ...normalized, active: null, current: normalized.previous, previous: null };
+}
+
+export function invalidateUndoPrevious(state) {
+  return { ...normalizeUndoState(state).state, previous: null };
+}
+
+export function resolveUndoRestoration(state, job) {
+  const normalized = normalizeUndoState(state).state;
+  if (job?.status === "completed" && typeof job.outputUrl === "string" && job.outputUrl) {
+    return { outcome: "restored", state: consumeUndo(normalized) };
+  }
+  if (job?.status === "completed") {
+    return { outcome: "unavailable", state: invalidateUndoPrevious(normalized) };
+  }
+  return { outcome: "retry", state: normalized };
+}
 
 function abortError() {
   const error = new Error("The upload was cancelled");
@@ -144,8 +249,11 @@ export async function cancelJob(session, signal) {
 export function isActiveJobStatus(status) { return ACTIVE_JOB_STATUSES.includes(status); }
 export function isRecoverableJobStatus(status) { return isActiveJobStatus(status) || status === "completed"; }
 
-export function saveActiveJob(session) { localStorage.setItem(JOB_STORAGE_KEY, JSON.stringify(session)); }
-export function loadActiveJob() {
-  try { return JSON.parse(localStorage.getItem(JOB_STORAGE_KEY) || "null"); } catch { return null; }
+/** Legacy active-job helpers preserve current recovery callers while retaining undo state. */
+export function saveActiveJob(session) { return saveUndoState(setUndoActiveJob(loadUndoState(), session)); }
+export function loadActiveJob() { return loadUndoState().active; }
+export function clearActiveJob() { return saveUndoState(discardUndoActiveJob(loadUndoState())); }
+export function clearUndoState(storage) {
+  const target = browserStorage(storage);
+  if (target) target.removeItem(JOB_STORAGE_KEY);
 }
-export function clearActiveJob() { localStorage.removeItem(JOB_STORAGE_KEY); }

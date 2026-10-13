@@ -1490,7 +1490,7 @@ AI interprets. Server validates. FFmpeg executes.
 Phase 3C is divided into:
 
 1. Phase 3C-A — Visual Adjustment Engine — COMPLETE
-2. Edit History v1 / Undo — NEXT
+2. Single-Step Undo — IN PROGRESS
 3. Phase 3C-B — Filters & Reference Styling
 4. Phase 3C-C — Transitions & Timeline Effects
 
@@ -1568,26 +1568,28 @@ Manual product acceptance after calibration confirmed noticeable brightness, con
 
 `Phase 3C-A — Visual Adjustment Engine: ✅ COMPLETE`
 
-## Edit History v1 / Undo
+## Single-Step Undo
 
-Status: `⏳ PLANNED`
+Status: `🚧 IN PROGRESS`
 
 Purpose:
 
-Allow users to safely experiment with prompts and restore a previous successful edit state.
+Allow users to safely experiment with prompts and restore one previous successful edit state.
 
 Example:
 
 Original → `Increase brightness by 20%.` → accepted result → `Increase brightness by 30%.` → user dislikes result → Undo → restore the previous 20% result.
 
-Initial direction:
+Current scope:
 
-- Restore a previous successful prompt result; repeated undo through earlier successful states should be architecturally possible.
-- Failed edits must not destroy the last successful state.
-- Avoid duplicate or confused job lineage.
-- Full branching/version-tree UX is deferred; Phase 4 may later evolve this into richer conversational edit history.
+- Store only the active job, current successful state, and immediately previous successful state in same-browser durable local state.
+- Undo restores the immediately previous successful result and is consumed after one use.
+- The next successful edit re-arms Undo using the then-current result as its previous state.
+- Failed and cancelled edits do not modify the current or previous Undo state.
+- Original uploads are an output-less source sentinel, never a rendered job; after refresh they show source metadata and require re-upload before editing again.
+- No redo, multi-step history, branching, history tree, cumulative editing, database migration, or worker/rendering change is included.
 
-Detailed production acceptance is deferred.
+Detailed production acceptance is in `PRODUCTION_TESTS.md`.
 
 ## Phase 3C-B — Filters & Reference Styling
 

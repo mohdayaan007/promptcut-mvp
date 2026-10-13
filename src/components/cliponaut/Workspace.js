@@ -1,7 +1,7 @@
 /* eslint-disable @next/next/no-img-element -- Blob URLs are local previews and cannot use Next image optimization. */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AttachmentControls } from "@/components/cliponaut/AttachmentControls";
-import { ArrowLeftIcon, DownloadIcon, ImageIcon, PlusIcon, VideoIcon } from "@/components/cliponaut/icons";
+import { ArrowLeftIcon, DownloadIcon, ImageIcon, PlusIcon, UndoIcon, VideoIcon } from "@/components/cliponaut/icons";
 
 export function Workspace({
   videos,
@@ -20,6 +20,10 @@ export function Workspace({
   onRemoveVideo,
   onRemoveImage,
   onEditAgain,
+  canUndo,
+  onUndo,
+  isUndoing,
+  restoredOriginal,
   onBack,
 }) {
   return (
@@ -67,7 +71,7 @@ export function Workspace({
             Add images
           </button>
         </div>
-        <p className="cliponaut-media-note">Add up to five videos. Images are kept locally for a future editing feature and are not sent to render yet.</p>
+        <p className="cliponaut-media-note">{restoredOriginal ? "Your original upload list was restored. Re-upload the files to edit them again." : "Add up to five videos. Images are kept locally for a future editing feature and are not sent to render yet."}</p>
       </section>
 
       <PreviewPanel
@@ -80,6 +84,9 @@ export function Workspace({
         canExport4k={canExport4k}
         onExportQualityChange={onExportQualityChange}
         onEditAgain={onEditAgain}
+        canUndo={canUndo}
+        onUndo={onUndo}
+        isUndoing={isUndoing}
       />
     </div>
     <ConversationFeedback messages={messages} status={status} />
@@ -133,7 +140,7 @@ function RestoredMediaCard({ source }) {
   );
 }
 
-function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain }) {
+function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain, canUndo, onUndo, isUndoing }) {
   const videoRef = useRef(null);
   const [playbackRate, setPlaybackRate] = useState("1");
 
@@ -196,6 +203,12 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
             <DownloadIcon />
             Download MP4
           </a>
+          <span className="cliponaut-undo-tooltip" tabIndex="0" data-tooltip="Undo restores your previous successful edit. After you use it, Undo resets until your next edit.">
+            <button className="cliponaut-undo-button" type="button" onClick={onUndo} disabled={!canUndo || isUndoing}>
+              <UndoIcon />
+              {isUndoing ? "Undoing…" : "Undo"}
+            </button>
+          </span>
           <button className="cliponaut-edit-again" type="button" onClick={onEditAgain}>
             Edit again
           </button>

@@ -1,13 +1,28 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppHeader } from "@/components/cliponaut/AppHeader";
 import { EmptyEditorState } from "@/components/cliponaut/EmptyEditorState";
 import { PromptComposer } from "@/components/cliponaut/PromptComposer";
 import { PromptSuggestions } from "@/components/cliponaut/PromptSuggestions";
 import { Workspace } from "@/components/cliponaut/Workspace";
 import { JobRecoveryModal } from "@/components/cliponaut/JobRecoveryModal";
-import { cancelJob, clearActiveJob, getJobStatus, isActiveJobStatus, isRecoverableJobStatus, loadActiveJob, saveActiveJob, uploadAndQueueJob } from "@/lib/client/direct-upload";
+import {
+  cancelJob,
+  clearUndoState,
+  consumeUndo,
+  discardUndoActiveJob,
+  emptyUndoState,
+  getJobStatus,
+  isActiveJobStatus,
+  isRecoverableJobStatus,
+  loadUndoState,
+  promoteSuccessfulJob,
+  resolveUndoRestoration,
+  saveUndoState,
+  setUndoActiveJob,
+  uploadAndQueueJob,
+} from "@/lib/client/direct-upload";
 
 const MAX_VIDEO_COUNT = 5;
 
@@ -42,37 +57,100 @@ export default function HomePage() {
   const [messages, setMessages] = useState([]);
   const [uploadProgress, setUploadProgress] = useState(null);
   const [activeJob, setActiveJob] = useState(null);
+  const [undoState, setUndoState] = useState(null);
   const [restoredSources, setRestoredSources] = useState([]);
   const [recovery, setRecovery] = useState(null);
   const [isResolvingRecovery, setIsResolvingRecovery] = useState(false);
   const [recoveryError, setRecoveryError] = useState(null);
+  const [isUndoing, setIsUndoing] = useState(false);
 
   const videoInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const promptRef = useRef(null);
   const requestControllerRef = useRef(null);
+  const undoStateRef = useRef(null);
 
-  const hasWorkspace = Boolean(videos.length || images.length || activeJob);
+  const hasWorkspace = Boolean(videos.length || images.length || activeJob || undoState?.current);
   const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
   const isProcessing = isActiveJobStatus(status);
 
+  const persistUndoState = useCallback((nextState) => {
+    const saved = saveUndoState(nextState);
+    undoStateRef.current = saved;
+    setUndoState(saved);
+    return saved;
+  }, []);
+
+  const showOriginal = useCallback((sources) => {
+    setActiveJob(null);
+    setRestoredSources(sources || []);
+    setStatus("idle");
+    setResultUrl(null);
+    setError(null);
+  }, []);
+
+  const showCompletedJob = useCallback((session, job) => {
+    setActiveJob(session);
+    setRestoredSources(job.sources || []);
+    setStatus("done");
+    setResultUrl(job.outputUrl);
+    setError(null);
+  }, []);
+
+  const restoreCurrentVersion = useCallback(async (current) => {
+    if (!current) {
+      setActiveJob(null);
+      setRestoredSources([]);
+      setStatus("idle");
+      setResultUrl(null);
+      return true;
+    }
+    if (current.kind === "original") {
+      showOriginal(current.sources);
+      return true;
+    }
+    try {
+      const job = await getJobStatus(current.session);
+      if (job.status !== "completed" || !job.outputUrl) throw new Error("The previous version is no longer available.");
+      showCompletedJob(current.session, job);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [showCompletedJob, showOriginal]);
+
   useEffect(() => {
-    const saved = loadActiveJob();
-    if (!saved?.id || !saved?.accessToken) return;
+    const saved = loadUndoState();
+    undoStateRef.current = saved;
+    setUndoState(saved);
+    if (!saved.active?.id || !saved.active?.accessToken) {
+      if (saved.current) restoreCurrentVersion(saved.current);
+      return undefined;
+    }
     let stopped = false;
     const discover = async () => {
       try {
-        const job = await getJobStatus(saved);
+        const job = await getJobStatus(saved.active);
         if (stopped) return;
-        if (isRecoverableJobStatus(job.status)) setRecovery({ session: saved, job });
-        else clearActiveJob();
+        if (job.status === "completed" && job.outputUrl) {
+          const next = persistUndoState(promoteSuccessfulJob(saved, saved.active, job.sources));
+          setRecovery({ session: next.current.session, job });
+        } else if (isRecoverableJobStatus(job.status)) {
+          setRecovery({ session: saved.active, job });
+        } else {
+          const next = persistUndoState(discardUndoActiveJob(saved));
+          await restoreCurrentVersion(next.current);
+        }
       } catch {
-        if (!stopped) clearActiveJob();
+        if (!stopped) {
+          const next = persistUndoState(discardUndoActiveJob(saved));
+          await restoreCurrentVersion(next.current);
+        }
       }
     };
     discover();
     return () => { stopped = true; };
-  }, []);
+  }, [persistUndoState, restoreCurrentVersion]);
 
   useEffect(() => {
     if (!activeJob || !isActiveJobStatus(status)) return undefined;
@@ -84,13 +162,32 @@ export default function HomePage() {
         setRestoredSources(job.sources || []);
         setStatus(job.status === "completed" ? "done" : job.status);
         if (job.status === "completed") {
-          setResultUrl(job.outputUrl);
-          setMessages((current) => [...current, { role: "assistant", text: "Your edit is ready." }]);
+          if (job.outputUrl) {
+            const next = persistUndoState(promoteSuccessfulJob(undoStateRef.current || emptyUndoState(), activeJob, job.sources));
+            showCompletedJob(next.current.session, job);
+            setMessages((current) => [...current, { role: "assistant", text: "Your edit is ready." }]);
+          } else {
+            const next = persistUndoState(discardUndoActiveJob(undoStateRef.current || emptyUndoState()));
+            const restored = next.current ? await restoreCurrentVersion(next.current) : false;
+            if (stopped) return;
+            if (restored) setMessages((current) => [...current, { role: "assistant", text: "We couldn’t retrieve that edit. Your previous version is still available." }]);
+            else {
+              setActiveJob(null);
+              setError("We couldn’t retrieve that edit.");
+              setStatus("error");
+            }
+          }
         } else if (["failed", "cancelled"].includes(job.status)) {
-          setError(job.status === "cancelled" ? "This edit was cancelled." : job.error || "We couldn’t complete that edit.");
-          setStatus("error");
-          clearActiveJob();
-          setActiveJob(null);
+          const next = persistUndoState(discardUndoActiveJob(undoStateRef.current || emptyUndoState()));
+          const restored = next.current ? await restoreCurrentVersion(next.current) : false;
+          if (stopped) return;
+          if (restored) {
+            setMessages((current) => [...current, { role: "assistant", text: job.status === "cancelled" ? "This edit was cancelled. Your previous version is still available." : "We couldn’t complete that edit. Your previous version is still available." }]);
+          } else {
+            setActiveJob(null);
+            setError(job.status === "cancelled" ? "This edit was cancelled." : job.error || "We couldn’t complete that edit.");
+            setStatus("error");
+          }
         }
       } catch (statusError) {
         if (!stopped) setError(statusError.message);
@@ -99,7 +196,7 @@ export default function HomePage() {
     check();
     const timer = setInterval(check, 3_000);
     return () => { stopped = true; clearInterval(timer); };
-  }, [activeJob, status]);
+  }, [activeJob, persistUndoState, restoreCurrentVersion, showCompletedJob, status]);
 
   useEffect(() => {
     return () => {
@@ -176,7 +273,11 @@ export default function HomePage() {
       const job = await uploadAndQueueJob({
         videos, prompt: submittedPrompt, exportQuality, signal: controller.signal,
         onProgress: setUploadProgress,
-        onSession: (session) => { saveActiveJob(session); setActiveJob(session); history.replaceState(null, "", `/?job=${session.id}`); }
+        onSession: (session) => {
+          persistUndoState(setUndoActiveJob(undoStateRef.current || emptyUndoState(), session));
+          setActiveJob(session);
+          history.replaceState(null, "", `/?job=${session.id}`);
+        }
       });
       if (controller.signal.aborted) return;
       setStatus(job.status);
@@ -184,12 +285,16 @@ export default function HomePage() {
       setPrompt("");
     } catch (processingError) {
       if (controller.signal.aborted) return;
-      setError(processingError.message);
-      setStatus("error");
-      setMessages((currentMessages) => [
-        ...currentMessages,
-        { role: "assistant", text: "We couldn’t complete that edit. Please try again." },
-      ]);
+      const next = persistUndoState(discardUndoActiveJob(undoStateRef.current || emptyUndoState()));
+      const restored = next.current ? await restoreCurrentVersion(next.current) : false;
+      if (restored) {
+        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: "We couldn’t complete that edit. Your previous version is still available." }]);
+      } else {
+        setActiveJob(null);
+        setError(processingError.message);
+        setStatus("error");
+        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: "We couldn’t complete that edit. Please try again." }]);
+      }
     } finally {
       if (requestControllerRef.current === controller) requestControllerRef.current = null;
     }
@@ -220,19 +325,36 @@ export default function HomePage() {
     setRecovery(null);
     setRecoveryError(null);
     setIsResolvingRecovery(false);
-    clearActiveJob();
+    undoStateRef.current = null;
+    setUndoState(null);
+    clearUndoState();
     history.replaceState(null, "", window.location.pathname);
     if (videoInputRef.current) videoInputRef.current.value = "";
     if (imageInputRef.current) imageInputRef.current.value = "";
   };
 
-  const handleBackToEmptyState = () => { resetWorkspace(); };
+  const handleBackToEmptyState = async () => {
+    const active = undoStateRef.current?.active;
+    if (!active || !isActiveJobStatus(status)) {
+      resetWorkspace();
+      return;
+    }
+    try {
+      await cancelJob(active);
+      resetWorkspace();
+    } catch (cancelError) {
+      setError(cancelError.message || "We couldn’t cancel that edit. Please try again.");
+    }
+  };
 
   const restoreJob = (session, job) => {
-    setActiveJob(session);
-    setRestoredSources(job.sources || []);
-    setStatus(job.status === "completed" ? "done" : job.status);
-    setResultUrl(job.status === "completed" ? job.outputUrl : null);
+    if (job.status === "completed" && job.outputUrl) showCompletedJob(session, job);
+    else {
+      setActiveJob(session);
+      setRestoredSources(job.sources || []);
+      setStatus(job.status);
+      setResultUrl(null);
+    }
     setRecovery(null);
     setRecoveryError(null);
   };
@@ -247,6 +369,36 @@ export default function HomePage() {
     } catch (cancelError) {
       setRecoveryError(cancelError.message || "We couldn’t cancel that edit. Please try again.");
       setIsResolvingRecovery(false);
+    }
+  };
+
+  const handleUndo = async () => {
+    const previous = undoStateRef.current?.previous;
+    if (!previous || isUndoing) return;
+    setIsUndoing(true);
+    try {
+      if (previous.kind === "original") {
+        const next = persistUndoState(consumeUndo(undoStateRef.current));
+        showOriginal(next.current.sources);
+        setMessages((current) => [...current, { role: "assistant", text: videos.length ? "Restored your original uploads." : "Restored your original upload list. Re-upload the files to edit them again." }]);
+        return;
+      }
+      const job = await getJobStatus(previous.session);
+      const resolution = resolveUndoRestoration(undoStateRef.current, job);
+      if (resolution.outcome === "restored") {
+        const next = persistUndoState(resolution.state);
+        showCompletedJob(next.current.session, job);
+        setMessages((current) => [...current, { role: "assistant", text: "Restored your previous edit." }]);
+      } else if (resolution.outcome === "unavailable") {
+        persistUndoState(resolution.state);
+        setMessages((current) => [...current, { role: "assistant", text: "The previous version is no longer available." }]);
+      } else {
+        setMessages((current) => [...current, { role: "assistant", text: "Couldn’t restore the previous version. Please try again." }]);
+      }
+    } catch {
+      setMessages((current) => [...current, { role: "assistant", text: "Couldn’t restore the previous version. Please try again." }]);
+    } finally {
+      setIsUndoing(false);
     }
   };
 
@@ -292,6 +444,10 @@ export default function HomePage() {
               setImages((currentImages) => currentImages.filter((_, imageIndex) => imageIndex !== index))
             }
             onEditAgain={handleEditAgain}
+            canUndo={Boolean(undoState?.previous)}
+            onUndo={handleUndo}
+            isUndoing={isUndoing}
+            restoredOriginal={undoState?.current?.kind === "original" && !videos.length}
             onBack={handleBackToEmptyState}
           />
           <div className="cliponaut-workspace-prompt-area">

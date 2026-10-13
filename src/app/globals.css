@@ -770,7 +770,8 @@ body {
 }
 
 .cliponaut-download-button,
-.cliponaut-edit-again {
+.cliponaut-edit-again,
+.cliponaut-undo-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -811,6 +812,64 @@ body {
   background: #fff;
   color: #514c47;
   padding: 0 11px;
+}
+
+.cliponaut-undo-button {
+  gap: 6px;
+  border: 1px solid #e6e1dc;
+  background: #fff;
+  color: #514c47;
+  padding: 0 11px;
+}
+
+.cliponaut-undo-button:hover:not(:disabled) {
+  border-color: #cfc8c1;
+  background: #fdfcfb;
+}
+
+.cliponaut-undo-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.cliponaut-undo-button svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.cliponaut-undo-tooltip {
+  position: relative;
+  display: inline-flex;
+}
+
+.cliponaut-undo-tooltip::after {
+  position: absolute;
+  z-index: 2;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  width: 220px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: #302d2a;
+  color: #fff;
+  content: attr(data-tooltip);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 4px);
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.cliponaut-undo-tooltip:hover::after,
+.cliponaut-undo-tooltip:focus::after,
+.cliponaut-undo-tooltip:focus-within::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 
 .cliponaut-edit-again:hover {
