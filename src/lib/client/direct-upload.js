@@ -28,6 +28,15 @@ function safeSources(sources) {
     : [];
 }
 
+function safePrompt(prompt) {
+  return typeof prompt === "string" && prompt.trim() ? prompt.trim().slice(0, 2_000) : undefined;
+}
+
+function withPrompt(state, prompt) {
+  const safe = safePrompt(prompt);
+  return safe ? { ...state, prompt: safe } : state;
+}
+
 export function emptyUndoState() {
   return { version: UNDO_STATE_VERSION, active: null, current: null, previous: null };
 }
@@ -36,7 +45,7 @@ function safeSuccessfulState(state) {
   if (!state || typeof state !== "object") return null;
   if (state.kind === "original") return { kind: "original", sources: safeSources(state.sources) };
   if (state.kind === "job" && validSession(state.session)) {
-    return { kind: "job", session: { id: state.session.id, accessToken: state.session.accessToken }, sources: safeSources(state.sources) };
+    return withPrompt({ kind: "job", session: { id: state.session.id, accessToken: state.session.accessToken }, sources: safeSources(state.sources) }, state.prompt);
   }
   return null;
 }
@@ -49,7 +58,7 @@ function normalizeUndoState(value) {
   return {
     state: {
       version: UNDO_STATE_VERSION,
-      active: validSession(value.active) ? { id: value.active.id, accessToken: value.active.accessToken } : null,
+      active: validSession(value.active) ? withPrompt({ id: value.active.id, accessToken: value.active.accessToken }, value.active.prompt) : null,
       current: safeSuccessfulState(value.current),
       previous: safeSuccessfulState(value.previous)
     },
@@ -76,18 +85,18 @@ export function saveUndoState(state, storage) {
   return normalized;
 }
 
-export function setUndoActiveJob(state, session) {
+export function setUndoActiveJob(state, session, prompt) {
   const normalized = normalizeUndoState(state).state;
-  return { ...normalized, active: validSession(session) ? { id: session.id, accessToken: session.accessToken } : null };
+  return { ...normalized, active: validSession(session) ? withPrompt({ id: session.id, accessToken: session.accessToken }, prompt) : null };
 }
 
 export function discardUndoActiveJob(state) {
   return { ...normalizeUndoState(state).state, active: null };
 }
 
-export function promoteSuccessfulJob(state, session, sources) {
+export function promoteSuccessfulJob(state, session, sources, prompt) {
   const normalized = normalizeUndoState(state).state;
-  const nextCurrent = { kind: "job", session: { id: session.id, accessToken: session.accessToken }, sources: safeSources(sources) };
+  const nextCurrent = withPrompt({ kind: "job", session: { id: session.id, accessToken: session.accessToken }, sources: safeSources(sources) }, prompt ?? normalized.active?.prompt);
   return {
     version: UNDO_STATE_VERSION,
     active: null,
@@ -117,8 +126,28 @@ export function resolveUndoRestoration(state, job) {
   return { outcome: "retry", state: normalized };
 }
 
-export function shouldShowUndoControl({ status, resultUrl, current }) {
-  return Boolean((status === "done" && resultUrl) || (status === "idle" && current?.kind === "original"));
+export function shouldShowUndoControl({ current }) {
+  return Boolean(current);
+}
+
+export function undoPreviewMode({ isRestoring, current, localVideoCount }) {
+  if (isRestoring) return "restoring";
+  if (current?.kind === "original" && localVideoCount === 1) return "original-source";
+  return "normal";
+}
+
+export function describeUndoRestoration({ current, previous }) {
+  const quote = (prompt) => {
+    const value = String(prompt).trim();
+    return `“${/[.!?]$/.test(value) ? value : `${value}.`}”`;
+  };
+  if (previous?.kind === "original") {
+    const restored = previous.sources.length === 1 ? "Restored your original upload." : "Restored your original uploads.";
+    return current?.prompt ? `${restored} Undid: ${quote(current.prompt)}` : restored;
+  }
+  if (previous?.prompt && current?.prompt) return `Restored previous edit: ${quote(previous.prompt)} Undid: ${quote(current.prompt)}`;
+  if (current?.prompt) return `Restored your previous edit. Undid: ${quote(current.prompt)}`;
+  return "Restored your previous edit.";
 }
 
 function abortError() {
@@ -254,7 +283,7 @@ export function isActiveJobStatus(status) { return ACTIVE_JOB_STATUSES.includes(
 export function isRecoverableJobStatus(status) { return isActiveJobStatus(status) || status === "completed"; }
 
 /** Legacy active-job helpers preserve current recovery callers while retaining undo state. */
-export function saveActiveJob(session) { return saveUndoState(setUndoActiveJob(loadUndoState(), session)); }
+export function saveActiveJob(session, prompt) { return saveUndoState(setUndoActiveJob(loadUndoState(), session, prompt)); }
 export function loadActiveJob() { return loadUndoState().active; }
 export function clearActiveJob() { return saveUndoState(discardUndoActiveJob(loadUndoState())); }
 export function clearUndoState(storage) {

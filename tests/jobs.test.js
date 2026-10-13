@@ -10,7 +10,7 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validat
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, consumeUndo, discardUndoActiveJob, emptyUndoState, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldShowUndoControl, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldShowUndoControl, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
@@ -27,7 +27,7 @@ import { parseTitle } from "@/lib/title-parser";
 import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaptionCorrection, extractCaptionStyleRequest, mapCaptionCuesToOutput, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { extractAudioControlIntent, reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { extractVisualAdjustmentIntent, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
-import { buildVisualAdjustmentFilters } from "@/lib/editor-core/edit-executor";
+import { buildVisualAdjustmentFilters, perceptualAdjustmentMagnitude } from "@/lib/editor-core/edit-executor";
 
 const execFileAsync = promisify(execFile);
 
@@ -50,17 +50,45 @@ test("3C-A visual adjustment intent, validation, source scope, and filters remai
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "visual_adjustment", brightness: -1.5 }] }), /between -1 and 1/);
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "visual_adjustment", brightness: Number.NaN }] }), /between -1 and 1/);
   assert.deepEqual(buildVisualAdjustmentFilters({ brightness: 0.2, contrast: 0.2, saturation: -0.2, temperature: 0.2, tint: -0.2 }), [
-    "eq=brightness=0.0900:contrast=1.1800:saturation=0.8200",
-    "colorbalance=rs=0.0640:bs=-0.0640:gm=0.0640"
+    "eq=brightness=0.1623:contrast=1.3246:saturation=0.6754",
+    "colorbalance=rs=0.0000:gs=0.1154:bs=-0.1154:rm=0.0000:gm=0.1154:bm=-0.1154:rh=0.0000:gh=0.1154:bh=-0.1154:pl=1"
   ]);
   assert.deepEqual(buildVisualAdjustmentFilters({ brightness: -1, contrast: -1, saturation: -1, temperature: -1, tint: 1 }), [
     "eq=brightness=-0.4500:contrast=0.1000:saturation=0.1000",
-    "colorbalance=rs=-0.3200:bs=0.3200:gm=-0.3200"
+    "colorbalance=rs=0.0000:gs=-0.3200:bs=0.3200:rm=0.0000:gm=-0.3200:bm=0.3200:rh=0.0000:gh=-0.3200:bh=0.3200:pl=1"
   ]);
   assert.deepEqual(buildVisualAdjustmentFilters({ brightness: 1, contrast: 1, saturation: 1, temperature: 1, tint: -1 }), [
     "eq=brightness=0.4500:contrast=1.9000:saturation=1.9000",
-    "colorbalance=rs=0.3200:bs=-0.3200:gm=0.3200"
+    "colorbalance=rs=0.0000:gs=0.3200:bs=-0.3200:rm=0.0000:gm=0.3200:bm=-0.3200:rh=0.0000:gh=0.3200:bh=-0.3200:pl=1"
   ]);
+  assert.equal(perceptualAdjustmentMagnitude(0), 0);
+  assert.equal(perceptualAdjustmentMagnitude(1), 1);
+  assert.equal(perceptualAdjustmentMagnitude(-1), -1);
+  assert.ok(perceptualAdjustmentMagnitude(0.12) > 0.12, "slight adjustments receive a perceptual lift");
+  assert.ok(perceptualAdjustmentMagnitude(0.2) > 0.2, "normal adjustments receive a perceptual lift");
+  assert.ok(perceptualAdjustmentMagnitude(0.2) < perceptualAdjustmentMagnitude(1), "the curve remains bounded and monotonic");
+  assert.deepEqual(buildVisualAdjustmentFilters({ brightness: 0.12, contrast: 0.12, saturation: -0.12, temperature: 0.12, tint: -0.12 }), [
+    "eq=brightness=0.1202:contrast=1.2404:saturation=0.7596",
+    "colorbalance=rs=0.0000:gs=0.0855:bs=-0.0855:rm=0.0000:gm=0.0855:bm=-0.0855:rh=0.0000:gh=0.0855:bh=-0.0855:pl=1"
+  ]);
+  assert.deepEqual(buildVisualAdjustmentFilters({ brightness: -0.2, contrast: -0.2, saturation: 0.2 }), [
+    "eq=brightness=-0.1623:contrast=0.6754:saturation=1.3246"
+  ]);
+  assert.deepEqual(buildVisualAdjustmentFilters({ temperature: 0.2 }), [
+    "colorbalance=rs=0.1154:gs=0.0000:bs=-0.1154:rm=0.1154:gm=0.0000:bm=-0.1154:rh=0.1154:gh=0.0000:bh=-0.1154:pl=1"
+  ]);
+  assert.deepEqual(buildVisualAdjustmentFilters({ temperature: -0.2 }), [
+    "colorbalance=rs=-0.1154:gs=0.0000:bs=0.1154:rm=-0.1154:gm=0.0000:bm=0.1154:rh=-0.1154:gh=0.0000:bh=0.1154:pl=1"
+  ]);
+  assert.deepEqual(buildVisualAdjustmentFilters({ tint: 0.12 }), [
+    "colorbalance=rs=0.0855:gs=-0.0855:bs=0.0000:rm=0.0855:gm=-0.0855:bm=0.0000:rh=0.0855:gh=-0.0855:bh=0.0000:pl=1"
+  ]);
+  assert.deepEqual(buildVisualAdjustmentFilters({ tint: -0.12 }), [
+    "colorbalance=rs=-0.0855:gs=0.0855:bs=0.0000:rm=-0.0855:gm=0.0855:bm=0.0000:rh=-0.0855:gh=0.0855:bh=0.0000:pl=1"
+  ]);
+  assert.deepEqual(buildVisualAdjustmentFilters({ temperature: 1, tint: 1 }), [
+    "colorbalance=rs=0.3200:gs=-0.3200:bs=-0.3200:rm=0.3200:gm=-0.3200:bm=-0.3200:rh=0.3200:gh=-0.3200:bh=-0.3200:pl=1"
+  ], "combined temperature and tint remain within the existing colorbalance ceiling");
   assert.equal(createEditPlan({ prompt: "Make it warmer." }).operations.some((operation) => operation.type === "color_grade"), false);
   assert.deepEqual(createEditPlan({ prompt: "Make it warmer." }).operations, [{ type: "visual_adjustment", temperature: 0.2 }]);
   assert.deepEqual(createEditPlan({ prompt: "Apply the warm filter." }).operations, [{ type: "color_grade", style: "warm" }]);
@@ -883,14 +911,16 @@ test("single-step Undo state migrates legacy sessions and retains only current a
   const sessionB = { id: "job-b", accessToken: "token-b" };
   const sessionC = { id: "job-c", accessToken: "token-c" };
   const sessionD = { id: "job-d", accessToken: "token-d" };
-  let state = promoteSuccessfulJob(setUndoActiveJob(emptyUndoState(), sessionA), sessionA, sources);
+  let state = promoteSuccessfulJob(setUndoActiveJob(emptyUndoState(), sessionA, "Make it brighter."), sessionA, sources);
   assert.deepEqual(state.current.session, sessionA);
+  assert.equal(state.current.prompt, "Make it brighter.");
   assert.deepEqual(state.previous, { kind: "original", sources: [{ index: 0, name: "first.mp4", type: "video/mp4", size: 10 }, { index: 1, name: "second.mp4", type: "video/mp4", size: 20 }] });
 
-  state = promoteSuccessfulJob(setUndoActiveJob(state, sessionB), sessionB, sources);
+  state = promoteSuccessfulJob(setUndoActiveJob(state, sessionB, "Make it warmer."), sessionB, sources);
   assert.deepEqual(state.current.session, sessionB);
   assert.deepEqual(state.previous.session, sessionA);
-  state = promoteSuccessfulJob(setUndoActiveJob(state, sessionC), sessionC, sources);
+  assert.equal(state.previous.prompt, "Make it brighter.");
+  state = promoteSuccessfulJob(setUndoActiveJob(state, sessionC, "Make it black and white."), sessionC, sources);
   assert.deepEqual(state.current.session, sessionC);
   assert.deepEqual(state.previous.session, sessionB);
   assert.equal(Object.hasOwn(state, "history"), false);
@@ -934,10 +964,21 @@ test("single-step Undo only invalidates a previous job after a confirmed unavail
 });
 
 test("single-step Undo remains visible for a restored Original workspace without showing result actions", () => {
-  assert.equal(shouldShowUndoControl({ status: "done", resultUrl: "https://signed.example/output.mp4", current: null }), true, "completed results always show Undo");
-  assert.equal(shouldShowUndoControl({ status: "idle", resultUrl: null, current: { kind: "original" } }), true, "restored Original keeps its disabled Undo visible");
-  assert.equal(shouldShowUndoControl({ status: "idle", resultUrl: null, current: null }), false, "the fresh empty editor does not gain an Undo control");
-  assert.equal(shouldShowUndoControl({ status: "rendering", resultUrl: null, current: { kind: "original" } }), false, "processing does not expose Undo even when its prior state is Original");
+  assert.equal(shouldShowUndoControl({ current: { kind: "job" } }), true, "completed workspaces keep one stable Undo location");
+  assert.equal(shouldShowUndoControl({ current: { kind: "original" } }), true, "restored Original keeps its disabled Undo visible");
+  assert.equal(shouldShowUndoControl({ current: null }), false, "the fresh empty editor does not gain an Undo control");
+  assert.equal(undoPreviewMode({ isRestoring: true, current: { kind: "job" }, localVideoCount: 1 }), "restoring", "authorized restoration masks the current result immediately");
+  assert.equal(undoPreviewMode({ isRestoring: false, current: { kind: "original" }, localVideoCount: 1 }), "original-source", "one restored local source previews directly");
+  assert.equal(undoPreviewMode({ isRestoring: false, current: { kind: "original" }, localVideoCount: 2 }), "normal", "multiple originals do not fabricate a merged preview");
+});
+
+test("single-step Undo records concise prompt context without altering restoration state", () => {
+  const original = { kind: "original", sources: [{ index: 0, name: "source.mp4", type: "video/mp4", size: 10 }] };
+  const current = { kind: "job", prompt: "Make it 20% brighter.", sources: [] };
+  const previous = { kind: "job", prompt: "Make it warmer", sources: [] };
+  assert.equal(describeUndoRestoration({ current, previous: original }), "Restored your original upload. Undid: “Make it 20% brighter.”");
+  assert.equal(describeUndoRestoration({ current, previous }), "Restored previous edit: “Make it warmer.” Undid: “Make it 20% brighter.”");
+  assert.equal(describeUndoRestoration({ current, previous: null }), "Restored your previous edit. Undid: “Make it 20% brighter.”");
 });
 
 test("restored source metadata preserves order without storage keys", () => {

@@ -751,12 +751,6 @@ body {
   margin-top: 14px;
 }
 
-.cliponaut-undo-workspace-action {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 14px;
-}
-
 .cliponaut-speed-control {
   display: inline-flex;
   align-items: center;
@@ -789,6 +783,12 @@ body {
   font-weight: 600;
   text-decoration: none;
   transition: background-color 250ms ease, border-color 250ms ease, transform 250ms ease;
+}
+
+.cliponaut-undo-button.is-icon-only {
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
 }
 
 .cliponaut-download-button {
@@ -935,6 +935,12 @@ body {
 .cliponaut-workspace-prompt-area {
   width: min(100%, 860px);
   margin: 20px auto 0;
+}
+
+.cliponaut-prompt-undo-control {
+  display: flex;
+  justify-content: flex-start;
+  margin: 8px 0 0 4px;
 }
 
 .cliponaut-mobile-composer-dock {
@@ -1144,6 +1150,10 @@ body {
 
   .cliponaut-mobile-composer-dock .cliponaut-composer.is-compact {
     margin: 0;
+  }
+
+  .cliponaut-mobile-composer-dock .cliponaut-prompt-undo-control {
+    margin-top: 6px;
   }
 }
 

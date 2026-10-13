@@ -5,12 +5,14 @@ import { AppHeader } from "@/components/cliponaut/AppHeader";
 import { EmptyEditorState } from "@/components/cliponaut/EmptyEditorState";
 import { PromptComposer } from "@/components/cliponaut/PromptComposer";
 import { PromptSuggestions } from "@/components/cliponaut/PromptSuggestions";
+import { UndoControl } from "@/components/cliponaut/UndoControl";
 import { Workspace } from "@/components/cliponaut/Workspace";
 import { JobRecoveryModal } from "@/components/cliponaut/JobRecoveryModal";
 import {
   cancelJob,
   clearUndoState,
   consumeUndo,
+  describeUndoRestoration,
   discardUndoActiveJob,
   emptyUndoState,
   getJobStatus,
@@ -22,6 +24,7 @@ import {
   saveUndoState,
   setUndoActiveJob,
   shouldShowUndoControl,
+  undoPreviewMode,
   uploadAndQueueJob,
 } from "@/lib/client/direct-upload";
 
@@ -64,6 +67,7 @@ export default function HomePage() {
   const [isResolvingRecovery, setIsResolvingRecovery] = useState(false);
   const [recoveryError, setRecoveryError] = useState(null);
   const [isUndoing, setIsUndoing] = useState(false);
+  const [isRestoringPrevious, setIsRestoringPrevious] = useState(false);
 
   const videoInputRef = useRef(null);
   const imageInputRef = useRef(null);
@@ -74,7 +78,8 @@ export default function HomePage() {
   const hasWorkspace = Boolean(videos.length || images.length || activeJob || undoState?.current);
   const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
   const isProcessing = isActiveJobStatus(status);
-  const showUndoControl = shouldShowUndoControl({ status, resultUrl, current: undoState?.current });
+  const showUndoControl = shouldShowUndoControl({ current: undoState?.current });
+  const previewMode = undoPreviewMode({ isRestoring: isRestoringPrevious, current: undoState?.current, localVideoCount: videos.length });
 
   const persistUndoState = useCallback((nextState) => {
     const saved = saveUndoState(nextState);
@@ -276,7 +281,7 @@ export default function HomePage() {
         videos, prompt: submittedPrompt, exportQuality, signal: controller.signal,
         onProgress: setUploadProgress,
         onSession: (session) => {
-          persistUndoState(setUndoActiveJob(undoStateRef.current || emptyUndoState(), session));
+          persistUndoState(setUndoActiveJob(undoStateRef.current || emptyUndoState(), session, submittedPrompt));
           setActiveJob(session);
           history.replaceState(null, "", `/?job=${session.id}`);
         }
@@ -378,28 +383,33 @@ export default function HomePage() {
     const previous = undoStateRef.current?.previous;
     if (!previous || isUndoing) return;
     setIsUndoing(true);
+    if (previous.kind === "original") {
+      const current = undoStateRef.current?.current;
+      const next = persistUndoState(consumeUndo(undoStateRef.current));
+      showOriginal(next.current.sources);
+      setMessages((messages) => [...messages, { role: "assistant", text: describeUndoRestoration({ current, previous }) }]);
+      setIsUndoing(false);
+      return;
+    }
+    setIsRestoringPrevious(true);
     try {
-      if (previous.kind === "original") {
-        const next = persistUndoState(consumeUndo(undoStateRef.current));
-        showOriginal(next.current.sources);
-        setMessages((current) => [...current, { role: "assistant", text: videos.length ? "Restored your original uploads." : "Restored your original upload list. Re-upload the files to edit them again." }]);
-        return;
-      }
+      const current = undoStateRef.current?.current;
       const job = await getJobStatus(previous.session);
       const resolution = resolveUndoRestoration(undoStateRef.current, job);
       if (resolution.outcome === "restored") {
         const next = persistUndoState(resolution.state);
         showCompletedJob(next.current.session, job);
-        setMessages((current) => [...current, { role: "assistant", text: "Restored your previous edit." }]);
+        setMessages((messages) => [...messages, { role: "assistant", text: describeUndoRestoration({ current, previous }) }]);
       } else if (resolution.outcome === "unavailable") {
         persistUndoState(resolution.state);
-        setMessages((current) => [...current, { role: "assistant", text: "The previous version is no longer available." }]);
+        setMessages((messages) => [...messages, { role: "assistant", text: "The previous version is no longer available." }]);
       } else {
-        setMessages((current) => [...current, { role: "assistant", text: "Couldn’t restore the previous version. Please try again." }]);
+        setMessages((messages) => [...messages, { role: "assistant", text: "Couldn’t restore the previous version. Please try again." }]);
       }
     } catch {
-      setMessages((current) => [...current, { role: "assistant", text: "Couldn’t restore the previous version. Please try again." }]);
+      setMessages((messages) => [...messages, { role: "assistant", text: "Couldn’t restore the previous version. Please try again." }]);
     } finally {
+      setIsRestoringPrevious(false);
       setIsUndoing(false);
     }
   };
@@ -446,11 +456,9 @@ export default function HomePage() {
               setImages((currentImages) => currentImages.filter((_, imageIndex) => imageIndex !== index))
             }
             onEditAgain={handleEditAgain}
-            canUndo={Boolean(undoState?.previous)}
-            onUndo={handleUndo}
-            isUndoing={isUndoing}
             isOriginalState={undoState?.current?.kind === "original"}
-            showUndoControl={showUndoControl}
+            previewMode={previewMode}
+            originalVideo={previewMode === "original-source" ? videos[0] : null}
             onBack={handleBackToEmptyState}
           />
           <div className="cliponaut-workspace-prompt-area">
@@ -465,6 +473,11 @@ export default function HomePage() {
                 canGenerate={Boolean(videos.length && prompt.trim())}
                 compact
               />
+              {showUndoControl && (
+                <div className="cliponaut-prompt-undo-control">
+                  <UndoControl canUndo={Boolean(undoState?.previous)} isDisabled={isProcessing || isUndoing} isUndoing={isUndoing} onUndo={handleUndo} />
+                </div>
+              )}
             </div>
           </div>
         </section>

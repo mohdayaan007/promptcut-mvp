@@ -1,7 +1,7 @@
 /* eslint-disable @next/next/no-img-element -- Blob URLs are local previews and cannot use Next image optimization. */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AttachmentControls } from "@/components/cliponaut/AttachmentControls";
-import { ArrowLeftIcon, DownloadIcon, ImageIcon, PlusIcon, UndoIcon, VideoIcon } from "@/components/cliponaut/icons";
+import { ArrowLeftIcon, DownloadIcon, ImageIcon, PlusIcon, VideoIcon } from "@/components/cliponaut/icons";
 
 export function Workspace({
   videos,
@@ -20,11 +20,9 @@ export function Workspace({
   onRemoveVideo,
   onRemoveImage,
   onEditAgain,
-  canUndo,
-  onUndo,
-  isUndoing,
   isOriginalState,
-  showUndoControl,
+  previewMode,
+  originalVideo,
   onBack,
 }) {
   return (
@@ -85,11 +83,8 @@ export function Workspace({
         canExport4k={canExport4k}
         onExportQualityChange={onExportQualityChange}
         onEditAgain={onEditAgain}
-        canUndo={canUndo}
-        onUndo={onUndo}
-        isUndoing={isUndoing}
-        isOriginalState={isOriginalState}
-        showUndoControl={showUndoControl}
+        previewMode={previewMode}
+        originalVideo={originalVideo}
       />
     </div>
     <ConversationFeedback messages={messages} status={status} />
@@ -143,18 +138,12 @@ function RestoredMediaCard({ source }) {
   );
 }
 
-function UndoControl({ canUndo, onUndo, isUndoing }) {
-  return (
-    <span className="cliponaut-undo-tooltip" tabIndex="0" data-tooltip="Undo restores your previous successful edit. After you use it, Undo resets until your next edit.">
-      <button className="cliponaut-undo-button" type="button" onClick={onUndo} disabled={!canUndo || isUndoing}>
-        <UndoIcon />
-        {isUndoing ? "Undoing…" : "Undo"}
-      </button>
-    </span>
-  );
+function SourcePreview({ file }) {
+  const sourceUrl = useObjectUrl(file);
+  return <video src={sourceUrl} controls playsInline className="cliponaut-result-video" aria-label="Original source preview" />;
 }
 
-function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain, canUndo, onUndo, isUndoing, showUndoControl }) {
+function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain, previewMode, originalVideo }) {
   const videoRef = useRef(null);
   const [playbackRate, setPlaybackRate] = useState("1");
 
@@ -174,7 +163,7 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
           <p className="cliponaut-panel-kicker">Output</p>
           <h2 id="preview-heading">Preview</h2>
         </div>
-        {status === "done" && <span className="cliponaut-status-badge">Ready</span>}
+        {status === "done" && previewMode === "normal" && <span className="cliponaut-status-badge">Ready</span>}
       </div>
 
       <fieldset className="cliponaut-export-quality">
@@ -194,15 +183,17 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
       </fieldset>
 
       <div className={`cliponaut-preview-stage is-${status}`}>
-        {status === "idle" && <PreviewEmptyState />}
-        {["uploading", "queued", "analyzing", "rendering"].includes(status) && <PreviewProcessingState status={status} uploadProgress={uploadProgress} />}
-        {status === "error" && <PreviewErrorState error={error} />}
-        {status === "done" && resultUrl && (
+        {previewMode === "restoring" && <PreviewRestoringState />}
+        {previewMode === "original-source" && originalVideo && <SourcePreview file={originalVideo} />}
+        {previewMode === "normal" && status === "idle" && <PreviewEmptyState />}
+        {previewMode === "normal" && ["uploading", "queued", "analyzing", "rendering"].includes(status) && <PreviewProcessingState status={status} uploadProgress={uploadProgress} />}
+        {previewMode === "normal" && status === "error" && <PreviewErrorState error={error} />}
+        {previewMode === "normal" && status === "done" && resultUrl && (
           <video ref={videoRef} src={resultUrl} controls playsInline className="cliponaut-result-video" />
         )}
       </div>
 
-      {status === "done" && resultUrl && (
+      {previewMode === "normal" && status === "done" && resultUrl && (
         <div className="cliponaut-preview-actions">
           <label className="cliponaut-speed-control">
             <span>Speed</span>
@@ -217,15 +208,9 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
             <DownloadIcon />
             Download MP4
           </a>
-          <UndoControl canUndo={canUndo} onUndo={onUndo} isUndoing={isUndoing} />
           <button className="cliponaut-edit-again" type="button" onClick={onEditAgain}>
             Edit again
           </button>
-        </div>
-      )}
-      {showUndoControl && !(status === "done" && resultUrl) && (
-        <div className="cliponaut-undo-workspace-action">
-          <UndoControl canUndo={canUndo} onUndo={onUndo} isUndoing={isUndoing} />
         </div>
       )}
     </section>
@@ -270,6 +255,15 @@ function PreviewProcessingState({ status, uploadProgress }) {
     <div className="cliponaut-preview-placeholder">
       <span className="cliponaut-processing-orbit" aria-hidden="true" />
       <p>{processingLabel(status)}{status === "uploading" && percent !== null ? ` ${percent}%` : ""}</p>
+    </div>
+  );
+}
+
+function PreviewRestoringState() {
+  return (
+    <div className="cliponaut-preview-placeholder">
+      <span className="cliponaut-processing-orbit" aria-hidden="true" />
+      <p>Restoring previous edit…</p>
     </div>
   );
 }

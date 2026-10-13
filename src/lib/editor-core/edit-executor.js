@@ -130,20 +130,38 @@ async function applyColorGrade(input, output, style, executionController) {
   ], { executionController });
 }
 
+// The server preserves the normalized -1..1 contract but curves low and medium
+// magnitudes so everyday requests are perceptible without raising any maximum.
+// 0 and +/-1 remain exact anchors; the curve is monotonic between them.
+export function perceptualAdjustmentMagnitude(value) {
+  if (!Number.isFinite(value) || value === 0) return 0;
+  const magnitude = Math.min(1, Math.abs(value));
+  return Math.sign(value) * (0.35 * magnitude + 0.65 * Math.sqrt(magnitude));
+}
+
+function boundedColorBalance(value) {
+  return Math.max(-0.32, Math.min(0.32, value));
+}
+
 // Converts bounded server-facing controls to perceptible, still bounded FFmpeg
 // filters. No duration-changing filters are used here, and normalized values
 // never reach FFmpeg directly as user-controlled filter syntax.
 export function buildVisualAdjustmentFilters(operation) {
   const filters = [];
   const eq = [];
-  if (operation.brightness !== undefined) eq.push(`brightness=${(operation.brightness * 0.45).toFixed(4)}`);
-  if (operation.contrast !== undefined) eq.push(`contrast=${(1 + operation.contrast * 0.9).toFixed(4)}`);
-  if (operation.saturation !== undefined) eq.push(`saturation=${(1 + operation.saturation * 0.9).toFixed(4)}`);
+  if (operation.brightness !== undefined) eq.push(`brightness=${(perceptualAdjustmentMagnitude(operation.brightness) * 0.45).toFixed(4)}`);
+  if (operation.contrast !== undefined) eq.push(`contrast=${(1 + perceptualAdjustmentMagnitude(operation.contrast) * 0.9).toFixed(4)}`);
+  if (operation.saturation !== undefined) eq.push(`saturation=${(1 + perceptualAdjustmentMagnitude(operation.saturation) * 0.9).toFixed(4)}`);
   if (eq.length) filters.push(`eq=${eq.join(":")}`);
   if (operation.temperature !== undefined || operation.tint !== undefined) {
-    const temperature = operation.temperature || 0;
-    const tint = operation.tint || 0;
-    filters.push(`colorbalance=rs=${(temperature * 0.32).toFixed(4)}:bs=${(-temperature * 0.32).toFixed(4)}:gm=${(-tint * 0.32).toFixed(4)}`);
+    const temperature = perceptualAdjustmentMagnitude(operation.temperature || 0) * 0.32;
+    const tint = perceptualAdjustmentMagnitude(operation.tint || 0) * 0.32;
+    // Apply warm/cool and magenta/green consistently across shadows, midtones,
+    // and highlights; preserve lightness to avoid accidental exposure shifts.
+    const redMagenta = boundedColorBalance(temperature + tint);
+    const green = boundedColorBalance(-tint);
+    const blue = boundedColorBalance(-temperature);
+    filters.push(`colorbalance=rs=${redMagenta.toFixed(4)}:gs=${green.toFixed(4)}:bs=${blue.toFixed(4)}:rm=${redMagenta.toFixed(4)}:gm=${green.toFixed(4)}:bm=${blue.toFixed(4)}:rh=${redMagenta.toFixed(4)}:gh=${green.toFixed(4)}:bh=${blue.toFixed(4)}:pl=1`);
   }
   return filters;
 }
