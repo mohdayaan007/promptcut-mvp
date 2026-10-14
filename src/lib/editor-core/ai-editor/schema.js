@@ -324,4 +324,24 @@ export function createStyleIntentJsonSchema() {
   };
 }
 
+/** Content-aware delegated taste decision; separate from every edit-plan schema. */
+export function createDelegatedStyleDecisionJsonSchema() {
+  return {
+    type: "object",
+    properties: {
+      decision: { type: "string", enum: ["selected_style", "no_safe_choice"] },
+      profileId: { type: "string", enum: ["none", ...STYLE_PROFILE_IDS] },
+      strength: { type: "string", enum: Object.keys(STYLE_PROFILE_STRENGTHS) },
+      constraints: {
+        type: "array",
+        uniqueItems: true,
+        maxItems: STYLE_PROFILE_CONSTRAINTS.length,
+        items: { type: "string", enum: STYLE_PROFILE_CONSTRAINTS }
+      }
+    },
+    required: ["decision", "profileId", "strength", "constraints"],
+    additionalProperties: false
+  };
+}
+
 export const EDIT_PLAN_JSON_SCHEMA = createEditPlanJsonSchema();

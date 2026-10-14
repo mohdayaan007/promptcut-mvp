@@ -15,9 +15,9 @@ import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
-import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
-import { buildAiEditorPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
+import { createDelegatedStyleDecisionJsonSchema, createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
+import { buildDelegatedStyleContents, createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
+import { buildAiEditorPrompt, buildDelegatedStyleDecisionPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { buildStyleProfileFilters, buildVisualAdjustmentFilters, createExecutionController, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
 import { CAPABILITY_REGISTRY } from "@/lib/editor-core/capability-registry";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
@@ -29,7 +29,7 @@ import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaption
 import { extractAudioControlIntent, reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { extractVisualAdjustmentIntent, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
 import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL_VISUAL_RECIPE, STYLE_PROFILE_CATALOG, STYLE_PROFILE_CONSTRAINTS, STYLE_PROFILE_IDS, STYLE_PROFILE_STRENGTHS, compileStyleProfile, createCanonicalVisualRecipe, interpolateCanonicalVisualRecipe, resolveCurrentStyleProfile, resolveStyleProfile } from "@/lib/editor-core/style-profiles";
-import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
+import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
 
 test("B1 style profiles compile server-owned bounded canonical recipes", () => {
   assert.deepEqual(STYLE_PROFILE_IDS, ["clean_commercial", "warm_travel", "cinematic", "soft_nostalgic", "vibrant_social", "dark_moody", "natural_documentary"]);
@@ -479,10 +479,171 @@ test("B1 text-only fuzzy style interpretation is server-validated, scoped, and m
   }));
   assert.deepEqual(semantic.plan.operations.at(-1), { type: "style_profile", profileId: "clean_commercial", sourceId: "source-2" });
 
-  for (const prompt of ["Make this look good.", "Make this better.", "Do whatever looks best."]) {
-    const client = createMockGemini({ responseText: JSON.stringify({ mode: "delegated_taste", profileId: "none", strength: "standard", styleText: "", constraints: [], coverage: "style_only" }) });
-    await withGeminiKey(() => assert.rejects(() => createAiEditPlan({ prompt, sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: client }), UnsupportedEditRequestError));
-    assert.equal(client.uploads.length, 0, prompt);
+});
+
+test("B1 delegated content-aware taste reuses active media and preserves server authority", async () => {
+  const catalog = sourceCatalog.slice(0, 2);
+  const delegatedSchema = createDelegatedStyleDecisionJsonSchema();
+  assert.deepEqual(delegatedSchema.properties.profileId.enum, ["none", ...STYLE_PROFILE_IDS]);
+  assert.match(buildDelegatedStyleDecisionPrompt(), /tasteful/i);
+  assert.doesNotMatch(buildDelegatedStyleDecisionPrompt(), /SOURCE source-|fileData|Authoritative source catalog/i);
+  assert.equal(buildDelegatedStyleContents([{ source: catalog[0], file: { uri: "gemini://one", mimeType: "video/mp4" } }], "prompt").some((part) => typeof part === "string" && /SOURCE /.test(part)), false);
+
+  const delegatedText = (styleText, coverage = "style_only") => JSON.stringify({
+    mode: "delegated_taste", profileId: "none", strength: "standard", styleText, constraints: [], coverage
+  });
+  const decision = (profileId, strength = "standard", constraints = []) => JSON.stringify({
+    decision: "selected_style", profileId, strength, constraints
+  });
+  assert.deepEqual(normalizeTextStyleIntent(JSON.parse(delegatedText("Make this look good")), "Make this look good."), {
+    mode: "delegated_taste", coverage: "style_only", styleText: "Make this look good"
+  });
+  assert.equal(isServerSafeTextStyleOnlyRequest("Make this look good.", normalizeTextStyleIntent(JSON.parse(delegatedText("Make this look good")), "Make this look good."), { sourceCatalog: [catalog[0]] }), true);
+  assert.equal(isServerSafeTextStyleOnlyRequest("Make this look good and add a title.", normalizeTextStyleIntent(JSON.parse(delegatedText("Make this look good")), "Make this look good and add a title."), { sourceCatalog: [catalog[0]] }), false);
+  assert.equal(requiresDelegatedStyleJudgment("Choose whatever style suits this footage."), true);
+  assert.equal(requiresDelegatedStyleJudgment("Make video 2 look good."), true);
+  assert.deepEqual(normalizeDelegatedStyleDecision(JSON.parse(decision("cinematic", "subtle", ["skin_tone_conservative"]))), {
+    decision: "selected_style", profileId: "cinematic", strength: "subtle", constraints: ["skin_tone_conservative"]
+  });
+  for (const invalid of [
+    { decision: "no_safe_choice", profileId: "cinematic", strength: "standard", constraints: [] },
+    { decision: "no_safe_choice", profileId: "none", strength: "strong", constraints: [] },
+    { decision: "selected_style", profileId: "unknown", strength: "standard", constraints: [] },
+    { decision: "selected_style", profileId: "cinematic", strength: "standard", constraints: ["avoid_darkening", "avoid_darkening"] },
+    { decision: "selected_style", profileId: "cinematic", strength: "standard", constraints: [], sourceId: "source-2" },
+    { decision: "selected_style", profileId: "cinematic", strength: "standard", constraints: [], profileVersion: "1" },
+    { decision: "selected_style", profileId: "cinematic", strength: "standard", constraints: [], recipe: { brightness: 1 } },
+    { decision: "selected_style", profileId: "cinematic", strength: "standard", constraints: [], filters: ["eq=contrast=2"] },
+    { decision: "selected_style", profileId: "cinematic", strength: "standard", constraints: [], lutPath: "private.cube" }
+  ]) assert.throws(() => normalizeDelegatedStyleDecision(invalid), /delegated style|no_safe_choice|selected_style/);
+
+  const globalClient = createMockGemini({ responses: [
+    delegatedText("Make this look good"), decision("clean_commercial")
+  ] });
+  const global = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Make this look good.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: globalClient
+  }));
+  assert.deepEqual(global.plan.operations, [{ type: "style_profile", profileId: "clean_commercial" }]);
+  assert.equal(globalClient.uploads.length, 1);
+  assert.equal(globalClient.deletes.length, 1);
+  assert.equal(globalClient.requests.length, 2, "text interpretation plus one visual taste decision only");
+  assert.equal(globalClient.requests[1].contents.filter((part) => part?.fileData).length, 1);
+  assert.equal(globalClient.requests[1].contents.some((part) => typeof part === "string" && /SOURCE /.test(part)), false);
+
+  const warmClient = createMockGemini({ responses: [
+    delegatedText("Choose whatever style suits this footage"), decision("warm_travel", "standard", ["avoid_oversaturation"])
+  ] });
+  const warm = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Choose whatever style suits this footage.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: warmClient
+  }));
+  assert.deepEqual(warm.plan.operations, [{ type: "style_profile", profileId: "warm_travel", constraints: ["avoid_oversaturation"] }]);
+
+  const explicitClient = createMockGemini({ responses: [
+    delegatedText("look good"), decision("cinematic", "subtle", ["skin_tone_conservative"])
+  ] });
+  const explicit = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Make video 2 look good.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: explicitClient
+  }));
+  assert.deepEqual(explicit.plan.operations, [
+    { type: "sequence", clips: catalog.map(({ sourceId, duration }) => ({ sourceId, start: 0, end: duration })) },
+    { type: "style_profile", profileId: "cinematic", strength: "subtle", constraints: ["skin_tone_conservative"], sourceId: "source-2" }
+  ]);
+  assert.equal(explicitClient.requests[1].contents.filter((part) => part?.fileData).length, 1, "only the explicit source reaches visual taste selection");
+  assert.equal(explicitClient.requests[1].contents.find((part) => part?.fileData)?.fileData.fileUri, explicitClient.uploads[1].uri);
+  const invalidExplicitClient = createMockGemini();
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+    prompt: "Make video 9 look good.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: invalidExplicitClient
+  }), UnsupportedEditRequestError));
+  assert.equal(invalidExplicitClient.uploads.length, 0, "an invalid explicit source cannot become an unrelated global taste decision");
+
+  const semanticClient = createMockGemini({ responses: [
+    delegatedText("look good"),
+    classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: false }]),
+    classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: true }]),
+    decision("natural_documentary"),
+    JSON.stringify(fullSequence(catalog))
+  ] });
+  const semantic = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Make the temple video look good.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: semanticClient
+  }));
+  assert.deepEqual(semantic.plan.operations.at(-1), { type: "style_profile", profileId: "natural_documentary", sourceId: "source-2" });
+  assert.equal(semanticClient.requests[3].contents.filter((part) => part?.fileData).length, 1);
+  assert.equal(semanticClient.requests[3].contents.find((part) => part?.fileData)?.fileData.fileUri, semanticClient.uploads[1].uri);
+
+  const multiClient = createMockGemini({ responses: [
+    delegatedText("Make these videos look good"), decision("vibrant_social", "standard", ["avoid_oversaturation"])
+  ] });
+  const multi = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Make these videos look good.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: multiClient
+  }));
+  assert.equal(multiClient.requests[1].contents.filter((part) => part?.fileData).length, 2);
+  assert.deepEqual(multi.plan.operations.filter((operation) => operation.type === "style_profile"), [{ type: "style_profile", profileId: "vibrant_social", constraints: ["avoid_oversaturation"] }]);
+
+  const title = { type: "title", text: "Kerala", start: 1, end: 3, position: "bottom-center", size: "medium", color: "white", weight: "regular", font: "inter" };
+  const mixedClient = createMockGemini({ responses: [
+    delegatedText("Make this look good", "style_plus_other_edits"), decision("clean_commercial"),
+    JSON.stringify({ version: "1", operations: [title] })
+  ] });
+  const mixed = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Make this look good and add the title 'Kerala'.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: mixedClient
+  }));
+  assert.deepEqual(mixed.plan.operations, [title, { type: "style_profile", profileId: "clean_commercial" }]);
+  assert.equal(mixedClient.requests.length, 3);
+  const emptyMixedClient = createMockGemini({ responses: [
+    delegatedText("Make this look good", "style_plus_other_edits"), decision("clean_commercial"),
+    JSON.stringify({ version: "1", operations: [] })
+  ] });
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+    prompt: "Make this look good and remove the background.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: emptyMixedClient
+  }), UnsupportedEditRequestError));
+
+  const momentClient = createMockGemini({ responses: [
+    delegatedText("make it look good", "style_plus_other_edits"),
+    momentLocalizationResponse("source-1", [{ start: 1, end: 3 }]),
+    decision("cinematic"),
+    JSON.stringify({ version: "1", operations: [] })
+  ] });
+  const moment = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Use the part where the person enters and make it look good.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: momentClient
+  }));
+  assert.deepEqual(moment.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 3 }] },
+    { type: "style_profile", profileId: "cinematic" }
+  ]);
+  assert.equal(momentClient.uploads.length, 1);
+
+  for (const response of [
+    JSON.stringify({ decision: "no_safe_choice", profileId: "none", strength: "standard", constraints: [] }),
+    JSON.stringify({ decision: "selected_style", profileId: "unknown", strength: "standard", constraints: [] }),
+    "{malformed"
+  ]) {
+    const client = createMockGemini({ responses: [delegatedText("Make this look good"), response] });
+    await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+      prompt: "Make this look good.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: client
+    }), UnsupportedEditRequestError));
+    assert.equal(client.deletes.length, 1);
+  }
+  const retryError = Object.assign(new Error("high demand"), { status: 503 });
+  const exhaustedDecisionClient = createMockGemini({
+    failures: [null, retryError, retryError, retryError],
+    responses: [delegatedText("Make this look good")]
+  });
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+    prompt: "Make this look good.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: exhaustedDecisionClient,
+    retryOptions: { sleepFn: async () => {}, random: () => 0 }
+  }), UnsupportedEditRequestError));
+  assert.equal(exhaustedDecisionClient.requests.length, 4, "the delegated visual decision uses bounded existing planning retries");
+  assert.equal(exhaustedDecisionClient.uploads.length, 1);
+  assert.equal(exhaustedDecisionClient.deletes.length, 1);
+
+  const savedKey = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
+  try {
+    await assert.rejects(() => createAiEditPlan({ prompt: "Make this look good.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: createMockGemini() }), UnsupportedEditRequestError);
+    await assert.rejects(() => createAiEditPlan({ prompt: "Choose whatever style suits this footage.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: createMockGemini() }), UnsupportedEditRequestError);
+  } finally {
+    if (savedKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = savedKey;
   }
 });
 

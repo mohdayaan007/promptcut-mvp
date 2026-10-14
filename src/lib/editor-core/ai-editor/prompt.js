@@ -48,10 +48,26 @@ export function buildStyleIntentPrompt({ prompt }) {
     "You classify the user's text-only visual styling intent. You do not create an edit plan, inspect media, choose sources, or return rendering controls.",
     "Choose exactly one dominant internal family only when the wording gives a clear requested aesthetic: clean_commercial (clean, polished, refined, premium, professional, restrained); warm_travel (inviting, warm lifestyle/travel, vacation or holiday warmth, welcoming); cinematic (dramatic, filmic, serious, movie-like); soft_nostalgic (soft, faded, dreamy, memory-like, nostalgic or vintage); vibrant_social (lively, energetic, colourful, punchy, upbeat social); dark_moody (dark, moody, brooding, atmospheric); natural_documentary (realistic, understated, natural, documentary-like, minimally stylized).",
     "For semantic_style, select one profileId from that catalog, a bounded strength, applicable catalog constraints, whether the request includes another edit, and styleText: the exact verbatim substring of the user's request that expresses only the aesthetic request. Never stack profiles. Do not include source references or another edit in styleText.",
-    "For delegated_taste, use profileId 'none', strength 'standard', no constraints, and styleText '' when the user asks you to decide based on footage, such as 'make this look good', 'make this better', 'do whatever looks best', 'choose whatever style suits this footage', 'make it look as good as possible', or 'fix the look'.",
+    "For delegated_taste, use profileId 'none', strength 'standard', no constraints, and styleText as the exact verbatim substring requesting content-aware aesthetic judgment when the user asks you to decide based on footage, such as 'make this look good', 'make this better', 'do whatever looks best', 'choose whatever style suits this footage', 'make it look as good as possible', or 'fix the look'. Do not include another edit or source reference in styleText.",
     "For not_style, use profileId 'none', strength 'standard', no constraints, and styleText '' when the request is not visual styling. Never return source IDs, profile versions, recipes, numeric adjustments, FFmpeg filters, LUTs, paths, or arbitrary fields.",
     "Return only JSON matching the supplied schema.",
     `User request: ${prompt}`
+  ].join("\n\n");
+}
+
+/**
+ * This prompt receives already-active video parts, but never source IDs or
+ * renderer controls. It selects only among server-owned profile semantics.
+ */
+export function buildDelegatedStyleDecisionPrompt() {
+  return [
+    "You choose one tasteful visual treatment for the supplied video footage. You do not create an edit plan, select sources, or return renderer controls.",
+    "Choose the treatment that would improve the footage into a tasteful, intentional, polished, publishable result. Consider subject matter, environment, lighting, exposure, color character, energy, emotional tone, prominent people/faces, and whether aggressive styling would damage the material.",
+    "Available families: clean_commercial for restrained polished product, business, brand, or lifestyle footage; warm_travel for welcoming travel, food, holidays, outdoor lifestyle, or human moments; cinematic for dramatic landscapes, architecture, narrative material, or strong filmic potential; soft_nostalgic for intimate, memory-like, emotional, retro, family, or quiet lifestyle storytelling; vibrant_social for energetic creator, event, upbeat lifestyle, colourful, or high-energy scenes; dark_moody only for genuinely atmospheric, night, interior, or dramatic footage when darkening improves visibility; natural_documentary for realistic documentary, interview, everyday, or authenticity-first material.",
+    "Do not choose dark_moody merely because footage is dark, warm_travel merely because it is outdoors, or clean_commercial as a default for uncertainty. For multiple supplied clips, choose one coherent global treatment rather than a per-clip choice.",
+    "Use constraints conservatively: skin_tone_conservative when prominent people/faces make aggressive color risky; avoid_darkening when footage is already dark or underexposed; avoid_oversaturation when it is already saturated; conservative_color when realistic color should remain restrained. These are global conservative treatments, never selective corrections.",
+    "Choose subtle only when mild polish is appropriate, standard for the normal useful treatment, and strong only when the material genuinely benefits from a pronounced aesthetic. If no safe tasteful choice can be made, return no_safe_choice with profileId 'none', strength 'standard', and no constraints.",
+    "Return only JSON matching the supplied schema. Never return source IDs, profile versions, recipes, numeric adjustments, FFmpeg filters, LUTs, paths, or arbitrary fields."
   ].join("\n\n");
 }
 

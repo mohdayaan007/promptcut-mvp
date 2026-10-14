@@ -13,7 +13,7 @@ const STYLE_FAMILIES = [
 
 const LEGACY_NAMED_LOOK = /\b(?:apply|use)\s+(?:the\s+)?(?:cinematic|warm|cool)\s+(?:filter|look)\b/i;
 const BLACK_AND_WHITE = /\b(?:black\s*(?:and|&)\s*white|grayscale|monochrome)\b/i;
-const DELEGATED_STYLE_JUDGMENT = /\b(?:make\s+(?:this\s+)?look\s+(?:good|nice)|make\s+(?:this\s+)?better|fix\s+the\s+look|do\s+whatever\s+looks\s+best)\b/i;
+const DELEGATED_STYLE_JUDGMENT = /\b(?:make\s+(?:(?:this|it|the\s+(?:first|second|third|fourth|fifth)\s+video|video\s*\d+|source[-\s]?\d+|(?:the\s+)?[a-z][a-z\s-]{1,48}\s+(?:video|clip|footage))\s+)?look\s+(?:good|nice|as\s+good\s+as\s+possible)|make\s+(?:(?:this|it)\s+)?better|fix\s+the\s+look|do\s+whatever\s+looks\s+best|choose\s+whatever\s+style\s+suits\s+(?:this\s+)?footage)\b/i;
 const ORDINALS = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
 const STYLE_STRENGTH_LANGUAGE = {
   subtle: /\b(?:slightly|a\s+little|a\s+bit|subtle|subtly|gentle|gently)\b/i,
@@ -122,7 +122,7 @@ function hasOnlyDeterministicVisualLanguage(prompt = "") {
 }
 
 export function hasInvalidExplicitStyleSource(prompt = "", { sourceCatalog = [], resolvedSemanticSources = [] } = {}) {
-  const sourceId = explicitSourceId(findStyleProfileClause(prompt));
+  const sourceId = explicitSourceId(requiresDelegatedStyleJudgment(prompt) ? prompt : findStyleProfileClause(prompt));
   return Boolean(sourceId && !hasKnownSource(sourceId, sourceCatalog));
 }
 
@@ -188,9 +188,16 @@ export function normalizeTextStyleIntent(response, prompt = "") {
       ...(constraints.length ? { constraints: STYLE_PROFILE_CONSTRAINTS.filter((constraint) => constraints.includes(constraint)) } : {})
     };
   }
-  if (profileId !== "none" || strength !== "standard" || constraints.length || styleText !== "") {
+  if (profileId !== "none" || strength !== "standard" || constraints.length) {
     throw new StyleIntentValidationError(`${mode} must not select a profile`);
   }
+  if (mode === "delegated_taste") {
+    if (!styleText || !String(prompt).includes(styleText) || /\b(?:video\s*\d+|source[-\s]?\d+)\b/i.test(styleText)) {
+      throw new StyleIntentValidationError("delegated taste requires a valid styleText");
+    }
+    return { mode, coverage, styleText };
+  }
+  if (styleText !== "") throw new StyleIntentValidationError("not_style must not select a styleText");
   return { mode, coverage };
 }
 
@@ -200,13 +207,48 @@ export function normalizeTextStyleIntent(response, prompt = "") {
  * a known style qualifier, or a bounded 3C-A adjustment.
  */
 export function isServerSafeTextStyleOnlyRequest(prompt = "", intent, options = {}) {
-  if (intent?.mode !== "semantic_style" || intent.coverage !== "style_only") return false;
+  if (!['semantic_style', 'delegated_taste'].includes(intent?.mode) || intent.coverage !== "style_only") return false;
   const text = String(prompt);
   if (hasInvalidExplicitStyleSource(text, options)) return false;
   const index = text.indexOf(intent.styleText);
   if (index < 0) return false;
   const residual = `${text.slice(0, index)} ${text.slice(index + intent.styleText.length)}`;
   return !consumeKnownStyleResidual(residual);
+}
+
+export class DelegatedStyleDecisionValidationError extends Error {}
+
+/** Validates the small content-aware taste decision before it affects a plan. */
+export function normalizeDelegatedStyleDecision(response) {
+  if (!response || typeof response !== "object" || Array.isArray(response)) {
+    throw new DelegatedStyleDecisionValidationError("delegated style decision must be an object");
+  }
+  const allowed = new Set(["decision", "profileId", "strength", "constraints"]);
+  for (const field of Object.keys(response)) {
+    if (!allowed.has(field)) throw new DelegatedStyleDecisionValidationError(`unsupported delegated style field: ${field}`);
+  }
+  for (const field of allowed) {
+    if (!Object.hasOwn(response, field)) throw new DelegatedStyleDecisionValidationError(`missing delegated style field: ${field}`);
+  }
+  const { decision, profileId, strength, constraints } = response;
+  if (!["selected_style", "no_safe_choice"].includes(decision)) throw new DelegatedStyleDecisionValidationError("unsupported delegated style decision");
+  if (!isStyleProfileStrength(strength)) throw new DelegatedStyleDecisionValidationError("unsupported delegated style strength");
+  if (!Array.isArray(constraints) || new Set(constraints).size !== constraints.length || constraints.some((constraint) => !isStyleProfileConstraint(constraint))) {
+    throw new DelegatedStyleDecisionValidationError("unsupported delegated style constraints");
+  }
+  if (decision === "no_safe_choice") {
+    if (profileId !== "none" || strength !== "standard" || constraints.length) {
+      throw new DelegatedStyleDecisionValidationError("no_safe_choice must not select a profile");
+    }
+    return { decision };
+  }
+  if (!isStyleProfileId(profileId)) throw new DelegatedStyleDecisionValidationError("selected_style requires a known profile");
+  return {
+    decision,
+    profileId,
+    ...(strength === "standard" ? {} : { strength }),
+    ...(constraints.length ? { constraints: STYLE_PROFILE_CONSTRAINTS.filter((constraint) => constraints.includes(constraint)) } : {})
+  };
 }
 
 /** Scope always comes from authoritative prompt parsing/source resolution. */
