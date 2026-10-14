@@ -3,6 +3,7 @@ import { parseTitle } from "@/lib/title-parser";
 import { createCaptionOperation, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { extractVisualAdjustmentIntent, findVisualAdjustmentClause, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
+import { extractStyleProfileIntent, findStyleProfileClause, reconcileStyleProfile } from "@/lib/editor-core/style-intent";
 
 function detectColor(intents = [], prompt = "") {
   if (intents.includes("blackWhite")) return "bw";
@@ -337,7 +338,7 @@ function fullSourceClips(sourceCatalog) {
   return sourceCatalog.map((source) => ({ sourceId: source.sourceId, start: 0, end: source.duration }));
 }
 
-function sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle) {
+function sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle, styleIntent) {
   if (!sourceCatalog.length) return null;
   const timedClips = [];
   const rangePattern = /seconds?\s+(\d+(?:\.\d+)?)\s*(?:to|-)\s*(\d+(?:\.\d+)?)\s+of\s+(?:video\s*|source[-\s]?)(\d+)/gi;
@@ -357,7 +358,10 @@ function sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle) {
   // The adjustment clause can name a source purely for scope. Exclude that
   // clause when deriving sequence order, while retaining genuine prior source
   // selection/reordering references.
-  const selectionPrompt = visualIntent ? prompt.replace(findVisualAdjustmentClause(prompt), "") : prompt;
+  const selectionPrompt = [
+    visualIntent ? findVisualAdjustmentClause(prompt) : "",
+    styleIntent ? findStyleProfileClause(prompt) : ""
+  ].reduce((remaining, clause) => clause ? remaining.replace(clause, "") : remaining, prompt);
   const referencePattern = /\b(?:video\s*|source[-\s]?)(\d+)\b|\b(first|second|third|fourth|fifth)\s+video\b|\bthen\s+(?:the\s+)?(first|second|third|fourth|fifth)\b/gi;
   for (const match of selectionPrompt.matchAll(referencePattern)) {
     const ordinal = Number(match[1]) || ORDINALS[match[2]] || ORDINALS[match[3]];
@@ -373,6 +377,10 @@ function sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle) {
         { type: "color_grade", sourceId: sourceIdForOrdinal(Number(sourceOnlyMatch[1])), style: colorStyle }
       ]
     };
+  }
+
+  if (styleIntent?.sourceId && !references.length) {
+    return { version: "2", operations: [{ type: "sequence", clips: fullSourceClips(sourceCatalog) }] };
   }
 
   // A source mention that only scopes a visual adjustment is not a request to
@@ -401,13 +409,14 @@ function sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle) {
 export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipleVideos = hasSecondVideo, sourceCatalog = [] }) {
   const { intents } = understandPrompt(prompt);
   const operations = [];
-  const colorStyle = detectColor(intents, prompt);
+  const styleIntent = extractStyleProfileIntent(prompt, { sourceCatalog });
+  const colorStyle = styleIntent ? null : detectColor(intents, prompt);
   const trim = parseTrim(prompt, intents);
   const title = parseTitle(prompt);
-  const sourceAwarePlan = sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle);
+  const sourceAwarePlan = sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle, styleIntent);
   if (sourceAwarePlan) {
     if (requestsCaptions(prompt)) sourceAwarePlan.operations.push(createCaptionOperation(prompt));
-    return reconcileAudioControls(reconcileVisualAdjustments(sourceAwarePlan, prompt, { sourceCatalog }), prompt);
+    return reconcileAudioControls(reconcileVisualAdjustments(reconcileStyleProfile(sourceAwarePlan, prompt, { sourceCatalog }), prompt, { sourceCatalog }), prompt);
   }
 
   // Uploaded clips are merged automatically, independent of whether the prompt
@@ -419,5 +428,5 @@ export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipl
   if (trim) operations.push({ type: "trim", ...trim });
   operations.push(...parseFallbackCapabilities(prompt));
 
-  return reconcileAudioControls(reconcileVisualAdjustments({ version: "1", operations }, prompt, { sourceCatalog }), prompt);
+  return reconcileAudioControls(reconcileVisualAdjustments(reconcileStyleProfile({ version: "1", operations }, prompt, { sourceCatalog }), prompt, { sourceCatalog }), prompt);
 }

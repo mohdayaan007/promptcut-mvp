@@ -29,6 +29,7 @@ import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaption
 import { extractAudioControlIntent, reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { extractVisualAdjustmentIntent, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
 import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL_VISUAL_RECIPE, STYLE_PROFILE_CATALOG, STYLE_PROFILE_IDS, STYLE_PROFILE_STRENGTHS, compileStyleProfile, createCanonicalVisualRecipe, interpolateCanonicalVisualRecipe, resolveCurrentStyleProfile, resolveStyleProfile } from "@/lib/editor-core/style-profiles";
+import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
 
 test("B1 style profiles compile server-owned bounded canonical recipes", () => {
   assert.deepEqual(STYLE_PROFILE_IDS, ["clean_commercial", "warm_travel", "cinematic", "soft_nostalgic", "vibrant_social", "dark_moody", "natural_documentary"]);
@@ -185,6 +186,157 @@ test("B1 style_profile remains planner-dormant while validating and rendering th
     .reduce((total, value) => total + Math.abs(value), 0);
   assert.ok(recipeMagnitude("subtle") < recipeMagnitude("standard"));
   assert.ok(recipeMagnitude("standard") < recipeMagnitude("strong"));
+});
+
+test("B1 deterministic style intent preserves legacy and adjustment precedence", async () => {
+  const styleCases = [
+    ["Make this cinematic.", "cinematic"], ["Make this look like a movie.", "cinematic"],
+    ["Make it filmic.", "cinematic"], ["Make it dramatic.", "cinematic"],
+    ["Make this warm and inviting.", "warm_travel"], ["Make this feel like a travel reel.", "warm_travel"],
+    ["Make this premium.", "clean_commercial"], ["Make this look expensive.", "clean_commercial"],
+    ["Make it more professional.", "clean_commercial"], ["Make it look like an ad.", "clean_commercial"],
+    ["Make it look like a luxury brand video.", "clean_commercial"], ["Make it soft.", "soft_nostalgic"],
+    ["Make it nostalgic.", "soft_nostalgic"], ["Make it look old.", "soft_nostalgic"],
+    ["Give it a vintage look.", "soft_nostalgic"], ["Make it faded.", "soft_nostalgic"],
+    ["Make it colourful.", "vibrant_social"], ["Make this good for Instagram.", "vibrant_social"],
+    ["Make it feel social-media ready.", "vibrant_social"], ["Make it less dull.", "vibrant_social"],
+    ["Make it dark and moody.", "dark_moody"], ["Make it moodier.", "dark_moody"],
+    ["Make it natural.", "natural_documentary"], ["Make it documentary-like.", "natural_documentary"]
+  ];
+  for (const [prompt, profileId] of styleCases) {
+    assert.equal(extractStyleProfileIntent(prompt)?.profileId, profileId, prompt);
+    assert.deepEqual(createEditPlan({ prompt }).operations.find((operation) => operation.type === "style_profile"), { type: "style_profile", profileId }, prompt);
+  }
+  assert.equal(extractStyleProfileIntent("Make it warmer."), null);
+  assert.equal(extractStyleProfileIntent("Increase contrast by 20%."), null);
+  assert.equal(extractStyleProfileIntent("Add a slight magenta tint."), null);
+  assert.equal(extractStyleProfileIntent("Apply the cinematic filter."), null);
+  assert.equal(extractStyleProfileIntent("Use the warm filter."), null);
+  assert.equal(extractStyleProfileIntent("Make it black and white."), null);
+  assert.deepEqual(createEditPlan({ prompt: "Apply the cinematic filter." }).operations, [{ type: "color_grade", style: "cinematic" }]);
+  assert.deepEqual(createEditPlan({ prompt: "Make it warmer." }).operations, [{ type: "visual_adjustment", temperature: 0.2 }]);
+  assert.deepEqual(createEditPlan({ prompt: "Make it black and white." }).operations, [{ type: "color_grade", style: "bw" }]);
+  assert.deepEqual(extractStyleProfileIntent("Make it slightly cinematic."), { profileId: "cinematic", strength: "subtle" });
+  assert.deepEqual(extractStyleProfileIntent("Make it cinematic."), { profileId: "cinematic" });
+  assert.deepEqual(extractStyleProfileIntent("Make it very cinematic."), { profileId: "cinematic", strength: "strong" });
+  assert.deepEqual(extractStyleProfileIntent("Make this warm, soft and a little nostalgic."), { profileId: "soft_nostalgic", strength: "subtle" });
+  assert.deepEqual(createEditPlan({ prompt: "Make it cinematic and a little warmer." }).operations, [
+    { type: "style_profile", profileId: "cinematic" }, { type: "visual_adjustment", temperature: 0.12 }
+  ]);
+  assert.deepEqual(extractStyleProfileIntent("Make it premium but not too dark."), { profileId: "clean_commercial", constraints: ["avoid_darkening"] });
+  assert.deepEqual(extractStyleProfileIntent("Make it cinematic, but keep the skin tones natural."), { profileId: "cinematic", constraints: ["skin_tone_conservative"] });
+  assert.deepEqual(extractStyleProfileIntent("Make this colourful but don't oversaturate it."), { profileId: "vibrant_social", constraints: ["avoid_oversaturation"] });
+  assert.equal(extractStyleProfileIntent("Keep the colours natural."), null, "constraints alone do not invent a style");
+  assert.equal(requiresDelegatedStyleJudgment("Make this look good."), true);
+  assert.equal(extractStyleProfileIntent("Make this look good."), null);
+
+  const catalog = sourceCatalog.slice(0, 2);
+  const strengthCases = [
+    ["Make it slightly cinematic.", "subtle"], ["Make it a little cinematic.", "subtle"],
+    ["Make it a bit cinematic.", "subtle"], ["Make it subtly cinematic.", "subtle"],
+    ["Make it gently cinematic.", "subtle"], ["Make it very cinematic.", "strong"],
+    ["Make it strongly cinematic.", "strong"], ["Make it intensely cinematic.", "strong"],
+    ["Make it heavily cinematic.", "strong"]
+  ];
+  for (const [prompt, strength] of strengthCases) {
+    const client = createMockGemini();
+    assert.deepEqual(extractStyleProfileIntent(prompt), { profileId: "cinematic", strength }, prompt);
+    assert.equal(isDeterministicallySafeStyleRequest(prompt, { sourceCatalog: [catalog[0]] }), true, prompt);
+    const result = await withGeminiKey(() => createAiEditPlan({
+      prompt, sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: client
+    }));
+    assert.equal(result.source, "deterministic", prompt);
+    assert.equal(client.uploads.length, 0, prompt);
+    assert.equal(client.requests.length, 0, prompt);
+  }
+  for (const prompt of [
+    "Make it cinematic, but keep the skin tones natural.",
+    "Make it premium but not too dark.",
+    "Make this colourful but don't oversaturate it.",
+    "Keep the colours natural and make it cinematic."
+  ]) {
+    const client = createMockGemini();
+    const result = await withGeminiKey(() => createAiEditPlan({
+      prompt, sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: client
+    }));
+    assert.equal(isDeterministicallySafeStyleRequest(prompt, { sourceCatalog: [catalog[0]] }), true, prompt);
+    assert.equal(result.source, "deterministic", prompt);
+    assert.equal(client.uploads.length, 0, prompt);
+    assert.equal(client.requests.length, 0, prompt);
+  }
+  for (const prompt of [
+    "Make it cinematic and remove the background.",
+    "Make it cinematic and add my logo."
+  ]) {
+    const client = createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "cinematic" }] }) });
+    assert.equal(isDeterministicallySafeStyleRequest(prompt, { sourceCatalog: [catalog[0]] }), false, prompt);
+    const result = await withGeminiKey(() => createAiEditPlan({
+      prompt, sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: client
+    }));
+    assert.equal(result.source, "gemini", prompt);
+    assert.equal(client.uploads.length, 1, prompt);
+    assert.equal(client.requests.length, 1, prompt);
+  }
+
+  const scoped = createEditPlan({ prompt: "Make the second video cinematic.", hasMultipleVideos: true, sourceCatalog: catalog });
+  assert.deepEqual(scoped.operations, [
+    { type: "sequence", clips: catalog.map(({ sourceId, duration }) => ({ sourceId, start: 0, end: duration })) },
+    { type: "style_profile", profileId: "cinematic", sourceId: "source-2" }
+  ]);
+  const reordered = createEditPlan({ prompt: "Use video 2 then video 1 and make video 2 cinematic.", hasMultipleVideos: true, sourceCatalog: catalog });
+  assert.deepEqual(reordered.operations[0].clips.map((clip) => clip.sourceId), ["source-2", "source-1"]);
+  assert.deepEqual(reordered.operations.at(-1), { type: "style_profile", profileId: "cinematic", sourceId: "source-2" });
+  assert.equal(isDeterministicallySafeStyleRequest("Make video 9 cinematic.", { sourceCatalog: catalog }), false);
+  assert.equal(isDeterministicallySafeStyleRequest("The fifth video should look cinematic.", { sourceCatalog: catalog }), false);
+  for (const prompt of ["Make video 9 cinematic.", "The fifth video should look cinematic."]) {
+    const invalid = createEditPlan({ prompt, hasMultipleVideos: true, sourceCatalog: catalog });
+    assert.equal(invalid.operations.at(-1).sourceId, prompt.includes("9") ? "source-9" : "source-5");
+    assert.throws(() => validateEditPlan(invalid, { sourceCatalog: catalog }), /unknown source/);
+  }
+
+  assert.deepEqual(createEditPlan({ prompt: "Make it warm and inviting and slightly brighter." }).operations, [
+    { type: "style_profile", profileId: "warm_travel" }, { type: "visual_adjustment", brightness: 0.12 }
+  ]);
+  assert.deepEqual(createEditPlan({ prompt: "Make it warm and inviting and increase contrast slightly." }).operations, [
+    { type: "style_profile", profileId: "warm_travel" }, { type: "visual_adjustment", contrast: 0.12 }
+  ]);
+  assert.deepEqual(createEditPlan({ prompt: "Make it cinematic and slightly warmer." }).operations, [
+    { type: "style_profile", profileId: "cinematic" }, { type: "visual_adjustment", temperature: 0.12 }
+  ]);
+  assert.deepEqual(createEditPlan({ prompt: "Make it very cinematic and slightly warmer." }).operations, [
+    { type: "style_profile", profileId: "cinematic", strength: "strong" }, { type: "visual_adjustment", temperature: 0.12 }
+  ]);
+  assert.deepEqual(extractStyleProfileIntent("Make it soft and very cinematic."), { profileId: "soft_nostalgic" });
+
+  const deterministicClient = createMockGemini();
+  const deterministic = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Make this cinematic.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: deterministicClient
+  }));
+  assert.equal(deterministic.source, "deterministic");
+  assert.equal(deterministicClient.uploads.length, 0);
+  assert.equal(deterministicClient.requests.length, 0);
+
+  const visualClient = createMockGemini({ responses: [
+    momentLocalizationResponse("source-1", [{ start: 1, end: 3 }]),
+    JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "cinematic" }] })
+  ] });
+  const visual = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Use the part where the person enters and make it cinematic.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: visualClient
+  }));
+  assert.equal(visual.source, "gemini");
+  assert.deepEqual(visual.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 3 }] }, { type: "style_profile", profileId: "cinematic" }
+  ]);
+
+  const semanticClient = createMockGemini({ responses: [
+    classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: false }]),
+    classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: true }]),
+    JSON.stringify({ version: "2", operations: [{ type: "sequence", clips: catalog.map(({ sourceId, duration }) => ({ sourceId, start: 0, end: duration })) }] })
+  ] });
+  const semantic = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Make the temple video cinematic.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: semanticClient
+  }));
+  assert.deepEqual(semantic.plan.operations.at(-1), { type: "style_profile", profileId: "cinematic", sourceId: "source-2" });
 });
 
 const execFileAsync = promisify(execFile);

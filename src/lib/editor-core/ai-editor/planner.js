@@ -8,6 +8,7 @@ import { EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 import { reconcileCaptionOperation } from "@/lib/editor-core/caption-engine";
 import { reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { findVisualAdjustmentClause, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
+import { hasInvalidExplicitStyleSource, isDeterministicallySafeStyleRequest, reconcileStyleProfile } from "@/lib/editor-core/style-intent";
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
 const FILE_PROCESSING_TIMEOUT_MS = 60_000;
@@ -721,6 +722,7 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     plan = reconcileCaptionOperation(plan, prompt);
     plan = reconcileAudioControls(plan, prompt);
     plan = reconcileVisualAdjustments(plan, prompt, { sourceCatalog, resolvedSemanticSources });
+    plan = reconcileStyleProfile(plan, prompt, { sourceCatalog, resolvedSemanticSources });
     plan = reconcileSemanticVisualAdjustmentSequence(plan, prompt, sourceCatalog, resolvedSemanticSources, {
       hasAuthoritativeMomentSequence: localizedMoments.length > 0
     });
@@ -748,6 +750,22 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
     ? sourceInputs
     : inputPath ? [{ inputPath, inputMimeType, source: sourceCatalog[0] }] : [];
   const requiresVisualUnderstanding = requiresVisualSourceUnderstanding(prompt, sourceCatalog) || requiresMomentCompositionUnderstanding(prompt, sourceCatalog) || requiresVisualMomentUnderstanding(prompt, sourceCatalog) || requiresSpokenMomentUnderstanding(prompt, sourceCatalog);
+  const deterministicStyleRequest = isDeterministicallySafeStyleRequest(prompt, { sourceCatalog });
+  // Retain an explicitly named but absent source for the normal validator. Do
+  // not hand it to Gemini, where an invalid deterministic reference could be
+  // reinterpreted as an unrelated global style request.
+  if (hasInvalidExplicitStyleSource(prompt, { sourceCatalog }) && !requiresVisualUnderstanding) {
+    return {
+      plan: createEditPlan({ prompt, hasMultipleVideos, sourceCatalog }),
+      source: "deterministic"
+    };
+  }
+  if (deterministicStyleRequest && !requiresVisualUnderstanding) {
+    return {
+      plan: createEditPlan({ prompt, hasMultipleVideos, sourceCatalog }),
+      source: "deterministic"
+    };
+  }
   if (!process.env.GEMINI_API_KEY || !prompt.trim()) {
     if (requiresVisualUnderstanding) throw new UnsupportedEditRequestError("This edit needs Gemini video understanding");
     return {
