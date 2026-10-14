@@ -1,4 +1,5 @@
-import { STYLE_PROFILE_CONSTRAINTS } from "@/lib/editor-core/style-profiles";
+import { STYLE_PROFILE_CONSTRAINTS, isStyleProfileConstraint, isStyleProfileId, isStyleProfileStrength } from "@/lib/editor-core/style-profiles";
+import { extractVisualAdjustmentIntent } from "@/lib/editor-core/visual-adjustments";
 
 const STYLE_FAMILIES = [
   ["soft_nostalgic", /\b(?:soft|nostalgic|look\s+old|vintage\s+look|faded)\b/i],
@@ -40,7 +41,7 @@ const DETERMINISTIC_VISUAL_LANGUAGE = [
   /\b(?:magenta|green)\s+tint\b/i
 ];
 
-const DETERMINISTIC_GRAMMAR = /\b(?:a|an|and|as|at|be|but|by|could|do|feel|for|give|i|in|is|it|just|like|little|look|make|me|my|of|or|please|should|that|the|this|to|turn|video|with|would|you)\b/gi;
+const DETERMINISTIC_GRAMMAR = /\b(?:a|add|an|and|as|at|be|but|by|could|do|feel|for|give|i|in|is|it|just|like|little|look|make|me|my|of|or|please|should|that|the|then|this|to|turn|video|with|would|you)\b/gi;
 
 function explicitSourceId(text = "") {
   const match = String(text).match(/\b(?:video\s*|source[-\s]?)(\d+)\b|\b(first|second|third|fourth|fifth)\s+video\b/i);
@@ -90,9 +91,39 @@ function hasKnownSource(sourceId, sourceCatalog) {
   return Boolean(sourceId) && sourceCatalog.some((source) => source.sourceId === sourceId);
 }
 
+function consumeKnownStyleResidual(text = "") {
+  const sourceExpressions = [
+    /\b(?:video\s*|source[-\s]?)\d+\b/i,
+    /\b(?:first|second|third|fourth|fifth)\s+video\b/i
+  ];
+  return removeExpressions(text, [
+    ...Object.values(STYLE_STRENGTH_LANGUAGE),
+    ...CONSTRAINT_PATTERNS.map(([, pattern]) => pattern),
+    ...DETERMINISTIC_VISUAL_LANGUAGE,
+    ...sourceExpressions
+  ])
+    .replace(DETERMINISTIC_GRAMMAR, " ")
+    .replace(/[\d\s.,!?'"“”()\-–—:;]/g, "")
+    .trim();
+}
+
+function hasOnlyDeterministicVisualLanguage(prompt = "") {
+  if (!extractVisualAdjustmentIntent(prompt)) return false;
+  // A descriptive source is not an aesthetic instruction. Existing semantic
+  // source resolution remains responsible for interpreting it after this gate.
+  const withoutKnownNonStyleCommands = String(prompt)
+    .replace(/\b(?:the\s+)?[a-z][a-z\s-]{1,48}\s+(?:video|clip|footage|shot)\b/gi, " ")
+    .replace(/\b(?:reduce|set|make|change|turn)\s+(?:the\s+)?(?:audio\s+)?volume\s+(?:to\s+)?\d+(?:\.\d+)?\s*%\b/gi, " ")
+    .replace(/\b(?:make|set)\s+(?:the\s+)?(?:audio|volume)\s+(?:quieter|lower|louder|higher)\b/gi, " ")
+    .replace(/\b(?:lower|decrease|reduce|increase|raise)\s+(?:the\s+)?(?:audio\s+)?volume\b/gi, " ")
+    .replace(/\bturn\s+(?:the\s+)?(?:audio\s+)?volume\s+(?:up|down)\b/gi, " ")
+    .replace(/\b(?:add|include|show)\s+(?:subtitles|captions)\b/gi, " ");
+  return !consumeKnownStyleResidual(withoutKnownNonStyleCommands);
+}
+
 export function hasInvalidExplicitStyleSource(prompt = "", { sourceCatalog = [], resolvedSemanticSources = [] } = {}) {
-  const intent = extractStyleProfileIntent(prompt, { sourceCatalog, resolvedSemanticSources });
-  return Boolean(intent?.sourceId && !hasKnownSource(intent.sourceId, sourceCatalog));
+  const sourceId = explicitSourceId(findStyleProfileClause(prompt));
+  return Boolean(sourceId && !hasKnownSource(sourceId, sourceCatalog));
 }
 
 /** Returns the final command-like style clause without interpreting renderer controls. */
@@ -112,6 +143,78 @@ export function requiresDelegatedStyleJudgment(prompt = "") {
   return DELEGATED_STYLE_JUDGMENT.test(String(prompt));
 }
 
+/** Broad structural gate only; Gemini performs fuzzy aesthetic interpretation. */
+export function mayRequestTextStyleInterpretation(prompt = "") {
+  const text = String(prompt);
+  // Existing deterministic color/adjustment vocabulary must remain on its
+  // established path rather than consuming a text-classifier response.
+  if (LEGACY_NAMED_LOOK.test(text) || BLACK_AND_WHITE.test(text) || extractStyleProfileIntent(text) || hasOnlyDeterministicVisualLanguage(text)) return false;
+  return requiresDelegatedStyleJudgment(text) || /\b(?:look|feel|vibes?|aesthetic|style)\b/i.test(text) || /\b(?:make|give)\s+(?:this|it|the\s+(?:first|second|third|fourth|fifth)\s+video|video\s*\d+|source[-\s]?\d+|(?:the\s+)?[a-z-]+\s+(?:video|clip|footage))\b/i.test(text);
+}
+
+export class StyleIntentValidationError extends Error {}
+
+/** Validates the small text-classifier contract before it can affect a plan. */
+export function normalizeTextStyleIntent(response, prompt = "") {
+  if (!response || typeof response !== "object" || Array.isArray(response)) {
+    throw new StyleIntentValidationError("style interpretation must be an object");
+  }
+  const allowed = new Set(["mode", "profileId", "strength", "styleText", "constraints", "coverage"]);
+  for (const field of Object.keys(response)) {
+    if (!allowed.has(field)) throw new StyleIntentValidationError(`unsupported style interpretation field: ${field}`);
+  }
+  for (const field of allowed) {
+    if (!Object.hasOwn(response, field)) throw new StyleIntentValidationError(`missing style interpretation field: ${field}`);
+  }
+  const { mode, profileId, strength, styleText, constraints, coverage } = response;
+  if (!["semantic_style", "delegated_taste", "not_style"].includes(mode)) throw new StyleIntentValidationError("unsupported style interpretation mode");
+  if (!["style_only", "style_plus_other_edits"].includes(coverage)) throw new StyleIntentValidationError("unsupported style interpretation coverage");
+  if (!isStyleProfileStrength(strength)) throw new StyleIntentValidationError("unsupported style interpretation strength");
+  if (!Array.isArray(constraints) || new Set(constraints).size !== constraints.length || constraints.some((constraint) => !isStyleProfileConstraint(constraint))) {
+    throw new StyleIntentValidationError("unsupported style interpretation constraints");
+  }
+  if (typeof styleText !== "string") throw new StyleIntentValidationError("style interpretation styleText must be a string");
+  if (mode === "semantic_style") {
+    if (!isStyleProfileId(profileId)) throw new StyleIntentValidationError("semantic style requires a known profile");
+    if (!styleText || !String(prompt).includes(styleText) || /\b(?:video\s*\d+|source[-\s]?\d+)\b/i.test(styleText)) {
+      throw new StyleIntentValidationError("semantic style requires a valid styleText");
+    }
+    return {
+      mode,
+      coverage,
+      profileId,
+      styleText,
+      ...(strength === "standard" ? {} : { strength }),
+      ...(constraints.length ? { constraints: STYLE_PROFILE_CONSTRAINTS.filter((constraint) => constraints.includes(constraint)) } : {})
+    };
+  }
+  if (profileId !== "none" || strength !== "standard" || constraints.length || styleText !== "") {
+    throw new StyleIntentValidationError(`${mode} must not select a profile`);
+  }
+  return { mode, coverage };
+}
+
+/**
+ * Fast-path safety is server-owned: after removing the model-localized style
+ * text, every remaining token must be deterministic grammar, source scope,
+ * a known style qualifier, or a bounded 3C-A adjustment.
+ */
+export function isServerSafeTextStyleOnlyRequest(prompt = "", intent, options = {}) {
+  if (intent?.mode !== "semantic_style" || intent.coverage !== "style_only") return false;
+  const text = String(prompt);
+  if (hasInvalidExplicitStyleSource(text, options)) return false;
+  const index = text.indexOf(intent.styleText);
+  if (index < 0) return false;
+  const residual = `${text.slice(0, index)} ${text.slice(index + intent.styleText.length)}`;
+  return !consumeKnownStyleResidual(residual);
+}
+
+/** Scope always comes from authoritative prompt parsing/source resolution. */
+export function resolveStyleSourceScope(prompt = "", { resolvedSemanticSources = [] } = {}) {
+  const clause = findStyleProfileClause(prompt);
+  return explicitSourceId(clause) || semanticSourceId(clause, resolvedSemanticSources);
+}
+
 /** Extracts only server-owned semantic style identifiers; never renderer values. */
 export function extractStyleProfileIntent(prompt = "", { sourceCatalog = [], resolvedSemanticSources = [] } = {}) {
   const text = String(prompt);
@@ -124,7 +227,7 @@ export function extractStyleProfileIntent(prompt = "", { sourceCatalog = [], res
 
   const selected = matches[0];
   const constraints = constraintsForPrompt(text);
-  const sourceId = explicitSourceId(clause) || semanticSourceId(clause, resolvedSemanticSources);
+  const sourceId = resolveStyleSourceScope(clause, { resolvedSemanticSources });
   return {
     profileId: selected.profileId,
     ...(strengthForMatch(clause, selected.match, selected.profileId) === "standard" ? {} : { strength: strengthForMatch(clause, selected.match, selected.profileId) }),
@@ -133,15 +236,19 @@ export function extractStyleProfileIntent(prompt = "", { sourceCatalog = [], res
   };
 }
 
-/** Restores deterministic B1 style intent after any general Gemini planning. */
-export function reconcileStyleProfile(plan, prompt = "", options = {}) {
-  const intent = extractStyleProfileIntent(prompt, options);
+/** Inserts a server-resolved profile while preserving scoped legacy grade rules. */
+export function reconcileResolvedStyleProfile(plan, intent) {
   if (!intent) return plan;
   const sameScope = (operation) => (operation.sourceId || null) === (intent.sourceId || null);
   const operations = (plan?.operations || []).filter((operation) =>
     operation?.type !== "style_profile" && !(operation?.type === "color_grade" && sameScope(operation))
   );
   return { ...plan, operations: [...operations, { type: "style_profile", ...intent }] };
+}
+
+/** Restores deterministic B1 style intent after any general Gemini planning. */
+export function reconcileStyleProfile(plan, prompt = "", options = {}) {
+  return reconcileResolvedStyleProfile(plan, extractStyleProfileIntent(prompt, options));
 }
 
 /** Conservative guard: style-only requests may skip Gemini and media uploads. */
@@ -153,20 +260,9 @@ export function isDeterministicallySafeStyleRequest(prompt = "", options = {}) {
   // Consume only language that Step 3A deterministically maps to the style
   // profile, its constraints, source scope, or a bounded visual adjustment.
   // Any remaining meaningful words require the normal Gemini path.
-  const sourceExpressions = [
-    /\b(?:video\s*|source[-\s]?)\d+\b/i,
-    /\b(?:first|second|third|fourth|fifth)\s+video\b/i
-  ];
   const profileExpressions = STYLE_FAMILIES.map(([, expression]) => expression);
-  const remaining = removeExpressions(text, [
+  const remaining = consumeKnownStyleResidual(removeExpressions(text, [
     ...profileExpressions,
-    ...Object.values(STYLE_STRENGTH_LANGUAGE),
-    ...CONSTRAINT_PATTERNS.map(([, pattern]) => pattern),
-    ...DETERMINISTIC_VISUAL_LANGUAGE,
-    ...sourceExpressions
-  ])
-    .replace(DETERMINISTIC_GRAMMAR, " ")
-    .replace(/[\d\s.,!?'"“”()\-–—:;]/g, "")
-    .trim();
+  ]));
   return !remaining;
 }

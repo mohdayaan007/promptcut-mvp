@@ -1,14 +1,14 @@
 import { GoogleGenAI, createPartFromUri } from "@google/genai";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
-import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { buildAiEditorPrompt, buildSemanticSourceClassificationPrompt, buildSemanticTranscriptMatchPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
+import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
+import { buildAiEditorPrompt, buildSemanticSourceClassificationPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { findPhraseOccurrences, pairPhraseOccurrences } from "@/lib/editor-core/spoken-transcript";
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
 import { EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 import { reconcileCaptionOperation } from "@/lib/editor-core/caption-engine";
 import { reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { findVisualAdjustmentClause, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
-import { hasInvalidExplicitStyleSource, isDeterministicallySafeStyleRequest, reconcileStyleProfile } from "@/lib/editor-core/style-intent";
+import { hasInvalidExplicitStyleSource, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, mayRequestTextStyleInterpretation, normalizeTextStyleIntent, reconcileResolvedStyleProfile, reconcileStyleProfile, resolveStyleSourceScope, StyleIntentValidationError } from "@/lib/editor-core/style-intent";
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
 const FILE_PROCESSING_TIMEOUT_MS = 60_000;
@@ -74,6 +74,39 @@ async function generateWithRetries(ai, request, { sleepFn = sleep, random = Math
     }
   }
   throw lastError;
+}
+
+async function interpretTextStyle({ ai, prompt, retryOptions }) {
+  let response;
+  try {
+    response = await generateWithRetries(ai, {
+      model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
+      contents: buildStyleIntentPrompt({ prompt }),
+      config: {
+        responseMimeType: "application/json",
+        responseJsonSchema: createStyleIntentJsonSchema()
+      }
+    }, retryOptions);
+    if (!response.text) throw new StyleIntentValidationError("style interpretation returned no response");
+    return normalizeTextStyleIntent(JSON.parse(response.text), prompt);
+  } catch (error) {
+    if (error instanceof UnsupportedEditRequestError) throw error;
+    if (error instanceof StyleIntentValidationError || error instanceof SyntaxError) {
+      throw new UnsupportedEditRequestError("This style request could not be understood safely");
+    }
+    throw new UnsupportedEditRequestError("This style request could not be understood safely");
+  }
+}
+
+function resolveTextStyleScope(styleIntent, prompt, resolvedSemanticSources = []) {
+  if (styleIntent?.mode !== "semantic_style") return null;
+  const sourceId = resolveStyleSourceScope(prompt, { resolvedSemanticSources });
+  return {
+    profileId: styleIntent.profileId,
+    ...(styleIntent.strength ? { strength: styleIntent.strength } : {}),
+    ...(styleIntent.constraints?.length ? { constraints: styleIntent.constraints } : {}),
+    ...(sourceId ? { sourceId } : {})
+  };
 }
 
 function addAutomaticMerge(plan, hasMultipleVideos) {
@@ -605,7 +638,7 @@ async function waitForActiveFile(ai, uploadedFile) {
   return file;
 }
 
-async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions }) {
+async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions, textStyleIntent = null }) {
   const ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const uploadedFiles = [];
   const composition = extractMomentCompositionRequests(prompt, sourceCatalog);
@@ -722,7 +755,14 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     plan = reconcileCaptionOperation(plan, prompt);
     plan = reconcileAudioControls(plan, prompt);
     plan = reconcileVisualAdjustments(plan, prompt, { sourceCatalog, resolvedSemanticSources });
-    plan = reconcileStyleProfile(plan, prompt, { sourceCatalog, resolvedSemanticSources });
+    const resolvedTextStyle = resolveTextStyleScope(textStyleIntent, prompt, resolvedSemanticSources);
+    // A fuzzy request marked as style-plus-other-edits must retain a real
+    // independently planned operation before its style can be appended.
+    if (resolvedTextStyle ? plan.operations.length : true) {
+      plan = resolvedTextStyle
+        ? reconcileResolvedStyleProfile(plan, resolvedTextStyle)
+        : reconcileStyleProfile(plan, prompt, { sourceCatalog, resolvedSemanticSources });
+    }
     plan = reconcileSemanticVisualAdjustmentSequence(plan, prompt, sourceCatalog, resolvedSemanticSources, {
       hasAuthoritativeMomentSequence: localizedMoments.length > 0
     });
@@ -775,8 +815,24 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
   }
 
   try {
+    let textStyleIntent = null;
+    let ai = aiClient;
+    if (mayRequestTextStyleInterpretation(prompt)) {
+      ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      textStyleIntent = await interpretTextStyle({ ai, prompt, retryOptions });
+      if (textStyleIntent.mode === "delegated_taste") {
+        throw new UnsupportedEditRequestError("This style request needs visual understanding");
+      }
+      if (isServerSafeTextStyleOnlyRequest(prompt, textStyleIntent, { sourceCatalog }) && !requiresVisualUnderstanding) {
+        const resolvedStyleIntent = resolveTextStyleScope(textStyleIntent, prompt);
+        return {
+          plan: createEditPlan({ prompt, hasMultipleVideos, sourceCatalog, resolvedStyleIntent }),
+          source: "gemini"
+        };
+      }
+    }
     return {
-      ...(await createGeminiPlan({ sourceInputs: planningSources, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions })),
+      ...(await createGeminiPlan({ sourceInputs: planningSources, prompt, hasMultipleVideos, sourceCatalog, aiClient: ai, retryOptions, scratchDirectory, executionController, transcriptionOptions, textStyleIntent })),
       source: "gemini"
     };
   } catch (error) {

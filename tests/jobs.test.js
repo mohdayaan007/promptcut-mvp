@@ -15,9 +15,9 @@ import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
-import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
+import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
-import { buildAiEditorPrompt, buildSemanticTranscriptMatchPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
+import { buildAiEditorPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { buildStyleProfileFilters, buildVisualAdjustmentFilters, createExecutionController, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
 import { CAPABILITY_REGISTRY } from "@/lib/editor-core/capability-registry";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
@@ -28,8 +28,8 @@ import { parseTitle } from "@/lib/title-parser";
 import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaptionCorrection, extractCaptionStyleRequest, mapCaptionCuesToOutput, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { extractAudioControlIntent, reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { extractVisualAdjustmentIntent, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
-import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL_VISUAL_RECIPE, STYLE_PROFILE_CATALOG, STYLE_PROFILE_IDS, STYLE_PROFILE_STRENGTHS, compileStyleProfile, createCanonicalVisualRecipe, interpolateCanonicalVisualRecipe, resolveCurrentStyleProfile, resolveStyleProfile } from "@/lib/editor-core/style-profiles";
-import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
+import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL_VISUAL_RECIPE, STYLE_PROFILE_CATALOG, STYLE_PROFILE_CONSTRAINTS, STYLE_PROFILE_IDS, STYLE_PROFILE_STRENGTHS, compileStyleProfile, createCanonicalVisualRecipe, interpolateCanonicalVisualRecipe, resolveCurrentStyleProfile, resolveStyleProfile } from "@/lib/editor-core/style-profiles";
+import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
 
 test("B1 style profiles compile server-owned bounded canonical recipes", () => {
   assert.deepEqual(STYLE_PROFILE_IDS, ["clean_commercial", "warm_travel", "cinematic", "soft_nostalgic", "vibrant_social", "dark_moody", "natural_documentary"]);
@@ -337,6 +337,153 @@ test("B1 deterministic style intent preserves legacy and adjustment precedence",
     prompt: "Make the temple video cinematic.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: semanticClient
   }));
   assert.deepEqual(semantic.plan.operations.at(-1), { type: "style_profile", profileId: "cinematic", sourceId: "source-2" });
+});
+
+test("B1 text-only fuzzy style interpretation is server-validated, scoped, and media-safe", async () => {
+  const styleSchema = createStyleIntentJsonSchema();
+  assert.deepEqual(styleSchema.properties.profileId.enum, ["none", ...STYLE_PROFILE_IDS]);
+  assert.deepEqual(styleSchema.properties.strength.enum, Object.keys(STYLE_PROFILE_STRENGTHS));
+  assert.deepEqual(styleSchema.properties.constraints.items.enum, STYLE_PROFILE_CONSTRAINTS);
+  assert.equal(styleSchema.properties.styleText.type, "string");
+  assert.doesNotMatch(JSON.stringify(createEditPlanJsonSchema()), /style_profile/);
+  assert.match(buildStyleIntentPrompt({ prompt: "Make it elegant." }), /text-only/i);
+  assert.doesNotMatch(buildStyleIntentPrompt({ prompt: "Make it elegant." }), /SOURCE source-|fileData|Authoritative source catalog/i);
+
+  assert.deepEqual(normalizeTextStyleIntent({ mode: "semantic_style", profileId: "clean_commercial", strength: "standard", styleText: "elegant", constraints: [], coverage: "style_only" }, "Make it elegant."), {
+    mode: "semantic_style", coverage: "style_only", profileId: "clean_commercial", styleText: "elegant"
+  });
+  for (const invalid of [
+    { mode: "semantic_style", profileId: "unknown", strength: "standard", styleText: "elegant", constraints: [], coverage: "style_only" },
+    { mode: "semantic_style", profileId: "cinematic", strength: "maximum", styleText: "elegant", constraints: [], coverage: "style_only" },
+    { mode: "semantic_style", profileId: "cinematic", strength: "standard", styleText: "elegant", constraints: ["avoid_darkening", "avoid_darkening"], coverage: "style_only" },
+    { mode: "semantic_style", profileId: "cinematic", strength: "standard", styleText: "elegant", constraints: [], coverage: "style_only", recipe: { brightness: 1 } },
+    { mode: "semantic_style", profileId: "cinematic", strength: "standard", styleText: "elegant", constraints: [], coverage: "style_only", profileVersion: "1" },
+    { mode: "semantic_style", profileId: "cinematic", strength: "standard", styleText: "elegant", constraints: [], coverage: "style_only", filters: ["eq=contrast=2"] },
+    { mode: "semantic_style", profileId: "cinematic", strength: "standard", styleText: "elegant", constraints: [], coverage: "style_only", lutPath: "private.cube" },
+    { mode: "semantic_style", profileId: "cinematic", strength: "standard", styleText: "not in the request", constraints: [], coverage: "style_only" },
+    { mode: "semantic_style", profileId: "cinematic", strength: "standard", styleText: "", constraints: [], coverage: "style_only" },
+    { mode: "semantic_style", profileId: "cinematic", strength: "standard", styleText: 7, constraints: [], coverage: "style_only" },
+    { mode: "semantic_style", profileId: "cinematic", strength: "standard", constraints: [] },
+    { mode: "delegated_taste", profileId: "cinematic", strength: "standard", styleText: "elegant", constraints: [], coverage: "style_only" },
+    { mode: "not_style", profileId: "cinematic", strength: "standard", styleText: "elegant", constraints: [], coverage: "style_only" }
+  ]) assert.throws(() => normalizeTextStyleIntent(invalid, "Make it elegant."), /style interpretation|style requires|must not select/);
+  assert.deepEqual(reconcileResolvedStyleProfile({ version: "1", operations: [{ type: "color_grade", style: "cinematic" }] }, { profileId: "clean_commercial" }).operations, [
+    { type: "style_profile", profileId: "clean_commercial" }
+  ]);
+  assert.deepEqual(reconcileResolvedStyleProfile({ version: "2", operations: [{ type: "color_grade", sourceId: "source-1", style: "warm" }] }, { profileId: "clean_commercial", sourceId: "source-2" }).operations, [
+    { type: "color_grade", sourceId: "source-1", style: "warm" }, { type: "style_profile", profileId: "clean_commercial", sourceId: "source-2" }
+  ]);
+
+  const catalog = sourceCatalog.slice(0, 2);
+  const textStyle = (profileId, styleText, coverage = "style_only", strength = "standard", constraints = []) => JSON.stringify({ mode: "semantic_style", profileId, strength, styleText, constraints, coverage });
+  for (const [prompt, profileId] of [
+    ["Make it elegant.", "clean_commercial"], ["Give it cozy holiday vibes.", "warm_travel"],
+    ["Make it punchier.", "vibrant_social"], ["Make it understated and realistic.", "natural_documentary"]
+  ]) {
+    const styleText = prompt.match(/(?:elegant|cozy holiday vibes|punchier|understated and realistic)/i)[0];
+    const client = createMockGemini({ responseText: textStyle(profileId, styleText) });
+    const result = await withGeminiKey(() => createAiEditPlan({ prompt, sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: client }));
+    assert.deepEqual(result.plan.operations, [{ type: "style_profile", profileId }], prompt);
+    assert.equal(client.uploads.length, 0, prompt);
+    assert.equal(client.requests.length, 1, prompt);
+    assert.equal(typeof client.requests[0].contents, "string", prompt);
+  }
+
+  const fuzzyAdjustmentClient = createMockGemini({ responseText: textStyle("clean_commercial", "elegant") });
+  const fuzzyAdjustment = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Make it elegant and slightly warmer.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: fuzzyAdjustmentClient
+  }));
+  assert.deepEqual(fuzzyAdjustment.plan.operations, [
+    { type: "style_profile", profileId: "clean_commercial" },
+    { type: "visual_adjustment", temperature: 0.12 }
+  ]);
+  assert.equal(fuzzyAdjustmentClient.uploads.length, 0);
+  assert.equal(fuzzyAdjustmentClient.requests.length, 1);
+  const fuzzyContrastClient = createMockGemini({ responseText: textStyle("clean_commercial", "polished feel") });
+  const fuzzyContrast = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Give it a polished feel and increase contrast slightly.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: fuzzyContrastClient
+  }));
+  assert.deepEqual(fuzzyContrast.plan.operations, [
+    { type: "style_profile", profileId: "clean_commercial" },
+    { type: "visual_adjustment", contrast: 0.12 }
+  ]);
+  assert.equal(fuzzyContrastClient.uploads.length, 0);
+  assert.equal(fuzzyContrastClient.requests.length, 1);
+  for (const prompt of ["Make it warmer.", "Make it slightly warmer.", "Increase contrast by 20%.", "Add a slight magenta tint."]) {
+    const client = createMockGemini();
+    const result = await withGeminiKey(() => createAiEditPlan({ prompt, sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: client }));
+    assert.equal(result.source, "deterministic", prompt);
+    assert.equal(client.requests.length, 1, prompt);
+    assert.equal(client.requests[0].config.responseJsonSchema.properties.styleText, undefined, prompt);
+  }
+
+  const incorrectCoverage = normalizeTextStyleIntent(JSON.parse(textStyle("clean_commercial", "elegant")), "Make it elegant and remove the background.");
+  assert.equal(isServerSafeTextStyleOnlyRequest("Make it elegant and remove the background.", incorrectCoverage, { sourceCatalog: [catalog[0]] }), false);
+  assert.equal(isServerSafeTextStyleOnlyRequest("Make it elegant and add my logo.", normalizeTextStyleIntent(JSON.parse(textStyle("clean_commercial", "elegant")), "Make it elegant and add my logo."), { sourceCatalog: [catalog[0]] }), false);
+  const unsafeClient = createMockGemini({ responses: [
+    textStyle("clean_commercial", "elegant"),
+    JSON.stringify({ version: "1", operations: [] })
+  ] });
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+    prompt: "Make it elegant and remove the background.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: unsafeClient
+  }), UnsupportedEditRequestError));
+  assert.equal(unsafeClient.uploads.length, 1);
+  assert.equal(unsafeClient.requests.length, 2);
+
+  const scopedClient = createMockGemini({ responseText: textStyle("clean_commercial", "elegant") });
+  const scoped = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Make video 2 elegant.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: scopedClient
+  }));
+  assert.deepEqual(scoped.plan.operations, [
+    { type: "sequence", clips: catalog.map(({ sourceId, duration }) => ({ sourceId, start: 0, end: duration })) },
+    { type: "style_profile", profileId: "clean_commercial", sourceId: "source-2" }
+  ]);
+  assert.equal(scopedClient.uploads.length, 0);
+  const invalidScoped = createEditPlan({ prompt: "Make video 9 elegant.", hasMultipleVideos: true, sourceCatalog: catalog });
+  assert.throws(() => validateEditPlan(invalidScoped, { sourceCatalog: catalog }), /unknown source/);
+
+  const title = { type: "title", text: "Kerala", start: 1, end: 3, position: "bottom-center", size: "medium", color: "white", weight: "regular", font: "inter" };
+  const mixedClient = createMockGemini({ responses: [
+    textStyle("clean_commercial", "elegant", "style_plus_other_edits"),
+    JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "cinematic" }, title] })
+  ] });
+  const mixed = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Make it elegant and add a title.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: mixedClient
+  }));
+  assert.deepEqual(mixed.plan.operations, [title, { type: "style_profile", profileId: "clean_commercial" }]);
+  assert.equal(mixedClient.uploads.length, 1);
+  assert.equal(mixedClient.requests.length, 2);
+
+  const momentClient = createMockGemini({ responses: [
+    textStyle("clean_commercial", "polished feel", "style_plus_other_edits"),
+    momentLocalizationResponse("source-1", [{ start: 1, end: 3 }]),
+    JSON.stringify({ version: "1", operations: [] })
+  ] });
+  const moment = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Use the part where the person enters and give it a polished feel.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: momentClient
+  }));
+  assert.deepEqual(moment.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 3 }] },
+    { type: "style_profile", profileId: "clean_commercial" }
+  ]);
+  assert.equal(momentClient.uploads.length, 1, "moment understanding, not style interpretation, uploads the video");
+
+  const semanticClient = createMockGemini({ responses: [
+    textStyle("clean_commercial", "elegant", "style_plus_other_edits"),
+    classificationResponse("source-1", [{ referenceId: "semantic-1", plausibleMatch: false }]),
+    classificationResponse("source-2", [{ referenceId: "semantic-1", plausibleMatch: true }]),
+    JSON.stringify({ version: "2", operations: [{ type: "sequence", clips: catalog.map(({ sourceId, duration }) => ({ sourceId, start: 0, end: duration })) }] })
+  ] });
+  const semantic = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Make the temple video elegant.", hasMultipleVideos: true, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: semanticClient
+  }));
+  assert.deepEqual(semantic.plan.operations.at(-1), { type: "style_profile", profileId: "clean_commercial", sourceId: "source-2" });
+
+  for (const prompt of ["Make this look good.", "Make this better.", "Do whatever looks best."]) {
+    const client = createMockGemini({ responseText: JSON.stringify({ mode: "delegated_taste", profileId: "none", strength: "standard", styleText: "", constraints: [], coverage: "style_only" }) });
+    await withGeminiKey(() => assert.rejects(() => createAiEditPlan({ prompt, sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: client }), UnsupportedEditRequestError));
+    assert.equal(client.uploads.length, 0, prompt);
+  }
 });
 
 const execFileAsync = promisify(execFile);

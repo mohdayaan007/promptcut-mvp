@@ -3,7 +3,7 @@ import { parseTitle } from "@/lib/title-parser";
 import { createCaptionOperation, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { extractVisualAdjustmentIntent, findVisualAdjustmentClause, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
-import { extractStyleProfileIntent, findStyleProfileClause, reconcileStyleProfile } from "@/lib/editor-core/style-intent";
+import { extractStyleProfileIntent, findStyleProfileClause, reconcileResolvedStyleProfile, reconcileStyleProfile } from "@/lib/editor-core/style-intent";
 
 function detectColor(intents = [], prompt = "") {
   if (intents.includes("blackWhite")) return "bw";
@@ -406,17 +406,20 @@ function sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle, styleIntent)
  * A future interpretation layer can produce this same shape without changing
  * the validator or executor.
  */
-export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipleVideos = hasSecondVideo, sourceCatalog = [] }) {
+export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipleVideos = hasSecondVideo, sourceCatalog = [], resolvedStyleIntent = null }) {
   const { intents } = understandPrompt(prompt);
   const operations = [];
-  const styleIntent = extractStyleProfileIntent(prompt, { sourceCatalog });
+  const styleIntent = resolvedStyleIntent || extractStyleProfileIntent(prompt, { sourceCatalog });
   const colorStyle = styleIntent ? null : detectColor(intents, prompt);
   const trim = parseTrim(prompt, intents);
   const title = parseTitle(prompt);
   const sourceAwarePlan = sourceAwareFallbackPlan(prompt, sourceCatalog, colorStyle, styleIntent);
   if (sourceAwarePlan) {
     if (requestsCaptions(prompt)) sourceAwarePlan.operations.push(createCaptionOperation(prompt));
-    return reconcileAudioControls(reconcileVisualAdjustments(reconcileStyleProfile(sourceAwarePlan, prompt, { sourceCatalog }), prompt, { sourceCatalog }), prompt);
+    const styledPlan = resolvedStyleIntent
+      ? reconcileResolvedStyleProfile(sourceAwarePlan, resolvedStyleIntent)
+      : reconcileStyleProfile(sourceAwarePlan, prompt, { sourceCatalog });
+    return reconcileAudioControls(reconcileVisualAdjustments(styledPlan, prompt, { sourceCatalog }), prompt);
   }
 
   // Uploaded clips are merged automatically, independent of whether the prompt
@@ -428,5 +431,9 @@ export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipl
   if (trim) operations.push({ type: "trim", ...trim });
   operations.push(...parseFallbackCapabilities(prompt));
 
-  return reconcileAudioControls(reconcileVisualAdjustments(reconcileStyleProfile({ version: "1", operations }, prompt, { sourceCatalog }), prompt, { sourceCatalog }), prompt);
+  const basePlan = { version: "1", operations };
+  const styledPlan = resolvedStyleIntent
+    ? reconcileResolvedStyleProfile(basePlan, resolvedStyleIntent)
+    : reconcileStyleProfile(basePlan, prompt, { sourceCatalog });
+  return reconcileAudioControls(reconcileVisualAdjustments(styledPlan, prompt, { sourceCatalog }), prompt);
 }

@@ -302,4 +302,26 @@ export function createSemanticTranscriptMatchJsonSchema({ sourceId, momentId } =
   };
 }
 
+/** Text-only semantic classifier for B1 fuzzy style language; never an edit plan. */
+export function createStyleIntentJsonSchema() {
+  return {
+    type: "object",
+    properties: {
+      mode: { type: "string", enum: ["semantic_style", "delegated_taste", "not_style"] },
+      profileId: { type: "string", enum: ["none", ...STYLE_PROFILE_IDS] },
+      strength: { type: "string", enum: Object.keys(STYLE_PROFILE_STRENGTHS) },
+      styleText: { type: "string" },
+      constraints: {
+        type: "array",
+        uniqueItems: true,
+        maxItems: STYLE_PROFILE_CONSTRAINTS.length,
+        items: { type: "string", enum: STYLE_PROFILE_CONSTRAINTS }
+      },
+      coverage: { type: "string", enum: ["style_only", "style_plus_other_edits"] }
+    },
+    required: ["mode", "profileId", "strength", "styleText", "constraints", "coverage"],
+    additionalProperties: false
+  };
+}
+
 export const EDIT_PLAN_JSON_SCHEMA = createEditPlanJsonSchema();

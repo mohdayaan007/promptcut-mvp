@@ -39,6 +39,22 @@ export function buildSemanticTranscriptMatchPrompt({ source, moment, transcript 
   ].join("\n\n");
 }
 
+/**
+ * This classifier receives only request text. Profile IDs are internal semantic
+ * labels; the server owns source scope, recipes, renderer settings, and plans.
+ */
+export function buildStyleIntentPrompt({ prompt }) {
+  return [
+    "You classify the user's text-only visual styling intent. You do not create an edit plan, inspect media, choose sources, or return rendering controls.",
+    "Choose exactly one dominant internal family only when the wording gives a clear requested aesthetic: clean_commercial (clean, polished, refined, premium, professional, restrained); warm_travel (inviting, warm lifestyle/travel, vacation or holiday warmth, welcoming); cinematic (dramatic, filmic, serious, movie-like); soft_nostalgic (soft, faded, dreamy, memory-like, nostalgic or vintage); vibrant_social (lively, energetic, colourful, punchy, upbeat social); dark_moody (dark, moody, brooding, atmospheric); natural_documentary (realistic, understated, natural, documentary-like, minimally stylized).",
+    "For semantic_style, select one profileId from that catalog, a bounded strength, applicable catalog constraints, whether the request includes another edit, and styleText: the exact verbatim substring of the user's request that expresses only the aesthetic request. Never stack profiles. Do not include source references or another edit in styleText.",
+    "For delegated_taste, use profileId 'none', strength 'standard', no constraints, and styleText '' when the user asks you to decide based on footage, such as 'make this look good', 'make this better', 'do whatever looks best', 'choose whatever style suits this footage', 'make it look as good as possible', or 'fix the look'.",
+    "For not_style, use profileId 'none', strength 'standard', no constraints, and styleText '' when the request is not visual styling. Never return source IDs, profile versions, recipes, numeric adjustments, FFmpeg filters, LUTs, paths, or arbitrary fields.",
+    "Return only JSON matching the supplied schema.",
+    `User request: ${prompt}`
+  ].join("\n\n");
+}
+
 export function buildAiEditorPrompt({ prompt, hasMultipleVideos = false, sourceCatalog = [], resolvedSemanticSources = [], authoritativeMomentSequence = null }) {
   const capabilities = JSON.stringify(getAiCapabilityContract({
     hasMultipleVideos,
