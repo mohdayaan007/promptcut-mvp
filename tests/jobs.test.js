@@ -18,7 +18,8 @@ import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt, buildSemanticTranscriptMatchPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
-import { createExecutionController, EditExecutionCancelledError, executeEditPlan } from "@/lib/editor-core/edit-executor";
+import { buildStyleProfileFilters, buildVisualAdjustmentFilters, createExecutionController, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
+import { CAPABILITY_REGISTRY } from "@/lib/editor-core/capability-registry";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
 import { extractSpeechAudio, transcribeSource, wordAnnotations, SpokenTranscriptionError } from "@/lib/editor-core/spoken-transcription";
 import { FONT_CATALOG, resolveFontId, resolveSemanticFontIntent } from "@/lib/title-config";
@@ -27,7 +28,6 @@ import { parseTitle } from "@/lib/title-parser";
 import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaptionCorrection, extractCaptionStyleRequest, mapCaptionCuesToOutput, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { extractAudioControlIntent, reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { extractVisualAdjustmentIntent, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
-import { buildVisualAdjustmentFilters, perceptualAdjustmentMagnitude } from "@/lib/editor-core/edit-executor";
 import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL_VISUAL_RECIPE, STYLE_PROFILE_CATALOG, STYLE_PROFILE_IDS, STYLE_PROFILE_STRENGTHS, compileStyleProfile, createCanonicalVisualRecipe, interpolateCanonicalVisualRecipe, resolveCurrentStyleProfile, resolveStyleProfile } from "@/lib/editor-core/style-profiles";
 
 test("B1 style profiles compile server-owned bounded canonical recipes", () => {
@@ -96,6 +96,95 @@ test("B1 style profiles compile server-owned bounded canonical recipes", () => {
   assert.deepEqual(compileStyleProfile({ profileId: "cinematic" }), standard, "repeated compilation is identical");
   assert.throws(() => createCanonicalVisualRecipe({ brightness: Infinity }), /finite number/);
   assert.throws(() => createCanonicalVisualRecipe({ filter: "eq=contrast=2" }), /unsupported recipe field/);
+});
+
+test("B1 style_profile remains planner-dormant while validating and rendering through server-owned recipes", () => {
+  assert.deepEqual(CAPABILITY_REGISTRY.style_profile.requiredFields, ["profileId"]);
+  assert.deepEqual(CAPABILITY_REGISTRY.style_profile.profileIds, STYLE_PROFILE_IDS);
+  assert.deepEqual(VISUAL_OPERATION_ORDER, ["color_grade", "style_profile", "visual_adjustment"]);
+  const unorderedVisualOperations = [
+    { type: "visual_adjustment", brightness: 0.2 },
+    { type: "style_profile", profileId: "cinematic" },
+    { type: "color_grade", style: "warm" },
+    { type: "visual_adjustment", sourceId: "source-1", brightness: 0.2 },
+    { type: "style_profile", sourceId: "source-1", profileId: "cinematic" },
+    { type: "color_grade", sourceId: "source-1", style: "warm" }
+  ];
+  assert.deepEqual(orderedVisualOperations(unorderedVisualOperations).map(({ type }) => type), ["color_grade", "style_profile", "visual_adjustment"]);
+  assert.deepEqual(orderedVisualOperations(unorderedVisualOperations, { sourceId: "source-1" }).map(({ type }) => type), ["color_grade", "style_profile", "visual_adjustment"]);
+
+  const defaultSchema = JSON.stringify(createEditPlanJsonSchema());
+  assert.doesNotMatch(defaultSchema, /style_profile/);
+  const enabledSchema = createEditPlanJsonSchema({
+    sourceIds: ["source-1", "source-2"],
+    supportsStyleProfiles: true
+  });
+  const enabledSchemaText = JSON.stringify(enabledSchema);
+  assert.match(enabledSchemaText, /style_profile/);
+  assert.match(enabledSchemaText, /cinematic/);
+  assert.match(enabledSchemaText, /avoid_darkening/);
+  assert.doesNotMatch(enabledSchemaText, /profileVersion/);
+  assert.doesNotMatch(enabledSchemaText, /lutPath/);
+  assert.doesNotMatch(enabledSchemaText, /filters/);
+
+  const global = { version: "1", operations: [{ type: "style_profile", profileId: "cinematic" }] };
+  assert.doesNotThrow(() => validateEditPlan(global));
+  assert.doesNotThrow(() => validateEditPlan({
+    version: "2", operations: [
+      { type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 2 }] },
+      { type: "style_profile", sourceId: "source-1", profileId: "warm_travel", strength: "subtle", constraints: ["conservative_color"] }
+    ]
+  }, { sourceCatalog }));
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "style_profile", profileId: "unknown" }] }), /unknown profile/);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "style_profile", profileId: "cinematic", strength: "maximum" }] }), /unsupported strength/);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "style_profile", profileId: "cinematic", constraints: ["unbounded"] }] }), /unsupported constraint/);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "style_profile", profileId: "cinematic", constraints: ["avoid_darkening", "avoid_darkening"] }] }), /constraints must not contain duplicates/);
+  for (const field of ["profileVersion", "recipe", "filters", "filter", "lutPath", "arbitrary"]) {
+    assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "style_profile", profileId: "cinematic", [field]: field === "profileVersion" ? 1 : "unsafe" }] }), new RegExp(`does not support ${field}`));
+  }
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "style_profile", sourceId: "source-1", profileId: "cinematic" }] }), /sourceId is supported only/);
+  assert.throws(() => validateEditPlan({
+    version: "2", operations: [
+      { type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 2 }] },
+      { type: "style_profile", sourceId: "source-4", profileId: "cinematic" }
+    ]
+  }, { sourceCatalog }), /unknown source/);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [
+    { type: "style_profile", profileId: "cinematic" }, { type: "style_profile", profileId: "warm_travel" }
+  ] }), /only one style_profile/);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [
+    { type: "style_profile", profileId: "cinematic" }, { type: "color_grade", style: "warm" }
+  ] }), /conflicts with color_grade/);
+  assert.throws(() => validateEditPlan({
+    version: "2", operations: [
+      { type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 2 }] },
+      { type: "style_profile", sourceId: "source-1", profileId: "cinematic" },
+      { type: "color_grade", sourceId: "source-1", style: "warm" }
+    ]
+  }, { sourceCatalog }), /conflicts with color_grade/);
+  assert.doesNotThrow(() => validateEditPlan({
+    version: "2", operations: [
+      { type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 2 }, { sourceId: "source-2", start: 0, end: 2 }] },
+      { type: "style_profile", sourceId: "source-1", profileId: "cinematic" },
+      { type: "color_grade", sourceId: "source-2", style: "warm" },
+      { type: "visual_adjustment", brightness: 0.2 }
+    ]
+  }, { sourceCatalog }));
+
+  const standard = compileStyleProfile({ profileId: "warm_travel", strength: "standard", constraints: ["conservative_color"] });
+  assert.deepEqual(
+    buildStyleProfileFilters({ type: "style_profile", profileId: "warm_travel", strength: "standard", constraints: ["conservative_color"], sourceId: "source-1" }),
+    buildVisualAdjustmentFilters(standard.recipe)
+  );
+  assert.deepEqual(
+    buildStyleProfileFilters({ profileId: "cinematic", filters: ["eq=contrast=2"], lutPath: "/private.cube" }),
+    buildStyleProfileFilters({ profileId: "cinematic" }),
+    "executor compiler arguments are explicit; raw renderer fields never reach FFmpeg"
+  );
+  const recipeMagnitude = (strength) => Object.values(compileStyleProfile({ profileId: "cinematic", strength }).recipe)
+    .reduce((total, value) => total + Math.abs(value), 0);
+  assert.ok(recipeMagnitude("subtle") < recipeMagnitude("standard"));
+  assert.ok(recipeMagnitude("standard") < recipeMagnitude("strong"));
 });
 
 const execFileAsync = promisify(execFile);
@@ -2112,6 +2201,15 @@ async function makeSolidCaptionSource(output, duration, { width = 1280, height =
   ]);
 }
 
+async function makeSolidSequenceSource(output, color, duration = 2) {
+  await execFileAsync("ffmpeg", [
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-f", "lavfi", "-i", `color=c=${color}:size=160x90:rate=30`,
+    "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
+    "-t", duration.toString(), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", output
+  ]);
+}
+
 async function captionRegionDifference(videoPath, firstTime, secondTime) {
   const { stdout } = await execFileAsync("ffmpeg", [
     "-hide_banner", "-loglevel", "error", "-ss", firstTime.toString(), "-i", videoPath,
@@ -2174,6 +2272,50 @@ async function videoFrameDifference(firstPath, secondPath, time = 1) {
   ], { encoding: "buffer", maxBuffer: 2 * 1024 * 1024 });
   return [...stdout].reduce((sum, value) => sum + value, 0);
 }
+
+test("style profiles apply source scope before sequence assembly and global scope after it", { timeout: 30_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-style-profile-order-"));
+  const sourcePaths = [path.join(tempDirectory, "source-1.mp4"), path.join(tempDirectory, "source-2.mp4")];
+  const media = [
+    { duration: 2, width: 160, height: 90, hasAudio: true, frameRate: 30 },
+    { duration: 2, width: 160, height: 90, hasAudio: true, frameRate: 30 }
+  ];
+  const catalog = media.map((entry, index) => ({ ...entry, sourceId: `source-${index + 1}`, index }));
+  const sequence = { type: "sequence", clips: [
+    { sourceId: "source-1", start: 0, end: 2 }, { sourceId: "source-2", start: 0, end: 2 }
+  ] };
+  try {
+    await makeSolidSequenceSource(sourcePaths[0], "0x9b5f2e");
+    await makeSolidSequenceSource(sourcePaths[1], "0x245f9b");
+    const baselineDirectory = path.join(tempDirectory, "baseline");
+    const scopedDirectory = path.join(tempDirectory, "scoped");
+    const globalDirectory = path.join(tempDirectory, "global");
+    await Promise.all([mkdir(baselineDirectory), mkdir(scopedDirectory), mkdir(globalDirectory)]);
+    const baseline = await executeWithWatchdog({
+      inputPaths: sourcePaths, media, sourceCatalog: catalog, tempDirectory: baselineDirectory,
+      plan: { version: "2", operations: [sequence] }
+    }, { watchdogMs: 20_000 });
+    const sourceScopedPlan = { version: "2", operations: [sequence, { type: "style_profile", sourceId: "source-1", profileId: "dark_moody", strength: "strong" }] };
+    validateEditPlan(sourceScopedPlan, { sourceCatalog: catalog });
+    const sourceScoped = await executeWithWatchdog({
+      inputPaths: sourcePaths, media, sourceCatalog: catalog, tempDirectory: scopedDirectory, plan: sourceScopedPlan
+    }, { watchdogMs: 20_000 });
+    const globalPlan = { version: "2", operations: [sequence, { type: "style_profile", profileId: "dark_moody", strength: "strong" }] };
+    validateEditPlan(globalPlan, { sourceCatalog: catalog });
+    const global = await executeWithWatchdog({
+      inputPaths: sourcePaths, media, sourceCatalog: catalog, tempDirectory: globalDirectory, plan: globalPlan
+    }, { watchdogMs: 20_000 });
+
+    const firstScopedDifference = await videoFrameDifference(baseline, sourceScoped, 0.5);
+    const secondScopedDifference = await videoFrameDifference(baseline, sourceScoped, 2.5);
+    assert.ok(firstScopedDifference > 5_000, "source-1 profile should visibly affect its pre-assembly segment");
+    assert.ok(secondScopedDifference < 500, "source-2 segment should remain materially unchanged by a source-1 profile");
+    assert.ok(await videoFrameDifference(baseline, global, 0.5) > 5_000, "global profile should affect the first assembled segment");
+    assert.ok(await videoFrameDifference(baseline, global, 2.5) > 5_000, "global profile should affect the second assembled segment");
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
 
 test("server-owned audio controls parse and reconcile deterministic 3B-C prompts", () => {
   assert.deepEqual(extractAudioControlIntent("Mute the video."), { volume: { type: "audio_volume", factor: 0 } });

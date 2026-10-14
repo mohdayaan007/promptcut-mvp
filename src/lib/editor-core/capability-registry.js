@@ -1,5 +1,6 @@
 import { COLOR_PRESETS } from "@/lib/color-presets";
 import { COLOR_MAP, FONT_CATALOG, POSITION_MAP, SIZE_MAP, TITLE_SIZE_LIMITS } from "@/lib/title-config";
+import { STYLE_PROFILE_CONSTRAINTS, STYLE_PROFILE_IDS, STYLE_PROFILE_STRENGTHS } from "@/lib/editor-core/style-profiles";
 
 export const CAPABILITY_LIMITS = {
   zoom: { minAmount: 1, maxAmount: 2 },
@@ -25,6 +26,12 @@ export const CAPABILITY_REGISTRY = {
   audio_volume: { requiredFields: ["factor"], limits: CAPABILITY_LIMITS.audioVolume },
   audio_fade: { requiredFields: ["mode", "duration"], modes: ["in", "out", "both"], limits: CAPABILITY_LIMITS.fade },
   visual_adjustment: { requiredFields: [], limits: CAPABILITY_LIMITS.visualAdjustment },
+  style_profile: {
+    requiredFields: ["profileId"],
+    profileIds: STYLE_PROFILE_IDS,
+    strengths: Object.keys(STYLE_PROFILE_STRENGTHS),
+    constraints: STYLE_PROFILE_CONSTRAINTS
+  },
   crop: { requiredFields: ["aspect_ratio"], aspectRatios: CAPABILITY_LIMITS.aspectRatios }
 };
 

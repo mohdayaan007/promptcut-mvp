@@ -1,5 +1,6 @@
 import { CAPTION_DEFAULTS, FONT_CATALOG, normalizeTitleColor, normalizeTitlePosition, normalizeTitleSize, normalizeTitleWeight, resolveFontId, resolveSemanticFontIntent } from "@/lib/title-config";
 import { CAPABILITY_LIMITS, getCapability } from "@/lib/editor-core/capability-registry";
+import { compileStyleProfile } from "@/lib/editor-core/style-profiles";
 
 function validationError(message) {
   return new Error(`Invalid edit plan: ${message}`);
@@ -83,6 +84,27 @@ function validateSequence(operation, sources) {
   }
 }
 
+function validateStyleProfile(operation) {
+  const allowedFields = new Set(["type", "profileId", "strength", "constraints", "sourceId"]);
+  for (const field of Object.keys(operation)) {
+    if (!allowedFields.has(field)) throw validationError(`style_profile does not support ${field}`);
+  }
+  if (Array.isArray(operation.constraints) && new Set(operation.constraints).size !== operation.constraints.length) {
+    throw validationError("style_profile constraints must not contain duplicates");
+  }
+  try {
+    // profileVersion intentionally remains server-owned: plans select an ID,
+    // while the compiler resolves the catalog's current server version.
+    compileStyleProfile({
+      profileId: operation.profileId,
+      ...(operation.strength === undefined ? {} : { strength: operation.strength }),
+      ...(operation.constraints === undefined ? {} : { constraints: operation.constraints })
+    });
+  } catch (error) {
+    throw validationError(error.message.replace(/^Invalid style profile: /, "style_profile "));
+  }
+}
+
 export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
   if (!plan || !["1", "2"].includes(plan.version) || !Array.isArray(plan.operations)) {
     throw validationError("version 1 or 2 with an operations array is required");
@@ -93,6 +115,8 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
   if (sourceAware && !sources.size) throw validationError("version 2 requires a source catalog");
   const seenSingletons = new Set();
   const zoomRanges = [];
+  const colorGradeScopes = new Set();
+  const styleProfileScopes = new Set();
   let sequenceCount = 0;
   for (const operation of plan.operations) {
     const capability = getCapability(operation?.type);
@@ -107,8 +131,8 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
     }
 
     if (operation.sourceId !== undefined) {
-      if (!sourceAware || !["color_grade", "visual_adjustment"].includes(operation.type)) {
-        throw validationError("sourceId is supported only for version 2 color_grade or visual_adjustment operations");
+      if (!sourceAware || !["color_grade", "style_profile", "visual_adjustment"].includes(operation.type)) {
+        throw validationError("sourceId is supported only for version 2 color_grade, style_profile, or visual_adjustment operations");
       }
       if (!sources.has(operation.sourceId)) throw validationError(`unknown source: ${operation.sourceId}`);
     }
@@ -119,13 +143,18 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
       }
     }
 
-    if (["merge", "color_grade", "visual_adjustment", "trim", "speed", "fade", "audio_volume", "audio_fade", "crop", "captions"].includes(operation.type)) {
+    if (["merge", "color_grade", "style_profile", "visual_adjustment", "trim", "speed", "fade", "audio_volume", "audio_fade", "crop", "captions"].includes(operation.type)) {
       if (seenSingletons.has(operation.type)) throw validationError(`only one ${operation.type} operation is allowed`);
       seenSingletons.add(operation.type);
     }
 
     if (operation.type === "color_grade" && !capability.supportedValues[operation.style]) {
       throw validationError(`unsupported color grade: ${operation.style}`);
+    }
+    if (operation.type === "color_grade") colorGradeScopes.add(operation.sourceId || "global");
+    if (operation.type === "style_profile") {
+      validateStyleProfile(operation);
+      styleProfileScopes.add(operation.sourceId || "global");
     }
     if (operation.type === "visual_adjustment") {
       const fields = ["brightness", "contrast", "saturation", "temperature", "tint"];
@@ -174,6 +203,12 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
     }
     if (operation.type === "crop" && !CAPABILITY_LIMITS.aspectRatios.includes(operation.aspect_ratio)) {
       throw validationError("crop aspect ratio is unsupported");
+    }
+  }
+
+  for (const scope of styleProfileScopes) {
+    if (colorGradeScopes.has(scope)) {
+      throw validationError(`style_profile conflicts with color_grade for ${scope === "global" ? "global" : scope} scope`);
     }
   }
 

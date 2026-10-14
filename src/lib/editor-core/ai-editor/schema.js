@@ -1,6 +1,7 @@
 import { COLOR_MAP, FONT_CATALOG, POSITION_MAP, SIZE_MAP, TITLE_SIZE_LIMITS } from "@/lib/title-config";
 import { COLOR_PRESETS } from "@/lib/color-presets";
 import { CAPABILITY_LIMITS } from "@/lib/editor-core/capability-registry";
+import { STYLE_PROFILE_CONSTRAINTS, STYLE_PROFILE_IDS, STYLE_PROFILE_STRENGTHS } from "@/lib/editor-core/style-profiles";
 
 const titleFields = {
   type: "object",
@@ -49,7 +50,7 @@ const captionFields = {
   required: ["type"], additionalProperties: false
 };
 
-export function createEditPlanJsonSchema({ sourceIds = [] } = {}) {
+export function createEditPlanJsonSchema({ sourceIds = [], supportsStyleProfiles = false } = {}) {
   const supportsSourceAwarePlans = sourceIds.length > 0;
   const sourceId = { type: "string", enum: sourceIds };
   const sourceColorFields = {
@@ -71,6 +72,25 @@ export function createEditPlanJsonSchema({ sourceIds = [] } = {}) {
   // independently rejects empty adjustment operations before execution.
   const visualAdjustmentFields = { type: "object", properties: visualProperties, required: ["type"], additionalProperties: false };
   const sourceVisualFields = { type: "object", properties: { ...visualProperties, sourceId }, required: ["type", "sourceId"], additionalProperties: false };
+  const styleProfileProperties = {
+    type: { type: "string", enum: ["style_profile"] },
+    profileId: { type: "string", enum: STYLE_PROFILE_IDS },
+    strength: { type: "string", enum: Object.keys(STYLE_PROFILE_STRENGTHS) },
+    constraints: {
+      type: "array",
+      uniqueItems: true,
+      maxItems: STYLE_PROFILE_CONSTRAINTS.length,
+      items: { type: "string", enum: STYLE_PROFILE_CONSTRAINTS }
+    }
+  };
+  const styleProfileFields = {
+    type: "object", properties: styleProfileProperties,
+    required: ["type", "profileId"], additionalProperties: false
+  };
+  const sourceStyleProfileFields = {
+    type: "object", properties: { ...styleProfileProperties, sourceId },
+    required: ["type", "profileId", "sourceId"], additionalProperties: false
+  };
   const sequenceFields = {
     type: "object",
     properties: {
@@ -178,7 +198,11 @@ export function createEditPlanJsonSchema({ sourceIds = [] } = {}) {
       additionalProperties: false
     }
   ];
-  if (supportsSourceAwarePlans) operationSchemas.push(sourceColorFields, sourceVisualFields, sequenceFields);
+  if (supportsStyleProfiles) operationSchemas.push(styleProfileFields);
+  if (supportsSourceAwarePlans) {
+    operationSchemas.push(sourceColorFields, sourceVisualFields, sequenceFields);
+    if (supportsStyleProfiles) operationSchemas.push(sourceStyleProfileFields);
+  }
 
   return {
     type: "object",

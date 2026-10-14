@@ -5,6 +5,7 @@ import { applyCaptionCorrection, CaptionError, mapCaptionCuesToOutput } from "@/
 import { buildAssFilter, writeTitleAssFile } from "@/lib/title-renderer";
 import { FONT_CATALOG, titleFontSize } from "@/lib/title-config";
 import { buildNormalizationFilter, createMediaProfile, getCropSettings } from "@/lib/editor-core/media-profile";
+import { compileStyleProfile } from "@/lib/editor-core/style-profiles";
 
 const FFMPEG = "ffmpeg";
 const FFPROBE = "ffprobe";
@@ -14,6 +15,25 @@ const VIDEO_ENCODING_ARGS = [
   "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2"
 ];
 const AUDIO_ONLY_ENCODING_ARGS = ["-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart"];
+
+// One server-owned order applies before source sequence assembly and again to
+// the assembled global timeline. Do not use prompt or model operation order.
+export const VISUAL_OPERATION_ORDER = Object.freeze([
+  "color_grade",
+  "style_profile",
+  "visual_adjustment"
+]);
+
+export function orderedVisualOperations(operations, { sourceId, sourceScoped = false } = {}) {
+  const matchesScope = sourceId !== undefined
+    ? (operation) => operation.sourceId === sourceId
+    : sourceScoped
+      ? (operation) => Boolean(operation.sourceId)
+      : (operation) => !operation.sourceId;
+  return VISUAL_OPERATION_ORDER.flatMap((type) => operations.filter(
+    (operation) => operation.type === type && matchesScope(operation)
+  ));
+}
 
 export class EditExecutionCancelledError extends Error {
   constructor() {
@@ -182,8 +202,22 @@ export function buildVisualAdjustmentFilters(operation) {
   return filters;
 }
 
+/** Resolves only semantic catalog identifiers into server-owned FFmpeg filters. */
+export function buildStyleProfileFilters(operation) {
+  const compiled = compileStyleProfile({
+    profileId: operation.profileId,
+    ...(operation.strength === undefined ? {} : { strength: operation.strength }),
+    ...(operation.constraints === undefined ? {} : { constraints: operation.constraints })
+  });
+  return buildVisualAdjustmentFilters(compiled.recipe);
+}
+
 async function applyVisualAdjustment(input, output, operation, executionController) {
   await exec(FFMPEG, ["-y", "-hide_banner", "-loglevel", "error", "-i", input, "-vf", buildVisualAdjustmentFilters(operation).join(","), ...VIDEO_ENCODING_ARGS, output], { executionController });
+}
+
+async function applyStyleProfile(input, output, operation, executionController) {
+  await exec(FFMPEG, ["-y", "-hide_banner", "-loglevel", "error", "-i", input, "-vf", buildStyleProfileFilters(operation).join(","), ...VIDEO_ENCODING_ARGS, output], { executionController });
 }
 
 async function cutClip(input, output, start, end, executionController) {
@@ -360,12 +394,13 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
   }
 
   if (sequence) {
-    // Server-owned order: named grade first, then bounded adjustment.
-    for (const type of ["color_grade", "visual_adjustment"]) for (const operation of plan.operations) {
-      if (operation.type !== type || !operation.sourceId) continue;
+    // Server-owned source-time order before clip cutting and sequence assembly.
+    for (const operation of orderedVisualOperations(plan.operations, { sourceScoped: true })) {
+      const { type } = operation;
       const source = sourceById.get(operation.sourceId);
       const adjustedPath = path.join(tempDirectory, `${type}-${source.index}.mp4`);
       if (type === "color_grade") await applyColorGrade(normalizedPaths.get(source.index), adjustedPath, operation.style, executionController);
+      else if (type === "style_profile") await applyStyleProfile(normalizedPaths.get(source.index), adjustedPath, operation, executionController);
       else await applyVisualAdjustment(normalizedPaths.get(source.index), adjustedPath, operation, executionController);
       normalizedPaths.set(source.index, adjustedPath);
     }
@@ -398,8 +433,12 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
   const cropSettings = getCropSettings(crop, profile);
   const filters = cropSettings.filter ? [cropSettings.filter] : [];
   for (const operation of plan.operations) if (operation.type === "zoom") filters.push(buildZoomFilter(operation, cropSettings));
-  for (const operation of plan.operations) if (operation.type === "color_grade" && !operation.sourceId) filters.push(...COLOR_PRESETS[operation.style]);
-  for (const operation of plan.operations) if (operation.type === "visual_adjustment" && !operation.sourceId) filters.push(...buildVisualAdjustmentFilters(operation));
+  // Server-owned global order after sequence/merge has established the output timeline.
+  for (const operation of orderedVisualOperations(plan.operations)) {
+    if (operation.type === "color_grade") filters.push(...COLOR_PRESETS[operation.style]);
+    else if (operation.type === "style_profile") filters.push(...buildStyleProfileFilters(operation));
+    else filters.push(...buildVisualAdjustmentFilters(operation));
+  }
 
   let processed = baseVideo;
   if (filters.length) {
