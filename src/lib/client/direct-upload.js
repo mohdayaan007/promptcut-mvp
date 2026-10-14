@@ -172,6 +172,11 @@ export function undoPreviewMode({ isRestoring, current, localVideoCount }) {
   return "normal";
 }
 
+/** A local original must not reveal itself until the opaque restoring cover has painted. */
+export function canCompleteUndoMediaRestoration({ isRestoring, restoringOriginal, originalPreviewArmed }) {
+  return Boolean(isRestoring && (!restoringOriginal || originalPreviewArmed));
+}
+
 export function describeUndoRestoration({ current, previous }) {
   const quote = (prompt) => {
     const value = String(prompt).trim();

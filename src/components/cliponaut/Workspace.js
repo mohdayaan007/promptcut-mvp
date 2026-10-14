@@ -26,6 +26,7 @@ export function Workspace({
   previewMode,
   originalVideo,
   restoringOriginal,
+  originalPreviewArmed,
   restoringResultUrl,
   onRestoredMediaReady,
   undoAnchor,
@@ -95,6 +96,7 @@ export function Workspace({
         previewMode={previewMode}
         originalVideo={originalVideo}
         restoringOriginal={restoringOriginal}
+        originalPreviewArmed={originalPreviewArmed}
         restoringResultUrl={restoringResultUrl}
         onRestoredMediaReady={onRestoredMediaReady}
       />
@@ -155,7 +157,7 @@ function SourcePreview({ file, onMediaReady }) {
   return <video key={sourceUrl} src={sourceUrl} controls playsInline className="cliponaut-result-video" aria-label="Original source preview" onLoadedData={onMediaReady} />;
 }
 
-function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain, previewMode, originalVideo, restoringOriginal, restoringResultUrl, onRestoredMediaReady }) {
+function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain, previewMode, originalVideo, restoringOriginal, originalPreviewArmed, restoringResultUrl, onRestoredMediaReady }) {
   const videoRef = useRef(null);
   const [playbackRate, setPlaybackRate] = useState("1");
 
@@ -195,7 +197,7 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
       </fieldset>
 
       <div className={`cliponaut-preview-stage is-${status} ${previewMode === "restoring" ? "is-restoring" : ""}`}>
-        {(previewMode === "original-source" || (previewMode === "restoring" && restoringOriginal)) && originalVideo && (
+        {(previewMode === "original-source" || (previewMode === "restoring" && restoringOriginal && originalPreviewArmed)) && originalVideo && (
           <SourcePreview file={originalVideo} onMediaReady={previewMode === "restoring" ? onRestoredMediaReady : undefined} />
         )}
         {previewMode === "normal" && status === "idle" && <PreviewEmptyState />}

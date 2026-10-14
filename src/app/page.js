@@ -10,6 +10,7 @@ import { Workspace } from "@/components/cliponaut/Workspace";
 import { JobRecoveryModal } from "@/components/cliponaut/JobRecoveryModal";
 import {
   cancelJob,
+  canCompleteUndoMediaRestoration,
   clearUndoState,
   consumeUndo,
   describeUndoRestoration,
@@ -75,6 +76,7 @@ export default function HomePage() {
   const [isUndoing, setIsUndoing] = useState(false);
   const [isRestoringPrevious, setIsRestoringPrevious] = useState(false);
   const [restoringOriginal, setRestoringOriginal] = useState(false);
+  const [originalPreviewArmed, setOriginalPreviewArmed] = useState(false);
   const [restoringResultUrl, setRestoringResultUrl] = useState(null);
   const [undoAnchor, setUndoAnchor] = useState(null);
 
@@ -118,6 +120,7 @@ export default function HomePage() {
     setIsRestoringPrevious(false);
     setIsUndoing(false);
     setRestoringOriginal(false);
+    setOriginalPreviewArmed(false);
     setRestoringResultUrl(null);
   }, []);
 
@@ -413,11 +416,15 @@ export default function HomePage() {
       setIsUndoing(true);
       setIsRestoringPrevious(true);
       setRestoringOriginal(previous.kind === "original");
+      setOriginalPreviewArmed(false);
       setRestoringResultUrl(null);
     });
     await waitForBrowserPaint();
 
     if (previous.kind === "original") {
+      // The source preview is intentionally mounted only after the opaque
+      // restoring presentation has received a browser paint.
+      setOriginalPreviewArmed(true);
       const next = persistUndoState(consumeUndo(undoStateRef.current));
       setUndoAnchor(undoAnchorForCurrent(current, { consumed: true }));
       showOriginal(next.current.sources);
@@ -451,8 +458,10 @@ export default function HomePage() {
   };
 
   const handleRestoredMediaReady = useCallback(() => {
-    if (isRestoringPrevious) finishUndoRestoration();
-  }, [finishUndoRestoration, isRestoringPrevious]);
+    if (canCompleteUndoMediaRestoration({ isRestoring: isRestoringPrevious, restoringOriginal, originalPreviewArmed })) {
+      finishUndoRestoration();
+    }
+  }, [finishUndoRestoration, isRestoringPrevious, originalPreviewArmed, restoringOriginal]);
 
   return (
     <main className={`cliponaut-shell ${hasWorkspace ? "is-workspace" : "is-empty"}`}>
@@ -500,6 +509,7 @@ export default function HomePage() {
             previewMode={previewMode}
             originalVideo={videos[0] || null}
             restoringOriginal={restoringOriginal}
+            originalPreviewArmed={originalPreviewArmed}
             restoringResultUrl={restoringResultUrl}
             onRestoredMediaReady={handleRestoredMediaReady}
             undoAnchor={undoAnchor}

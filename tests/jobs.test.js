@@ -10,7 +10,7 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validat
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldShowUndoControl, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldShowUndoControl, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
@@ -1626,6 +1626,13 @@ test("Undo waits for two browser paint frames before beginning restoration work"
   frames.shift()();
   await afterPaint;
   assert.equal(restorationStarted, true);
+});
+
+test("Undo original media cannot finish restoration before the cover paint barrier", () => {
+  assert.equal(canCompleteUndoMediaRestoration({ isRestoring: true, restoringOriginal: true, originalPreviewArmed: false }), false, "an immediate local Blob loadeddata event is ignored before the cover paints");
+  assert.equal(canCompleteUndoMediaRestoration({ isRestoring: true, restoringOriginal: true, originalPreviewArmed: true }), true, "the original may finish only after the paint barrier arms its preview");
+  assert.equal(canCompleteUndoMediaRestoration({ isRestoring: true, restoringOriginal: false, originalPreviewArmed: false }), true, "previous-job restoration remains media-ready driven");
+  assert.equal(canCompleteUndoMediaRestoration({ isRestoring: false, restoringOriginal: true, originalPreviewArmed: true }), false);
 });
 
 test("single-step Undo records concise prompt context without altering restoration state", () => {
