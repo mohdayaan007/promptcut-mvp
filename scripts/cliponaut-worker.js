@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm } from "fs/promises";
 import os from "os";
 import path from "path";
 import crypto from "crypto";
-import { createAiEditPlan, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
+import { createAiEditPlan, summarizeStylePlanDiagnostic, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import { createExecutionController, EditExecutionCancelledError, executeEditPlan } from "@/lib/editor-core/edit-executor";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
@@ -96,6 +96,8 @@ async function processJob(job) {
     const plan = planning.plan;
     if (requestsCaptions(job.prompt) && !plan.operations.some((operation) => operation.type === "captions")) plan.operations.push({ type: "captions" });
     const editPlan = validateEditPlan(plan, { sourceCatalog });
+    const stylePlanDiagnostic = summarizeStylePlanDiagnostic(planning, editPlan);
+    if (stylePlanDiagnostic) console.info("Cliponaut style plan diagnostic:", { jobId: job.id, ...stylePlanDiagnostic });
     const captionOperation = editPlan.operations.find((operation) => operation.type === "captions");
     let captionCues = [];
     if (captionOperation) {

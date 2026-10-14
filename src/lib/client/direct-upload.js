@@ -172,9 +172,24 @@ export function undoPreviewMode({ isRestoring, current, localVideoCount }) {
   return "normal";
 }
 
-/** A local original must not reveal itself until the opaque restoring cover has painted. */
-export function canCompleteUndoMediaRestoration({ isRestoring, restoringOriginal, originalPreviewArmed }) {
-  return Boolean(isRestoring && (!restoringOriginal || originalPreviewArmed));
+/**
+ * A local original needs two presentation barriers: one before its Blob preview
+ * mounts, then one after it reports ready while it is still covered. A restored
+ * job remains media-ready driven as before.
+ */
+export function undoMediaReadyAction({ isRestoring, restoringOriginal, originalPreviewArmed, originalReadyForReveal = false }) {
+  if (!isRestoring) return "ignore";
+  if (!restoringOriginal) return "complete";
+  if (!originalPreviewArmed) return "ignore";
+  return originalReadyForReveal ? "complete" : "wait-for-reveal-paint";
+}
+
+export function canCompleteUndoMediaRestoration(options) {
+  return undoMediaReadyAction(options) === "complete";
+}
+
+export function shouldScheduleUndoOriginalReveal(options, revealScheduled = false) {
+  return undoMediaReadyAction(options) === "wait-for-reveal-paint" && !revealScheduled;
 }
 
 export function describeUndoRestoration({ current, previous }) {

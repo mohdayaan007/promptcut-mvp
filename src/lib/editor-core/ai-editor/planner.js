@@ -30,6 +30,52 @@ function safePlanningErrorMessage(error) {
     .replace(/\b(api[_-]?key|access[_-]?token|authorization|credential|secret|signature)=?[^\s,;]+/gi, "$1=[redacted]");
 }
 
+function safeResolvedStyle(style) {
+  if (!style?.profileId) return null;
+  return {
+    profileId: style.profileId,
+    ...(style.strength ? { strength: style.strength } : {}),
+    ...(style.constraints?.length ? { constraints: [...style.constraints] } : {}),
+    ...(style.sourceId ? { sourceId: style.sourceId } : {})
+  };
+}
+
+/** Only validated, server-owned style facts may leave planning for job logs. */
+export function createStylePlanningDiagnostics({ styleIntent = null, delegatedDecision = null, resolvedStyle = null, planningPath = "deterministic" } = {}) {
+  const styleIntentMode = ["semantic_style", "delegated_taste"].includes(styleIntent?.mode)
+    ? styleIntent.mode
+    : "none";
+  return {
+    styleIntentMode,
+    planningPath,
+    ...(delegatedDecision ? {
+      delegatedDecision: delegatedDecision.decision === "selected_style"
+        ? { decision: "selected_style", ...safeResolvedStyle(delegatedDecision) }
+        : { decision: "no_safe_choice" }
+    } : {}),
+    ...(safeResolvedStyle(resolvedStyle) ? { resolvedStyle: safeResolvedStyle(resolvedStyle) } : {})
+  };
+}
+
+/** A compact validated-plan trace for the worker; never include model payloads. */
+export function summarizeStylePlanDiagnostic(planning = {}, plan = {}) {
+  const styleProfiles = (plan.operations || [])
+    .filter((operation) => operation?.type === "style_profile")
+    .map((operation) => safeResolvedStyle(operation));
+  const diagnostics = planning.styleDiagnostics || createStylePlanningDiagnostics({ planningPath: planning.source || "unknown" });
+  if (diagnostics.styleIntentMode === "none" && !styleProfiles.length) return null;
+  return {
+    planningSource: planning.source || "unknown",
+    planningPath: diagnostics.planningPath,
+    styleIntentMode: diagnostics.styleIntentMode,
+    ...(diagnostics.delegatedDecision ? { delegatedDecision: diagnostics.delegatedDecision } : {}),
+    ...(diagnostics.resolvedStyle ? { resolvedStyle: diagnostics.resolvedStyle } : {}),
+    styleProfiles,
+    hasVisualAdjustment: (plan.operations || []).some((operation) => operation?.type === "visual_adjustment"),
+    hasLegacyColorGrade: (plan.operations || []).some((operation) => operation?.type === "color_grade")
+  };
+}
+
 function sourceLabel({ sourceId = "source-1", ordinal = 1, filename = "unknown", duration = "unknown", width = "unknown", height = "unknown" } = {}) {
   return [
     `SOURCE ${sourceId}`,
@@ -808,7 +854,16 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
         throw new UnsupportedEditRequestError("This source description could not be identified confidently");
       }
       validateResolvedSemanticSourcesInPlan(directPlan, resolvedSemanticSources);
-      return { plan: addAutomaticMerge(collapseGlobalSourceColorGrades(directPlan), hasMultipleVideos), transcripts };
+      return {
+        plan: addAutomaticMerge(collapseGlobalSourceColorGrades(directPlan), hasMultipleVideos),
+        transcripts,
+        styleDiagnostics: createStylePlanningDiagnostics({
+          styleIntent: textStyleIntent,
+          delegatedDecision,
+          resolvedStyle: resolvedTextStyle,
+          planningPath: "delegated_style_direct"
+        })
+      };
     }
 
     const response = await generateWithRetries(ai, {
@@ -851,7 +906,16 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
       throw new UnsupportedEditRequestError("This source description could not be identified confidently");
     }
     validateResolvedSemanticSourcesInPlan(plan, resolvedSemanticSources);
-    return { plan: addAutomaticMerge(collapseGlobalSourceColorGrades(plan), hasMultipleVideos), transcripts };
+    return {
+      plan: addAutomaticMerge(collapseGlobalSourceColorGrades(plan), hasMultipleVideos),
+      transcripts,
+      styleDiagnostics: createStylePlanningDiagnostics({
+        styleIntent: textStyleIntent,
+        delegatedDecision,
+        resolvedStyle: resolvedTextStyle,
+        planningPath: "gemini_plan"
+      })
+    };
   } finally {
     await Promise.all(uploadedFiles.filter((file) => file?.name).map((file) =>
       ai.files.delete({ name: file.name }).catch((error) => {
@@ -877,20 +941,23 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
     }
     return {
       plan: createEditPlan({ prompt, hasMultipleVideos, sourceCatalog }),
-      source: "deterministic"
+      source: "deterministic",
+      styleDiagnostics: createStylePlanningDiagnostics({ planningPath: "invalid_explicit_style_source" })
     };
   }
   if (deterministicStyleRequest && !requiresVisualUnderstanding) {
     return {
       plan: createEditPlan({ prompt, hasMultipleVideos, sourceCatalog }),
-      source: "deterministic"
+      source: "deterministic",
+      styleDiagnostics: createStylePlanningDiagnostics({ planningPath: "deterministic_style" })
     };
   }
   if (!process.env.GEMINI_API_KEY || !prompt.trim()) {
     if (requiresVisualUnderstanding || requiresDelegatedStyleJudgment(prompt)) throw new UnsupportedEditRequestError("This edit needs Gemini video understanding");
     return {
       plan: createEditPlan({ prompt, hasMultipleVideos, sourceCatalog }),
-      source: "deterministic"
+      source: "deterministic",
+      styleDiagnostics: createStylePlanningDiagnostics({ planningPath: "deterministic" })
     };
   }
 
@@ -904,7 +971,12 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
         const resolvedStyleIntent = resolveTextStyleScope(textStyleIntent, prompt);
         return {
           plan: createEditPlan({ prompt, hasMultipleVideos, sourceCatalog, resolvedStyleIntent }),
-          source: "gemini"
+          source: "gemini",
+          styleDiagnostics: createStylePlanningDiagnostics({
+            styleIntent: textStyleIntent,
+            resolvedStyle: resolvedStyleIntent,
+            planningPath: "semantic_style_fast_path"
+          })
         };
       }
     }
@@ -929,7 +1001,8 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
     console.error("Gemini planning failed; using deterministic fallback:", error.message);
     return {
       plan: createEditPlan({ prompt, hasMultipleVideos, sourceCatalog }),
-      source: "deterministic"
+      source: "deterministic",
+      styleDiagnostics: createStylePlanningDiagnostics({ planningPath: "deterministic_fallback" })
     };
   }
 }

@@ -10,15 +10,15 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validat
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldShowUndoControl, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createDelegatedStyleDecisionJsonSchema, createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { buildDelegatedStyleContents, createAiEditPlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
+import { buildDelegatedStyleContents, createAiEditPlan, createStylePlanningDiagnostics, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, summarizeStylePlanDiagnostic, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt, buildDelegatedStyleDecisionPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
-import { buildStyleProfileFilters, buildVisualAdjustmentFilters, createExecutionController, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
+import { buildStyleProfileFilters, buildVisualAdjustmentFilters, compileStyleProfileForExecution, createExecutionController, createStyleProfileExecutionDiagnostic, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
 import { CAPABILITY_REGISTRY } from "@/lib/editor-core/capability-registry";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
 import { extractSpeechAudio, transcribeSource, wordAnnotations, SpokenTranscriptionError } from "@/lib/editor-core/spoken-transcription";
@@ -97,6 +97,43 @@ test("B1 style profiles compile server-owned bounded canonical recipes", () => {
   assert.deepEqual(compileStyleProfile({ profileId: "cinematic" }), standard, "repeated compilation is identical");
   assert.throws(() => createCanonicalVisualRecipe({ brightness: Infinity }), /finite number/);
   assert.throws(() => createCanonicalVisualRecipe({ filter: "eq=contrast=2" }), /unsupported recipe field/);
+});
+
+test("B1 style diagnostics contain only validated server-owned planning and execution facts", () => {
+  const planning = createStylePlanningDiagnostics({
+    styleIntent: { mode: "delegated_taste" },
+    delegatedDecision: { decision: "selected_style", profileId: "cinematic", strength: "strong", constraints: ["avoid_darkening"] },
+    resolvedStyle: { profileId: "cinematic", strength: "strong", constraints: ["avoid_darkening"], sourceId: "source-2" },
+    planningPath: "delegated_style_direct"
+  });
+  assert.deepEqual(planning, {
+    styleIntentMode: "delegated_taste",
+    planningPath: "delegated_style_direct",
+    delegatedDecision: { decision: "selected_style", profileId: "cinematic", strength: "strong", constraints: ["avoid_darkening"] },
+    resolvedStyle: { profileId: "cinematic", strength: "strong", constraints: ["avoid_darkening"], sourceId: "source-2" }
+  });
+  assert.deepEqual(createStylePlanningDiagnostics({
+    styleIntent: { mode: "delegated_taste" }, delegatedDecision: { decision: "no_safe_choice" }, planningPath: "delegated_style_rejected"
+  }), {
+    styleIntentMode: "delegated_taste", planningPath: "delegated_style_rejected", delegatedDecision: { decision: "no_safe_choice" }
+  });
+
+  const plan = { version: "2", operations: [
+    { type: "sequence", clips: [{ sourceId: "source-2", start: 0, end: 2 }] },
+    { type: "style_profile", profileId: "cinematic", strength: "strong", constraints: ["avoid_darkening"], sourceId: "source-2" },
+    { type: "visual_adjustment", brightness: 0.2 },
+    { type: "color_grade", style: "warm" }
+  ] };
+  const summary = summarizeStylePlanDiagnostic({ source: "gemini", styleDiagnostics: planning }, plan);
+  assert.deepEqual(summary.styleProfiles, [{ profileId: "cinematic", strength: "strong", constraints: ["avoid_darkening"], sourceId: "source-2" }]);
+  assert.equal(summary.hasVisualAdjustment, true);
+  assert.equal(summary.hasLegacyColorGrade, true);
+  const execution = createStyleProfileExecutionDiagnostic(plan.operations[1], { jobId: "job-safe", scope: "source-2" });
+  assert.ok(Object.values(execution.recipe).some((value) => value !== 0));
+  assert.deepEqual(execution.filters, buildStyleProfileFilters(plan.operations[1]));
+  assert.deepEqual(compileStyleProfileForExecution(plan.operations[1]).filters, execution.filters);
+  const text = JSON.stringify({ planning, summary, execution });
+  assert.doesNotMatch(text, /https?:\/\/|accessToken|apiKey|secret|credential|signedUrl|localPath|geminiUri/i);
 });
 
 test("B1 style_profile remains planner-dormant while validating and rendering through server-owned recipes", () => {
@@ -524,6 +561,12 @@ test("B1 delegated content-aware taste reuses active media and preserves server 
     prompt: "Make this look good.", sourceCatalog: [catalog[0]], sourceInputs: plannerSources([catalog[0]]), aiClient: globalClient
   }));
   assert.deepEqual(global.plan.operations, [{ type: "style_profile", profileId: "clean_commercial" }]);
+  assert.deepEqual(global.styleDiagnostics, {
+    styleIntentMode: "delegated_taste",
+    planningPath: "delegated_style_direct",
+    delegatedDecision: { decision: "selected_style", profileId: "clean_commercial" },
+    resolvedStyle: { profileId: "clean_commercial" }
+  });
   assert.equal(globalClient.uploads.length, 1);
   assert.equal(globalClient.deletes.length, 1);
   assert.equal(globalClient.requests.length, 2, "text interpretation plus one visual taste decision only");
@@ -1628,11 +1671,19 @@ test("Undo waits for two browser paint frames before beginning restoration work"
   assert.equal(restorationStarted, true);
 });
 
-test("Undo original media cannot finish restoration before the cover paint barrier", () => {
-  assert.equal(canCompleteUndoMediaRestoration({ isRestoring: true, restoringOriginal: true, originalPreviewArmed: false }), false, "an immediate local Blob loadeddata event is ignored before the cover paints");
-  assert.equal(canCompleteUndoMediaRestoration({ isRestoring: true, restoringOriginal: true, originalPreviewArmed: true }), true, "the original may finish only after the paint barrier arms its preview");
-  assert.equal(canCompleteUndoMediaRestoration({ isRestoring: true, restoringOriginal: false, originalPreviewArmed: false }), true, "previous-job restoration remains media-ready driven");
-  assert.equal(canCompleteUndoMediaRestoration({ isRestoring: false, restoringOriginal: true, originalPreviewArmed: true }), false);
+test("Undo original restoration requires both paint barriers and ignores duplicate media-ready events", () => {
+  const beforeMount = { isRestoring: true, restoringOriginal: true, originalPreviewArmed: false };
+  const mediaReady = { isRestoring: true, restoringOriginal: true, originalPreviewArmed: true };
+  const revealReady = { ...mediaReady, originalReadyForReveal: true };
+  assert.equal(undoMediaReadyAction(beforeMount), "ignore", "an immediate local Blob event is ignored before the pre-mount cover paint");
+  assert.equal(undoMediaReadyAction(mediaReady), "wait-for-reveal-paint", "media-ready alone keeps the original beneath the cover");
+  assert.equal(canCompleteUndoMediaRestoration(mediaReady), false);
+  assert.equal(shouldScheduleUndoOriginalReveal(mediaReady), true, "the first media-ready event schedules exactly one reveal barrier");
+  assert.equal(shouldScheduleUndoOriginalReveal(mediaReady, true), false, "duplicate media-ready events cannot schedule a second completion");
+  assert.equal(undoMediaReadyAction(revealReady), "complete", "only the post-ready paint barrier allows reveal");
+  assert.equal(canCompleteUndoMediaRestoration(revealReady), true);
+  assert.equal(undoMediaReadyAction({ isRestoring: true, restoringOriginal: false, originalPreviewArmed: false }), "complete", "previous-job restoration remains media-ready driven");
+  assert.equal(undoMediaReadyAction({ isRestoring: false, restoringOriginal: true, originalPreviewArmed: true }), "ignore");
 });
 
 test("single-step Undo records concise prompt context without altering restoration state", () => {

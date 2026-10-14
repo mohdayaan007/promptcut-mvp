@@ -203,21 +203,46 @@ export function buildVisualAdjustmentFilters(operation) {
 }
 
 /** Resolves only semantic catalog identifiers into server-owned FFmpeg filters. */
-export function buildStyleProfileFilters(operation) {
+export function compileStyleProfileForExecution(operation) {
   const compiled = compileStyleProfile({
     profileId: operation.profileId,
     ...(operation.strength === undefined ? {} : { strength: operation.strength }),
     ...(operation.constraints === undefined ? {} : { constraints: operation.constraints })
   });
-  return buildVisualAdjustmentFilters(compiled.recipe);
+  return { compiled, filters: buildVisualAdjustmentFilters(compiled.recipe) };
+}
+
+export function buildStyleProfileFilters(operation) {
+  return compileStyleProfileForExecution(operation).filters;
+}
+
+export function createStyleProfileExecutionDiagnostic(operation, { jobId = null, scope = "global" } = {}) {
+  const { compiled, filters } = compileStyleProfileForExecution(operation);
+  return {
+    ...(jobId ? { jobId } : {}),
+    scope,
+    profileId: compiled.profileId,
+    profileVersion: compiled.profileVersion,
+    strength: compiled.strength,
+    constraints: compiled.constraints,
+    recipe: compiled.recipe,
+    filters
+  };
+}
+
+function logStyleProfileExecution(operation, options) {
+  const diagnostic = createStyleProfileExecutionDiagnostic(operation, options);
+  if (diagnostic.jobId) console.info("Cliponaut style profile applied:", diagnostic);
+  return diagnostic.filters;
 }
 
 async function applyVisualAdjustment(input, output, operation, executionController) {
   await exec(FFMPEG, ["-y", "-hide_banner", "-loglevel", "error", "-i", input, "-vf", buildVisualAdjustmentFilters(operation).join(","), ...VIDEO_ENCODING_ARGS, output], { executionController });
 }
 
-async function applyStyleProfile(input, output, operation, executionController) {
-  await exec(FFMPEG, ["-y", "-hide_banner", "-loglevel", "error", "-i", input, "-vf", buildStyleProfileFilters(operation).join(","), ...VIDEO_ENCODING_ARGS, output], { executionController });
+async function applyStyleProfile(input, output, operation, executionController, jobId) {
+  const filters = logStyleProfileExecution(operation, { jobId, scope: operation.sourceId || "global" });
+  await exec(FFMPEG, ["-y", "-hide_banner", "-loglevel", "error", "-i", input, "-vf", filters.join(","), ...VIDEO_ENCODING_ARGS, output], { executionController });
 }
 
 async function cutClip(input, output, start, end, executionController) {
@@ -400,7 +425,7 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
       const source = sourceById.get(operation.sourceId);
       const adjustedPath = path.join(tempDirectory, `${type}-${source.index}.mp4`);
       if (type === "color_grade") await applyColorGrade(normalizedPaths.get(source.index), adjustedPath, operation.style, executionController);
-      else if (type === "style_profile") await applyStyleProfile(normalizedPaths.get(source.index), adjustedPath, operation, executionController);
+      else if (type === "style_profile") await applyStyleProfile(normalizedPaths.get(source.index), adjustedPath, operation, executionController, jobId);
       else await applyVisualAdjustment(normalizedPaths.get(source.index), adjustedPath, operation, executionController);
       normalizedPaths.set(source.index, adjustedPath);
     }
@@ -436,7 +461,7 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
   // Server-owned global order after sequence/merge has established the output timeline.
   for (const operation of orderedVisualOperations(plan.operations)) {
     if (operation.type === "color_grade") filters.push(...COLOR_PRESETS[operation.style]);
-    else if (operation.type === "style_profile") filters.push(...buildStyleProfileFilters(operation));
+    else if (operation.type === "style_profile") filters.push(...logStyleProfileExecution(operation, { jobId, scope: "global" }));
     else filters.push(...buildVisualAdjustmentFilters(operation));
   }
 

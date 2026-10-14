@@ -10,7 +10,6 @@ import { Workspace } from "@/components/cliponaut/Workspace";
 import { JobRecoveryModal } from "@/components/cliponaut/JobRecoveryModal";
 import {
   cancelJob,
-  canCompleteUndoMediaRestoration,
   clearUndoState,
   consumeUndo,
   describeUndoRestoration,
@@ -25,8 +24,10 @@ import {
   resolveUndoRestoration,
   saveUndoState,
   setUndoActiveJob,
+  shouldScheduleUndoOriginalReveal,
   undoPreviewMode,
   uploadAndQueueJob,
+  undoMediaReadyAction,
   waitForBrowserPaint,
 } from "@/lib/client/direct-upload";
 
@@ -85,6 +86,7 @@ export default function HomePage() {
   const promptRef = useRef(null);
   const requestControllerRef = useRef(null);
   const undoStateRef = useRef(null);
+  const originalRevealScheduledRef = useRef(false);
   const turnIdRef = useRef(0);
 
   const hasWorkspace = Boolean(videos.length || images.length || activeJob || undoState?.current);
@@ -117,6 +119,7 @@ export default function HomePage() {
   }, []);
 
   const finishUndoRestoration = useCallback(() => {
+    originalRevealScheduledRef.current = false;
     setIsRestoringPrevious(false);
     setIsUndoing(false);
     setRestoringOriginal(false);
@@ -418,6 +421,7 @@ export default function HomePage() {
       setRestoringOriginal(previous.kind === "original");
       setOriginalPreviewArmed(false);
       setRestoringResultUrl(null);
+      originalRevealScheduledRef.current = false;
     });
     await waitForBrowserPaint();
 
@@ -458,8 +462,23 @@ export default function HomePage() {
   };
 
   const handleRestoredMediaReady = useCallback(() => {
-    if (canCompleteUndoMediaRestoration({ isRestoring: isRestoringPrevious, restoringOriginal, originalPreviewArmed })) {
+    const action = undoMediaReadyAction({
+      isRestoring: isRestoringPrevious,
+      restoringOriginal,
+      originalPreviewArmed
+    });
+    if (action === "complete") {
       finishUndoRestoration();
+    } else if (shouldScheduleUndoOriginalReveal({
+      isRestoring: isRestoringPrevious,
+      restoringOriginal,
+      originalPreviewArmed
+    }, originalRevealScheduledRef.current)) {
+      originalRevealScheduledRef.current = true;
+      // Keep the ready local Blob beneath the opaque cover for one more paint.
+      // This prevents its synchronous loadeddata event from becoming the first
+      // visible post-click state.
+      waitForBrowserPaint().then(finishUndoRestoration);
     }
   }, [finishUndoRestoration, isRestoringPrevious, originalPreviewArmed, restoringOriginal]);
 
