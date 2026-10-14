@@ -2277,3 +2277,75 @@ Founder manually verified both A → B → Undo and first edit → Original; bot
 
 `Single-Step Undo: ✅ COMPLETE`
 `Phase 3C-A — Visual Adjustment Engine: ✅ COMPLETE`
+
+---
+
+# Phase 3C-B — Filters & Reference Styling Planned Acceptance
+
+Status: `⏳ PLANNED / NOT YET IMPLEMENTED`
+
+These are planned product and quality acceptance cases. They do not indicate that natural-language looks, reference images/videos, reference typography, texture primitives, or reference attachments currently exist.
+
+## B1 — Natural-Language Look Engine
+
+| Case | Planned prompt / fixture | Planned acceptance |
+| --- | --- | --- |
+| B1-A — ordinary grammar | `Make this feel premium.` | Produces a visibly coherent, professional treatment without requiring a look name. |
+| B1-B — imperfect grammar | `make nice`, `bit warmer pls`, `instagram type look` | Clear intent resolves safely without brittle wording requirements. |
+| B1-C — modifier strength | `Make it slightly cinematic.` / `Make the film look stronger.` | Strength differences are perceptible, bounded, and do not damage footage. |
+| B1-D — delegated taste | `Make this look good.` | System may choose a footage-appropriate treatment and explains it simply afterward. |
+| B1-E — differentiation | representative look families | Chosen looks are visibly differentiated and publishable on representative media. |
+| B1-F — constraints | `Make it cinematic, but keep skin tones natural.` | Constraint language is preserved safely; no overprocessed result. |
+
+## B2A — Reference Image Look Matching
+
+| Case | Planned fixture | Planned acceptance |
+| --- | --- | --- |
+| B2A-A — basic screenshot match | single-style JPG/PNG/WebP reference + target | Output visibly moves toward the reference through comparative target/reference analysis, not a nearest generic preset. |
+| B2A-B — subject mismatch | unrelated target/reference subjects | Visual treatment transfers while target subject remains usable. |
+| B2A-C — difficult exposure | bright reference + already bright target; dark reference + low-light target | No blind exposure change, clipping, crushing, or corruption. |
+| B2A-D — skin-tone preservation | talking-head fixture | Skin tones remain professional while supported reference direction is visible. |
+| B2A-E — grain/texture | grain/softness/vignette reference | Supported texture characteristics are reproduced only when safe and requested/derived. |
+| B2A-F — unsuitable reference | clearly unsuitable or meaningless reference | Safe rejection with a concise user-facing message; no internal classification detail. |
+
+## B2B — Reference Video Look Matching
+
+| Case | Planned fixture | Planned acceptance |
+| --- | --- | --- |
+| B2B-A — valid reference | one 3–60 second MP4/MOV/WebM reference | Representative-frame visual analysis extracts a coherent look; audio is ignored. |
+| B2B-B — consistent style | consistent short reference video | Output follows the persistent visual treatment rather than one incidental frame. |
+| B2B-C — multiple looks | distinct style sections | System detects ambiguity and does not average or silently choose. |
+| B2B-D — numbered choice | multiple-look reference | User can resolve with a numbered choice, ordinary ordinal wording, or style label when safe. |
+| B2B-E — explicit range | `Use the look from 0:15–0:25.` | Requested reference range is used as the authoritative visual-style source. |
+| B2B-F — oversized/long | over-limit duration or size | Clear safe rejection or request for a shorter reference/range. |
+| B2B-G — unsuitable/random | black, meaningless, or incompatible reference | No blind averaging; safe response explains the reference is unsuitable or unhelpful. |
+
+## Shared Reference-Safety Case — Images and Videos
+
+| Case | Planned fixture | Planned acceptance |
+| --- | --- | --- |
+| B2-S — reference safety | clearly disallowed/high-risk image and video references; ordinary non-explicit fashion, swimwear, kissing, and lifestyle references | Clearly disallowed/high-risk references are rejected before style analysis or render with concise copy that reveals no unnecessary moderation/classification detail. Ordinary non-explicit references are not rejected solely for fashion, swimwear, kissing, or lifestyle content. No style analysis or render proceeds after a rejection. |
+
+This is planned acceptance only. It does not specify a moderation provider/model or claim that reference-safety enforcement is implemented.
+
+## B3 — Reference Typography
+
+| Case | Planned fixture | Planned acceptance |
+| --- | --- | --- |
+| B3-A — typography match | single-title reference | Closest supported treatment considers more than font family and remains professional. |
+| B3-B — multiple-font ambiguity | reference with distinct text styles | System asks which text/style to match rather than guessing. |
+
+## B4 — Supporting Effects / Texture
+
+| Case | Planned prompt | Planned acceptance |
+| --- | --- | --- |
+| B4-A — grain | `Add subtle grain.` | Grain is visible but controlled and output remains publishable. |
+| B4-B — vignette | bounded vignette request | Vignette is compositionally useful and does not obscure subject matter. |
+| B4-C — blur | bounded blur/softness request | Softness is intentional, safe, and does not create corrupted output. |
+| B4-D — sharpen | bounded sharpen request | Detail enhancement avoids halos and cheap overprocessing. |
+
+## Combined Quality Cases
+
+Later acceptance must cover style + typography + texture compositions, natural refinement (`Keep the colors but soften it.`), and final artifact playability. Human side-by-side assessment remains required for subjective visual similarity and publish readiness; no false numeric match guarantee is implied.
+
+`Phase 3C-B — Filters & Reference Styling: ⏳ PLANNED / NOT YET IMPLEMENTED`

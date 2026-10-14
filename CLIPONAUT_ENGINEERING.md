@@ -866,6 +866,16 @@ Restoration UI must prevent the outgoing video from visibly lingering. Historica
 
 Visual-adjustment intent remains bounded and validated. Qualitative intensity belongs in deterministic server-side mapping; combination headroom may protect output quality. Gemini must not invent FFmpeg parameters outside the validated contract. Future calibration may tune strength without redesigning the architecture.
 
+# 3C-B Filters & Reference Styling Principles
+
+Phase 3C-B is planned work. Treat user style intent separately from implementation primitives: a versionable style profile may combine an optional LUT, bounded deterministic adjustments, and texture primitives such as grain, vignette, blur, or sharpen. Existing repository LUT files are not automatically production-grade 3C-B assets.
+
+Reference matching must compare target footage characteristics against reference characteristics and derive a bounded target-to-reference treatment. It must not be implemented as “name the nearest preset and apply it.” Reference media is style input, never an output layer. The server remains authoritative for permitted parameters, validation, safety, and deterministic execution.
+
+Reference-video analysis should use representative sampled frames rather than wastefully processing every frame. If distinct candidate looks or typography styles are ambiguous, surface that ambiguity to the user rather than silently averaging or guessing. Reference matching must protect target footage from clipping, crushed shadows, damaged skin tones, excessive color casts, and cheap overprocessing.
+
+When implemented, 3C-B must reuse the existing durable job, private storage, worker, and FFmpeg architecture; do not create a parallel renderer or history system.
+
 # 31. Agent Responsibilities
 
 ## Codex / Engineering Agent

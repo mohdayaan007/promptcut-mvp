@@ -1609,42 +1609,111 @@ No multi-step history, redo, branching, cumulative conversational editing, or da
 
 Status: `⏳ PLANNED`
 
-Conceptual sub-phases:
+Purpose:
 
-- B1 — Strong Cliponaut Looks / LUT Library
-- B2 — Reference Image Look Matching
-- B3 — Reference Typography
-- B4 — Supporting Visual Effects
+Let users describe a desired finish in ordinary language or show Cliponaut a reference image/video, then receive a publish-ready visual treatment without learning LUTs, grading controls, typography terminology, or traditional-editor workflows. The product promise is outcome-first: “tell Cliponaut how you want the video to look — or show it a reference.”
 
-### B1 — Strong Cliponaut Looks / LUT Library
+Quality, not filter count, is the phase success criterion. A result is successful when a creator would trust it enough to publish without reopening another editor. The quality target is strong perceptual direction while keeping target footage usable and professional.
 
-Create a curated library of clearly differentiated Cliponaut-owned looks rather than relying only on the existing subtle presets. Potential categories include Cinematic, Dark Cinematic, Golden Hour, Warm Travel, Moody Teal, Clean Commercial, Soft Film, Faded Film, Vintage 90s, Cold Urban, Pastel, Vibrant, and Natural / Documentary. Look intensity/strength should eventually be controllable. The final catalog is deferred to implementation and production visual evaluation.
+### Planned structure
 
-### B2 — Reference Image Look Matching
+- **3C-B0 — Product + Quality Contract**
+- **3C-B1 — Natural-Language Intent → Look Engine**
+- **3C-B2A — Reference Image Look Matching**
+- **3C-B2B — Reference Video Look Matching**
+- **3C-B3 — Reference Typography**
+- **3C-B4 — Supporting Visual Effects / Texture Primitives**
 
-Users may attach a reference screenshot/image and request `Match this look.`, `Make video 2 look like the attached reference.`, or `Apply the attached look to the greenery video.` Reference matching is approximate visual matching, not exact reverse-engineering of another creator's filter.
+All 3C-B sub-phases remain planned. This specification does not start implementation.
 
-Product copy:
+### 3C-B0 — Product + Quality Contract
+
+Internal mechanisms such as LUTs, deterministic transforms, FFmpeg filters, Gemini analysis, texture primitives, or style profiles are implementation details. A Cliponaut Look is not necessarily one LUT: it may be a versionable base profile plus optional LUT, bounded adjustments, texture/effects, and safety/headroom rules. Existing small legacy LUT files are not automatically production-quality 3C-B assets; future implementation must deliberately evaluate whether to replace, retire, upgrade, or ignore them.
+
+The core engineering rule remains: **AI interprets. Server validates. FFmpeg executes.** No model may invent arbitrary unsafe FFmpeg parameters. Quality safeguards must protect skin tones, black/white points, highlights, shadows, saturation, texture, and subject usability; numerical resemblance to a reference never justifies damaged footage.
+
+Future 3C-B work should support conversational refinement such as `A little less warm.`, `Keep the look but reduce the grain.`, or `Make it closer to the reference.` without introducing cumulative history, redo, or a version tree in this phase.
+
+#### Planned quality evaluation benchmark
+
+3C-B will be judged as a visual-quality phase, not merely by whether a plan validates or an output file renders. Before implementation, its benchmark must include clean commercial, cinematic, warm, cool, film-inspired, and social-native reference cases across talking-head/skin-tone, greenery, travel, product, bright, low-light, and mixed-lighting footage.
+
+Evaluation must cover:
+
+1. perceptual similarity between the reference look and target output;
+2. fidelity of brightness, contrast, saturation, temperature/tint, curve, and highlight/shadow intent;
+3. skin-tone plausibility and protection from obvious color casts;
+4. highlight and shadow handling without avoidable clipping/crushing;
+5. artifact safety, including banding, halos, noise amplification, and unstable grain/texture;
+6. repeatability for the same reference and target;
+7. target-footage safety when reference and target differ materially;
+8. clear distinction between a bounded custom look and a generic named preset;
+9. correct source scope and sequence behavior in multi-source edits;
+10. compatibility with trim, speed, captions, titles, audio controls, semantic moments, and multi-moment composition;
+11. ambiguity handling for multi-look reference media without silent guessing;
+12. control behavior for invalid, unsupported, or unsafe references;
+13. no-reference natural-language look requests and imperfect wording;
+14. reference-typography approximation without unsupported exact-font/asset claims;
+15. output playability, duration, A/V synchronization, and render reliability; and
+16. a creator-facing judgment of whether the result is publishable rather than merely technically altered.
+
+Automated checks will cover deterministic parameter and pipeline safety. Production acceptance must additionally include side-by-side human review at meaningful visual checkpoints; short-fixture correctness alone will not establish long-media or production-quality performance.
+
+### 3C-B1 — Natural-Language Intent → Look Engine
+
+Users must not need internal look names or grading vocabulary. Natural wording, including imperfect grammar where intent is clear, should eventually cover requests such as `Make this look nice.`, `Make it feel premium.`, `make nice`, `bit warmer pls`, `old film look`, `instagram type look`, `Make this warm, soft and a little nostalgic.`, `Make it premium but not too dark.`, and `Make this colourful but don’t oversaturate it.`
+
+Intensity and constraint language matters: `slight`, `slightly`, `a little`, `subtle`, `stronger`, `more`, `less`, and `very` should have safe, meaningful effects. Content-aware suggestions may offer directions such as clean/professional for talking heads or warm travel film for travel footage, but must never silently apply a style. When a user deliberately delegates taste with `Make this look good.`, Cliponaut may choose an appropriate treatment and should explain that choice plainly afterward.
+
+Initial internal families should stay small and quality-driven: Clean / Neutral Commercial, Warm Travel / Warm Film, Cinematic / Dramatic, Soft Film, Vintage / Faded / Nostalgic, Vibrant / Social, Dark / Moody, and Natural / Documentary. These are internal starting points, not user-facing commands or a fixed catalog.
+
+### 3C-B2 — Reference Style Matching (Flagship Quality Bar)
+
+Reference Style Matching is the flagship quality bar. The intended workflow is:
+
+> My footage + reference + plain-English request → high-quality related result.
+
+Reference media is style input, never an output layer, watermark, overlay, or inserted picture/video. Matching must compare reference characteristics against target footage characteristics and derive a bounded target-to-reference transformation. The simplistic architecture “Gemini names a style → nearest preset → done” is explicitly insufficient.
+
+The conceptual quality loop is: reference analysis → target analysis → target-to-reference transformation → low-cost representative trial/proxy/frame → comparison → bounded refinement where needed → validation → deterministic final render. It does not promise exact cloning, identical pixels, proprietary-filter reconstruction, identical lighting/camera/lens, or a guaranteed percentage match. The acceptance principle is that side-by-side viewers immediately recognize the same visual direction without target damage.
+
+Reference analysis should eventually consider exposure distribution, black/white points, contrast character, temperature/tint, saturation/hue relationships, shadows/midtones/highlights, rolloff, lifted/crushed blacks, local contrast, sharpness/softness, grain, vignette, and overall film/digital texture. Target analysis is equally necessary: a bright reference must not cause blindly brighter already-overexposed footage.
+
+#### Planned reference-safety policy
+
+For both reference images and reference videos, clearly disallowed/high-risk media must be rejected before any style analysis or render begins. This includes explicit pornography or explicit sexual acts, sexual content involving minors, sexual violence, and extreme graphic gore. The planned user-facing response is: `This reference can’t be used for style matching. Please choose another image or video.` It must not expose unnecessary classification detail. Ordinary non-explicit fashion, swimwear, kissing, and lifestyle media are not automatically unusable solely because of those characteristics. This is a product requirement only; it does not claim that moderation is currently implemented.
+
+Product copy may state:
 
 > Reference matching is approximate and may not reproduce the original look exactly.
 
-Reference images are style references, not output media layers. Likely initial formats are JPG, PNG, and WebP. Reference-processing architecture is deferred.
+#### 3C-B2A — Reference Image Look Matching
 
-### B3 — Reference Typography
+Planned initial reference-image formats are JPG/JPEG, PNG, and WebP. Representative requests include `Make my video look like this.`, `Match this look.`, `Make video 2 look like the attached reference.`, `Match only the colours.`, `Use the grading, but don’t copy the grain.`, and `Make it like the reference, but slightly brighter.` Different target and reference subjects may still work because visual treatment—not subject identity—is the intended match.
 
-Reference typography may guide selection of the closest supported Cliponaut font/style, for example `Use the same font style as the attached screenshot for the title at 0:10.` or `Match the font used for "SUMMER" in the screenshot.` Exact font cloning is not promised.
+Initial image matching must be comparative rather than generic-preset selection, preserve target usability, and allow later natural-language refinement.
 
-Product copy:
+#### 3C-B2B — Reference Video Look Matching
 
-> Cliponaut matches the closest supported font style. Exact matches aren't guaranteed.
+Reference video is planned only after image-matching quality is strong. Initial conceptual limits are one MP4, MOV, or WebM reference per edit; 3–60 seconds; approximately 100 MB maximum; and visual analysis only (audio ignored). 4K may be accepted only when sampling/downscaling makes analysis efficient. This phase does not promise arbitrary long-form, 500 MB, or full-frame-by-frame reference analysis.
 
-Only registered/supported Cliponaut fonts may render. If multiple distinct font styles make the request ambiguous, fail safely/request clarification:
+Representative frames should determine whether the reference has a coherent persistent style, rather than treating an unusual frame as the look. A consistent reference may be used across unrelated subjects. A random, black, meaningless, ungraded, or visibly incompatible reference should fail safely or explain that it provides little distinctive styling information.
 
-> Multiple font styles were detected in the reference. Specify which text you'd like me to match.
+Multiple distinct looks must never be averaged or guessed. For a reference with warm daylight at `0:00–0:08`, dark/moody at `0:08–0:14`, and black-and-white at `0:14–0:25`, Cliponaut should ask the user to choose numbered timestamped looks, with confident labels when available and neutral `Look 1` labels when not. Users should also be able to reply with `1`, `second one`, `use the dark one`, or a requested range such as `Use the look from 0:15–0:25.` Thumbnails are a preferred future aid, not an implementation promise here.
 
-### B4 — Supporting Visual Effects
+### 3C-B3 — Reference Typography
 
-Potential effects include film grain, vignette, blur, and sharpen. Detailed production acceptance for 3C-B is deferred until image-reference and look architecture is finalized.
+Typography matching is planned as closest-supported visual treatment, not proprietary font guessing. It should eventually consider family/category, weight, width, slant, casing, tracking, line height, alignment, line breaks, relative size, position, color, outline, shadow, and supported background treatment. Only registered Cliponaut fonts may render.
+
+Representative requests include `Use the same font style as this screenshot.`, `Match the title style in the reference.`, and `Use this style for “A Day in Kerala”.` Product copy: `Cliponaut matches the closest supported font style. Exact matches aren't guaranteed.` If a reference contains multiple distinct typography styles, Cliponaut must ask which text/style to match rather than guessing.
+
+### 3C-B4 — Supporting Visual Effects / Texture Primitives
+
+Planned primitives are grain, vignette, blur, and sharpen. They are direct natural-language capabilities (`Add subtle grain.`) and possible ingredients of B1/B2 style profiles. Strength must be bounded: subtle must be perceptibly subtle, strong must not make output cheap or broken, and every output must remain playable and professional.
+
+### Discovery and scope boundaries
+
+Future UX should make reference purpose discoverable near attachment/composer workflows, for example `Add footage` and `Add style reference`, with suggested prompts such as `Match this look`. Product demonstrations should teach the feature with raw footage + reference + prompt + result, rather than listing technical filters. This specification does not redesign UI, add moderation, create a second renderer, add a database history system, expose grading panels/curves, promise proprietary cloning, or start 3C-B implementation.
 
 ## Phase 3C-C — Transitions & Timeline Effects
 
