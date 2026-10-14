@@ -28,6 +28,75 @@ import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaption
 import { extractAudioControlIntent, reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { extractVisualAdjustmentIntent, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
 import { buildVisualAdjustmentFilters, perceptualAdjustmentMagnitude } from "@/lib/editor-core/edit-executor";
+import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL_VISUAL_RECIPE, STYLE_PROFILE_CATALOG, STYLE_PROFILE_IDS, STYLE_PROFILE_STRENGTHS, compileStyleProfile, createCanonicalVisualRecipe, interpolateCanonicalVisualRecipe, resolveCurrentStyleProfile, resolveStyleProfile } from "@/lib/editor-core/style-profiles";
+
+test("B1 style profiles compile server-owned bounded canonical recipes", () => {
+  assert.deepEqual(STYLE_PROFILE_IDS, ["clean_commercial", "warm_travel", "cinematic", "soft_nostalgic", "vibrant_social", "dark_moody", "natural_documentary"]);
+  for (const profileId of STYLE_PROFILE_IDS) {
+    const current = resolveCurrentStyleProfile(profileId);
+    assert.equal(current.profileId, profileId);
+    assert.equal(current.profileVersion, 1);
+    assert.deepEqual(current, resolveStyleProfile(profileId, 1));
+  }
+  assert.throws(() => resolveCurrentStyleProfile("unknown"), /unknown profile/);
+  assert.throws(() => resolveStyleProfile("cinematic", 99), /unknown cinematic version/);
+  assert.throws(() => compileStyleProfile({ profileId: "cinematic", strength: "maximum" }), /unsupported strength/);
+  assert.throws(() => compileStyleProfile({ profileId: "cinematic", constraints: ["skin_detection"] }), /unsupported constraint/);
+
+  const cinematic = resolveCurrentStyleProfile("cinematic");
+  assert.deepEqual(interpolateCanonicalVisualRecipe(cinematic.recipe, 0), NEUTRAL_VISUAL_RECIPE);
+  const subtle = compileStyleProfile({ profileId: "cinematic", strength: "subtle" });
+  const standard = compileStyleProfile({ profileId: "cinematic", strength: "standard" });
+  const strong = compileStyleProfile({ profileId: "cinematic", strength: "strong" });
+  const magnitude = (recipe) => Object.values(recipe).reduce((total, value) => total + Math.abs(value), 0);
+  assert.ok(magnitude(subtle.recipe) < magnitude(standard.recipe));
+  assert.ok(magnitude(standard.recipe) < magnitude(strong.recipe));
+  assert.deepEqual(compileStyleProfile({ profileId: "cinematic" }), standard);
+
+  for (const profileId of STYLE_PROFILE_IDS) for (const strength of Object.keys(STYLE_PROFILE_STRENGTHS)) {
+    const { recipe } = compileStyleProfile({ profileId, strength });
+    for (const field of CANONICAL_VISUAL_RECIPE_FIELDS) {
+      assert.equal(Number.isFinite(recipe[field]), true);
+      assert.ok(recipe[field] >= CANONICAL_VISUAL_RECIPE_LIMITS[field].min);
+      assert.ok(recipe[field] <= CANONICAL_VISUAL_RECIPE_LIMITS[field].max);
+    }
+  }
+
+  const dark = compileStyleProfile({ profileId: "dark_moody", strength: "strong" });
+  const noDarkening = compileStyleProfile({ profileId: "dark_moody", strength: "strong", constraints: ["avoid_darkening"] });
+  assert.ok(dark.recipe.brightness < 0);
+  assert.equal(noDarkening.recipe.brightness, 0);
+  const vibrant = compileStyleProfile({ profileId: "vibrant_social", strength: "strong" });
+  const noOversaturation = compileStyleProfile({ profileId: "vibrant_social", strength: "strong", constraints: ["avoid_oversaturation"] });
+  assert.ok(noOversaturation.recipe.saturation < vibrant.recipe.saturation);
+  const warm = compileStyleProfile({ profileId: "warm_travel", strength: "strong" });
+  const conservative = compileStyleProfile({ profileId: "warm_travel", strength: "strong", constraints: ["conservative_color"] });
+  const skinToneConservative = compileStyleProfile({ profileId: "warm_travel", strength: "strong", constraints: ["skin_tone_conservative"] });
+  for (const field of CANONICAL_VISUAL_RECIPE_FIELDS) {
+    assert.ok(Math.abs(conservative.recipe[field]) <= Math.abs(warm.recipe[field]));
+    assert.ok(Math.abs(skinToneConservative.recipe[field]) <= Math.abs(warm.recipe[field]));
+  }
+  for (const constrained of [noDarkening, noOversaturation, conservative, skinToneConservative]) {
+    const unconstrained = compileStyleProfile({ profileId: constrained.profileId, profileVersion: constrained.profileVersion, strength: constrained.strength });
+    for (const field of CANONICAL_VISUAL_RECIPE_FIELDS) {
+      assert.ok(Math.abs(constrained.recipe[field]) <= Math.abs(unconstrained.recipe[field]), `${constrained.constraints.join(",")} cannot increase ${field}`);
+    }
+  }
+  assert.equal(Object.hasOwn(skinToneConservative.recipe, "skinDetection"), false, "constraint is global conservatism, never a skin-detection claim");
+
+  const snapshot = JSON.stringify(STYLE_PROFILE_CATALOG);
+  assert.throws(() => compileStyleProfile({ profileId: "cinematic", recipe: { brightness: 1 } }), /unsupported compiler field: recipe/);
+  assert.throws(() => compileStyleProfile({ profileId: "cinematic", filters: ["eq=contrast=2"] }), /unsupported compiler field: filters/);
+  assert.throws(() => compileStyleProfile({ profileId: "cinematic", lutPath: "/private.cube" }), /unsupported compiler field: lutPath/);
+  assert.throws(() => compileStyleProfile({ profileId: "cinematic", arbitrary: "value" }), /unsupported compiler field: arbitrary/);
+  assert.throws(() => compileStyleProfile(null), /compiler input must be a plain object/);
+  assert.throws(() => compileStyleProfile(new Date()), /compiler input must be a plain object/);
+  assert.equal(Object.isFrozen(compileStyleProfile({ profileId: "cinematic" }).recipe), true);
+  assert.equal(JSON.stringify(STYLE_PROFILE_CATALOG), snapshot, "compilation cannot mutate catalog definitions");
+  assert.deepEqual(compileStyleProfile({ profileId: "cinematic" }), standard, "repeated compilation is identical");
+  assert.throws(() => createCanonicalVisualRecipe({ brightness: Infinity }), /finite number/);
+  assert.throws(() => createCanonicalVisualRecipe({ filter: "eq=contrast=2" }), /unsupported recipe field/);
+});
 
 const execFileAsync = promisify(execFile);
 
