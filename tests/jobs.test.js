@@ -289,7 +289,9 @@ test("B1 internal tone and vibrance primitives are bounded, deterministic, and l
   }
   assert.equal(buildToneCurveFilter(), null);
   assert.equal(buildVibranceFilter(), null);
-  assert.equal(buildToneCurveFilter({ shadows: 1, highlights: -1 }), "curves=master='0/0 0.25/0.3500 0.75/0.6700 1/1':interp=pchip");
+  const portableToneCurve = buildToneCurveFilter({ shadows: 1, highlights: -1 });
+  assert.equal(portableToneCurve, "curves=master='0/0 0.25/0.3500 0.75/0.6700 1/1'");
+  assert.equal(portableToneCurve.includes("interp="), false, "server-owned curves omit unsupported interpolation options");
   assert.equal(buildVibranceFilter({ vibrance: 1 }), "vibrance=intensity=0.5000:rbal=1:gbal=1:bbal=1:alternate=0");
   assert.equal(buildVibranceFilter({ vibrance: -1 }), "vibrance=intensity=-0.5000:rbal=1:gbal=1:bbal=1:alternate=0");
   assert.throws(() => buildToneCurveFilter({ shadows: Infinity }), /shadows must be a finite number/);
@@ -297,7 +299,7 @@ test("B1 internal tone and vibrance primitives are bounded, deterministic, and l
 
   const extendedRecipe = canonicalStyleRecipe({ brightness: 0.1, contrast: 0.1, saturation: 0.05, temperature: 0.03, tint: -0.02, shadows: 0.5, highlights: -0.5, vibrance: 0.4 });
   assert.deepEqual(buildStyleRecipeFilters(extendedRecipe), [
-    "curves=master='0/0 0.25/0.3135 0.75/0.6992 1/1':interp=pchip",
+    "curves=master='0/0 0.25/0.3135 0.75/0.6992 1/1'",
     "eq=brightness=0.0866:contrast=1.1775:saturation=1.1466",
     "vibrance=intensity=0.2755:rbal=1:gbal=1:bbal=1:alternate=0",
     "colorbalance=rs=0.0199:gs=0.0188:bs=-0.0199:rm=0.0266:gm=0.0188:bm=-0.0266:rh=0.0199:gh=0.0188:bh=-0.0199:pl=1"
@@ -3058,6 +3060,10 @@ function rgbFixtureStats(frame) {
   return { extrema, meanLuma: lumaTotal / pixels, meanChroma: chromaTotal / pixels };
 }
 
+function upperClippedRgbSampleCount(frame) {
+  return [...frame].reduce((count, value) => count + (value === 255 ? 1 : 0), 0);
+}
+
 async function probeStyleFixture(input) {
   const { stdout } = await execFileAsync("ffprobe", [
     "-v", "error", "-show_entries", "stream=codec_type,width,height,pix_fmt,color_range,color_space,color_transfer,color_primaries", "-of", "json", input
@@ -3132,10 +3138,10 @@ test("B1 internal tone and vibrance filters render safely across deterministic g
     await renderStyleFixture(gradientSource, gradientCurved, [buildToneCurveFilter({ shadows: 0.5, highlights: -0.5 })]);
     const sourceValues = grayscaleValues(await readRgbFrame(gradientSource));
     const curvedValues = grayscaleValues(await readRgbFrame(gradientCurved));
-    assert.ok(new Set(curvedValues).size >= 128, "PCHIP curve retains a broad grayscale ramp after yuv420p encoding");
+    assert.ok(new Set(curvedValues).size >= 128, "portable curves retain a broad grayscale ramp after yuv420p encoding");
     assert.ok(
       longestRepeatedRun(curvedValues) <= longestRepeatedRun(sourceValues) + 2,
-      "PCHIP curve does not materially worsen flat gradient bands after yuv420p encoding"
+      "portable curves do not materially worsen flat gradient bands after yuv420p encoding"
     );
 
     const foodSource = path.join(tempDirectory, "food-source.mp4");
@@ -3188,7 +3194,7 @@ test("B1 Vibrant Social v2 replaces the v1 saturation-plus-warm-balance path wit
   const tonePoints = buildToneCurvePoints(v2Standard.recipe);
   assert.ok(tonePoints.shadowPoint > 0.25 && tonePoints.highlightPoint > 0.75 && tonePoints.highlightPoint > tonePoints.shadowPoint, "v2 curve remains monotonic while opening tonal structure");
   assert.deepEqual(buildStyleRecipeFilters(v2Standard.recipe), [
-    "curves=master='0/0 0.25/0.2619 0.75/0.7581 1/1':interp=pchip",
+    "curves=master='0/0 0.25/0.2619 0.75/0.7581 1/1'",
     "eq=brightness=0.0332:contrast=1.1092:saturation=1.0829",
     "vibrance=intensity=0.1374:rbal=1:gbal=1:bbal=1:alternate=0"
   ]);
@@ -3199,7 +3205,9 @@ test("B1 Vibrant Social v2 replaces the v1 saturation-plus-warm-balance path wit
     food: "color=c=0x120c0a:size=320x180:rate=30,drawbox=x=10:y=15:w=65:h=65:color=0x5a1606:t=fill,drawbox=x=90:y=15:w=65:h=65:color=0xa33a0c:t=fill,drawbox=x=170:y=15:w=65:h=65:color=0x7d4a1f:t=fill",
     skin: "color=c=0x6b3f24:size=320x180:rate=30,drawbox=x=55:y=25:w=210:h=125:color=0xc68642:t=fill,drawbox=x=105:y=50:w=110:h=75:color=0xe0ac69:t=fill",
     foliage: "color=c=0x102613:size=320x180:rate=30,drawbox=x=15:y=20:w=95:h=130:color=0x1e5d31:t=fill,drawbox=x=120:y=10:w=85:h=145:color=0x3b7e36:t=fill,drawbox=x=220:y=30:w=85:h=120:color=0x6c963c:t=fill",
-    muted: "color=c=0x69645a:size=320x180:rate=30,drawbox=x=20:y=20:w=80:h=130:color=0x9d8060:t=fill,drawbox=x=120:y=20:w=80:h=130:color=0x5f8290:t=fill,drawbox=x=220:y=20:w=80:h=130:color=0x778d5d:t=fill"
+    muted: "color=c=0x69645a:size=320x180:rate=30,drawbox=x=20:y=20:w=80:h=130:color=0x9d8060:t=fill,drawbox=x=120:y=20:w=80:h=130:color=0x5f8290:t=fill,drawbox=x=220:y=20:w=80:h=130:color=0x778d5d:t=fill",
+    practical: "color=c=0x080b12:size=320x180:rate=30,drawbox=x=135:y=28:w=45:h=105:color=0xffd36a:t=fill,drawbox=x=205:y=45:w=25:h=65:color=0xdcecff:t=fill",
+    gradient: "nullsrc=size=320x180:rate=30,geq=lum='16+219*X/W':cb=128:cr=128"
   };
   try {
     const measurements = {};
@@ -3210,18 +3218,22 @@ test("B1 Vibrant Social v2 replaces the v1 saturation-plus-warm-balance path wit
       await makeStyleFixture(source, filter);
       await renderStyleFixture(source, v1Output, buildStyleRecipeFilters(v1Standard.recipe));
       await renderStyleFixture(source, v2Output, buildStyleRecipeFilters(v2Standard.recipe));
-      const [v1Probe, v2Probe, v1Frame, v2Frame] = await Promise.all([
-        probeStyleFixture(v1Output), probeStyleFixture(v2Output), readRgbFrame(v1Output), readRgbFrame(v2Output)
+      const [sourceProbe, v1Probe, v2Probe, sourceFrame, v1Frame, v2Frame] = await Promise.all([
+        probeStyleFixture(source), probeStyleFixture(v1Output), probeStyleFixture(v2Output), readRgbFrame(source), readRgbFrame(v1Output), readRgbFrame(v2Output)
       ]);
       assert.deepEqual(
         { width: v2Probe.video.width, height: v2Probe.video.height, pix_fmt: v2Probe.video.pix_fmt, hasAudio: v2Probe.hasAudio },
-        { width: v1Probe.video.width, height: v1Probe.video.height, pix_fmt: "yuv420p", hasAudio: false },
+        { width: sourceProbe.video.width, height: sourceProbe.video.height, pix_fmt: "yuv420p", hasAudio: false },
         `${name} v2 preserves output geometry, format, and audio behavior`
       );
       measurements[name] = { v1: rgbFixtureStats(v1Frame), v2: rgbFixtureStats(v2Frame) };
       for (const [minimum, maximum] of Object.values(measurements[name].v2.extrema)) {
-        assert.ok(minimum >= 0 && maximum < 255, `${name} v2 avoids new channel clipping`);
+        assert.ok(minimum >= 0 && maximum <= 255, `${name} v2 remains in RGB display bounds`);
       }
+      assert.ok(
+        upperClippedRgbSampleCount(v2Frame) <= upperClippedRgbSampleCount(sourceFrame),
+        `${name} v2 does not introduce additional upper-channel clipping`
+      );
     }
     assert.ok(measurements.food.v2.meanChroma > measurements.food.v1.meanChroma * 3, "v2 restores dark saturated food separation instead of v1 chroma collapse");
     assert.ok(measurements.food.v2.extrema.red[1] > measurements.food.v1.extrema.red[1], "v2 retains readable red/orange food detail");

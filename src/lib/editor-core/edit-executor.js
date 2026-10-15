@@ -207,7 +207,7 @@ export function buildToneCurveFilter(recipe = {}) {
   const highlights = boundedStylePrimitive(recipe.highlights, "highlights");
   if (shadows === 0 && highlights === 0) return null;
   const { shadowPoint, highlightPoint } = buildToneCurvePoints({ shadows, highlights });
-  return `curves=master='0/0 0.25/${shadowPoint.toFixed(4)} 0.75/${highlightPoint.toFixed(4)} 1/1':interp=pchip`;
+  return `curves=master='0/0 0.25/${shadowPoint.toFixed(4)} 0.75/${highlightPoint.toFixed(4)} 1/1'`;
 }
 
 export function buildVibranceFilter(recipe = {}) {
