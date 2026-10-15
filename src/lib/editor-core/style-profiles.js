@@ -51,8 +51,11 @@ export const STYLE_PROFILE_CATALOG = Object.freeze({
   warm_travel: Object.freeze({ currentVersion: 1, versions: Object.freeze({
     1: freezeProfile({ brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 })
   }) }),
-  cinematic: Object.freeze({ currentVersion: 1, versions: Object.freeze({
-    1: freezeProfile({ brightness: -0.04, contrast: 0.3, saturation: -0.08, temperature: 0.05, tint: -0.02 })
+  cinematic: Object.freeze({ currentVersion: 2, versions: Object.freeze({
+    // Preserve v1 for historical reproducibility; v2 protects ordinary scenes
+    // from automatic shadow loss while retaining the profile's filmic depth.
+    1: freezeProfile({ brightness: -0.04, contrast: 0.3, saturation: -0.08, temperature: 0.05, tint: -0.02 }),
+    2: freezeProfile({ brightness: 0, contrast: 0.23, saturation: -0.08, temperature: 0.05, tint: -0.02 })
   }) }),
   soft_nostalgic: Object.freeze({ currentVersion: 1, versions: Object.freeze({
     1: freezeProfile({ brightness: 0.07, contrast: -0.18, saturation: -0.2, temperature: 0.12, tint: 0.02 })
