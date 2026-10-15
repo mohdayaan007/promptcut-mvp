@@ -33,11 +33,12 @@ import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServe
 
 test("B1 style profiles compile server-owned bounded canonical recipes", () => {
   assert.deepEqual(STYLE_PROFILE_IDS, ["clean_commercial", "warm_travel", "cinematic", "soft_nostalgic", "vibrant_social", "dark_moody", "natural_documentary"]);
+  const currentVersions = { clean_commercial: 2, natural_documentary: 2 };
   for (const profileId of STYLE_PROFILE_IDS) {
     const current = resolveCurrentStyleProfile(profileId);
     assert.equal(current.profileId, profileId);
-    assert.equal(current.profileVersion, 1);
-    assert.deepEqual(current, resolveStyleProfile(profileId, 1));
+    assert.equal(current.profileVersion, currentVersions[profileId] || 1);
+    assert.deepEqual(current, resolveStyleProfile(profileId, currentVersions[profileId] || 1));
   }
   assert.throws(() => resolveCurrentStyleProfile("unknown"), /unknown profile/);
   assert.throws(() => resolveStyleProfile("cinematic", 99), /unknown cinematic version/);
@@ -97,6 +98,61 @@ test("B1 style profiles compile server-owned bounded canonical recipes", () => {
   assert.deepEqual(compileStyleProfile({ profileId: "cinematic" }), standard, "repeated compilation is identical");
   assert.throws(() => createCanonicalVisualRecipe({ brightness: Infinity }), /finite number/);
   assert.throws(() => createCanonicalVisualRecipe({ filter: "eq=contrast=2" }), /unsupported recipe field/);
+});
+
+test("B1 calibration v2 preserves historical recipes and strengthens only commercial and documentary profiles", () => {
+  const v1Recipes = {
+    clean_commercial: { brightness: 0.04, contrast: 0.2, saturation: 0.05, temperature: 0.02, tint: 0 },
+    natural_documentary: { brightness: 0.015, contrast: 0.08, saturation: 0.02, temperature: 0.01, tint: 0 }
+  };
+  const v2Recipes = {
+    clean_commercial: { brightness: 0.075, contrast: 0.31, saturation: 0.12, temperature: 0.05, tint: 0 },
+    natural_documentary: { brightness: 0.045, contrast: 0.22, saturation: 0.075, temperature: 0.015, tint: 0 }
+  };
+  const unchangedProfiles = {
+    warm_travel: { brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 },
+    cinematic: { brightness: -0.04, contrast: 0.3, saturation: -0.08, temperature: 0.05, tint: -0.02 },
+    soft_nostalgic: { brightness: 0.07, contrast: -0.18, saturation: -0.2, temperature: 0.12, tint: 0.02 },
+    vibrant_social: { brightness: 0.04, contrast: 0.16, saturation: 0.28, temperature: 0.03, tint: 0 },
+    dark_moody: { brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 }
+  };
+  for (const [profileId, recipe] of Object.entries(v1Recipes)) {
+    assert.deepEqual(resolveStyleProfile(profileId, 1).recipe, recipe, `${profileId} v1 remains reproducible`);
+    assert.deepEqual(resolveCurrentStyleProfile(profileId).recipe, v2Recipes[profileId]);
+    assert.equal(resolveCurrentStyleProfile(profileId).profileVersion, 2);
+    for (const strength of ["subtle", "standard", "strong"]) {
+      const compiled = compileStyleProfile({ profileId, strength });
+      const expectedFactor = STYLE_PROFILE_STRENGTHS[strength];
+      for (const field of CANONICAL_VISUAL_RECIPE_FIELDS) {
+        assert.equal(compiled.recipe[field], v2Recipes[profileId][field] * expectedFactor, `${profileId} ${strength} ${field}`);
+      }
+    }
+  }
+  for (const [profileId, recipe] of Object.entries(unchangedProfiles)) {
+    assert.equal(STYLE_PROFILE_CATALOG[profileId].currentVersion, 1, `${profileId} version remains unchanged`);
+    assert.deepEqual(resolveCurrentStyleProfile(profileId).recipe, recipe, `${profileId} recipe remains unchanged`);
+  }
+
+  const cleanV1 = compileStyleProfile({ profileId: "clean_commercial", profileVersion: 1, strength: "standard", constraints: ["skin_tone_conservative"] });
+  const cleanV2 = compileStyleProfile({ profileId: "clean_commercial", strength: "standard", constraints: ["skin_tone_conservative"] });
+  assert.deepEqual(cleanV2.recipe, { brightness: 0.0525, contrast: 0.18445, saturation: 0.054599999999999996, temperature: 0.01575, tint: 0 });
+  assert.ok(Object.values(cleanV2.recipe).reduce((sum, value) => sum + Math.abs(value), 0) > Object.values(cleanV1.recipe).reduce((sum, value) => sum + Math.abs(value), 0));
+  assert.deepEqual(buildStyleProfileFilters({ profileId: "clean_commercial", strength: "standard", constraints: ["skin_tone_conservative"] }), [
+    "eq=brightness=0.0602:contrast=1.2537:saturation=1.1539",
+    "colorbalance=rs=0.0141:gs=0.0000:bs=-0.0141:rm=0.0188:gm=0.0000:bm=-0.0188:rh=0.0141:gh=0.0000:bh=-0.0141:pl=1"
+  ]);
+
+  const naturalV1 = compileStyleProfile({ profileId: "natural_documentary", profileVersion: 1, strength: "standard", constraints: ["avoid_darkening"] });
+  const naturalV2 = compileStyleProfile({ profileId: "natural_documentary", strength: "standard", constraints: ["avoid_darkening"] });
+  assert.deepEqual(naturalV2.recipe, { brightness: 0.0315, contrast: 0.154, saturation: 0.0525, temperature: 0.010499999999999999, tint: 0 });
+  assert.ok(Object.values(naturalV2.recipe).reduce((sum, value) => sum + Math.abs(value), 0) > Object.values(naturalV1.recipe).reduce((sum, value) => sum + Math.abs(value), 0));
+  assert.deepEqual(buildStyleProfileFilters({ profileId: "natural_documentary", strength: "standard", constraints: ["avoid_darkening"] }), [
+    "eq=brightness=0.0455:contrast=1.2280:saturation=1.1506",
+    "colorbalance=rs=0.0114:gs=0.0000:bs=-0.0114:rm=0.0152:gm=0.0000:bm=-0.0152:rh=0.0114:gh=0.0000:bh=-0.0114:pl=1"
+  ]);
+  for (const recipe of [cleanV2.recipe, naturalV2.recipe]) for (const value of Object.values(recipe)) {
+    assert.ok(Number.isFinite(value) && value >= -1 && value <= 1);
+  }
 });
 
 test("B1 style diagnostics contain only validated server-owned planning and execution facts", () => {

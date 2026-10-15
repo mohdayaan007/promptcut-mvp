@@ -42,8 +42,11 @@ function freezeProfile(recipe) {
 // Initial recipes are intentionally conservative starting points. They require
 // fixture rendering and founder visual calibration before B1 production sign-off.
 export const STYLE_PROFILE_CATALOG = Object.freeze({
-  clean_commercial: Object.freeze({ currentVersion: 1, versions: Object.freeze({
-    1: freezeProfile({ brightness: 0.04, contrast: 0.2, saturation: 0.05, temperature: 0.02, tint: 0 })
+  clean_commercial: Object.freeze({ currentVersion: 2, versions: Object.freeze({
+    // Preserve v1 for historical reproducibility; v2 is calibrated to remain
+    // visibly polished after the standard-strength skin-tone constraint.
+    1: freezeProfile({ brightness: 0.04, contrast: 0.2, saturation: 0.05, temperature: 0.02, tint: 0 }),
+    2: freezeProfile({ brightness: 0.075, contrast: 0.31, saturation: 0.12, temperature: 0.05, tint: 0 })
   }) }),
   warm_travel: Object.freeze({ currentVersion: 1, versions: Object.freeze({
     1: freezeProfile({ brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 })
@@ -60,8 +63,11 @@ export const STYLE_PROFILE_CATALOG = Object.freeze({
   dark_moody: Object.freeze({ currentVersion: 1, versions: Object.freeze({
     1: freezeProfile({ brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 })
   }) }),
-  natural_documentary: Object.freeze({ currentVersion: 1, versions: Object.freeze({
-    1: freezeProfile({ brightness: 0.015, contrast: 0.08, saturation: 0.02, temperature: 0.01, tint: 0 })
+  natural_documentary: Object.freeze({ currentVersion: 2, versions: Object.freeze({
+    // Preserve v1 for historical reproducibility; v2 remains natural while
+    // making a clearly perceptible authenticity-first improvement.
+    1: freezeProfile({ brightness: 0.015, contrast: 0.08, saturation: 0.02, temperature: 0.01, tint: 0 }),
+    2: freezeProfile({ brightness: 0.045, contrast: 0.22, saturation: 0.075, temperature: 0.015, tint: 0 })
   }) })
 });
 
