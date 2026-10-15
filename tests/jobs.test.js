@@ -33,7 +33,7 @@ import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServe
 
 test("B1 style profiles compile server-owned bounded canonical recipes", () => {
   assert.deepEqual(STYLE_PROFILE_IDS, ["clean_commercial", "warm_travel", "cinematic", "soft_nostalgic", "vibrant_social", "dark_moody", "natural_documentary"]);
-  const currentVersions = { clean_commercial: 2, cinematic: 2, natural_documentary: 2 };
+  const currentVersions = { clean_commercial: 2, cinematic: 2, soft_nostalgic: 2, natural_documentary: 2 };
   for (const profileId of STYLE_PROFILE_IDS) {
     const current = resolveCurrentStyleProfile(profileId);
     assert.equal(current.profileId, profileId);
@@ -111,7 +111,6 @@ test("B1 calibration v2 preserves historical recipes and strengthens only commer
   };
   const unchangedProfiles = {
     warm_travel: { brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 },
-    soft_nostalgic: { brightness: 0.07, contrast: -0.18, saturation: -0.2, temperature: 0.12, tint: 0.02 },
     vibrant_social: { brightness: 0.04, contrast: 0.16, saturation: 0.28, temperature: 0.03, tint: 0 },
     dark_moody: { brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 }
   };
@@ -160,7 +159,7 @@ test("B1 cinematic v2 protects shadows while retaining the v1 filmic character",
   const otherCurrentVersions = {
     clean_commercial: 2,
     warm_travel: 1,
-    soft_nostalgic: 1,
+    soft_nostalgic: 2,
     vibrant_social: 1,
     dark_moody: 1,
     natural_documentary: 2
@@ -175,7 +174,7 @@ test("B1 cinematic v2 protects shadows while retaining the v1 filmic character",
   assert.deepEqual(
     Object.fromEntries(Object.entries(otherCurrentVersions).map(([profileId]) => [profileId, STYLE_PROFILE_CATALOG[profileId].currentVersion])),
     otherCurrentVersions,
-    "only cinematic advances in this calibration"
+    "other profile versions remain stable during the cinematic calibration"
   );
 
   for (const strength of ["subtle", "standard", "strong"]) {
@@ -208,6 +207,63 @@ test("B1 cinematic v2 protects shadows while retaining the v1 filmic character",
   assert.deepEqual(buildStyleProfileFilters({ profileId: "cinematic", strength: "standard" }), [
     "eq=brightness=0.0000:contrast=1.2854:saturation=0.8439",
     "colorbalance=rs=0.0241:gs=0.0155:bs=-0.0241:rm=0.0321:gm=0.0155:bm=-0.0321:rh=0.0241:gh=0.0155:bh=-0.0241:pl=1"
+  ]);
+});
+
+test("B1 soft nostalgic v2 retains warmth while reducing v1 washout", () => {
+  const v1Recipe = { brightness: 0.07, contrast: -0.18, saturation: -0.2, temperature: 0.12, tint: 0.02 };
+  const v2Recipe = { brightness: 0.04, contrast: -0.13, saturation: -0.18, temperature: 0.12, tint: 0.02 };
+  const otherCurrentProfiles = {
+    clean_commercial: { profileVersion: 2, recipe: { brightness: 0.075, contrast: 0.31, saturation: 0.12, temperature: 0.05, tint: 0 } },
+    warm_travel: { profileVersion: 1, recipe: { brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 } },
+    cinematic: { profileVersion: 2, recipe: { brightness: 0, contrast: 0.23, saturation: -0.08, temperature: 0.05, tint: -0.02 } },
+    vibrant_social: { profileVersion: 1, recipe: { brightness: 0.04, contrast: 0.16, saturation: 0.28, temperature: 0.03, tint: 0 } },
+    dark_moody: { profileVersion: 1, recipe: { brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 } },
+    natural_documentary: { profileVersion: 2, recipe: { brightness: 0.045, contrast: 0.22, saturation: 0.075, temperature: 0.015, tint: 0 } }
+  };
+
+  assert.deepEqual(resolveStyleProfile("soft_nostalgic", 1).recipe, v1Recipe, "soft nostalgic v1 remains reproducible");
+  assert.deepEqual(resolveCurrentStyleProfile("soft_nostalgic"), {
+    profileId: "soft_nostalgic",
+    profileVersion: 2,
+    recipe: v2Recipe
+  });
+  for (const [profileId, expected] of Object.entries(otherCurrentProfiles)) {
+    assert.deepEqual(resolveCurrentStyleProfile(profileId), { profileId, ...expected }, `${profileId} remains unchanged`);
+  }
+
+  for (const strength of ["subtle", "standard", "strong"]) {
+    const compiled = compileStyleProfile({ profileId: "soft_nostalgic", strength });
+    const factor = STYLE_PROFILE_STRENGTHS[strength];
+    for (const field of CANONICAL_VISUAL_RECIPE_FIELDS) {
+      assert.equal(compiled.recipe[field], v2Recipe[field] * factor, `soft nostalgic v2 ${strength} ${field}`);
+      assert.ok(compiled.recipe[field] >= -1 && compiled.recipe[field] <= 1, `soft nostalgic v2 ${strength} ${field} remains bounded`);
+    }
+  }
+
+  const v1Standard = compileStyleProfile({ profileId: "soft_nostalgic", profileVersion: 1, strength: "standard" });
+  const v2Standard = compileStyleProfile({ profileId: "soft_nostalgic", strength: "standard" });
+  assert.deepEqual(v2Standard.recipe, {
+    brightness: 0.027999999999999997,
+    contrast: -0.091,
+    saturation: -0.126,
+    temperature: 0.08399999999999999,
+    tint: 0.013999999999999999
+  });
+  assert.ok(v2Standard.recipe.brightness < v1Standard.recipe.brightness, "v2 materially reduces the brightness lift");
+  assert.ok(v2Standard.recipe.contrast > v1Standard.recipe.contrast && v2Standard.recipe.contrast < 0, "v2 retains but moderates lower contrast");
+  assert.ok(v2Standard.recipe.saturation < 0, "v2 keeps color intentionally restrained");
+  for (const field of ["temperature", "tint"]) {
+    assert.equal(v2Standard.recipe[field], v1Standard.recipe[field], `v2 preserves nostalgic ${field}`);
+  }
+
+  assert.deepEqual(buildVisualAdjustmentFilters(v1Standard.recipe), [
+    "eq=brightness=0.0725:contrast=0.7527:saturation=0.7370",
+    "colorbalance=rs=0.0392:gs=-0.0155:bs=-0.0392:rm=0.0523:gm=-0.0155:bm=-0.0523:rh=0.0392:gh=-0.0155:bh=-0.0392:pl=1"
+  ]);
+  assert.deepEqual(buildStyleProfileFilters({ profileId: "soft_nostalgic", strength: "standard" }), [
+    "eq=brightness=0.0534:contrast=0.7949:saturation=0.7527",
+    "colorbalance=rs=0.0392:gs=-0.0155:bs=-0.0392:rm=0.0523:gm=-0.0155:bm=-0.0523:rh=0.0392:gh=-0.0155:bh=-0.0392:pl=1"
   ]);
 });
 

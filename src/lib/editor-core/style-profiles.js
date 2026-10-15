@@ -57,8 +57,11 @@ export const STYLE_PROFILE_CATALOG = Object.freeze({
     1: freezeProfile({ brightness: -0.04, contrast: 0.3, saturation: -0.08, temperature: 0.05, tint: -0.02 }),
     2: freezeProfile({ brightness: 0, contrast: 0.23, saturation: -0.08, temperature: 0.05, tint: -0.02 })
   }) }),
-  soft_nostalgic: Object.freeze({ currentVersion: 1, versions: Object.freeze({
-    1: freezeProfile({ brightness: 0.07, contrast: -0.18, saturation: -0.2, temperature: 0.12, tint: 0.02 })
+  soft_nostalgic: Object.freeze({ currentVersion: 2, versions: Object.freeze({
+    // Preserve v1 for historical reproducibility; v2 retains the warm, gently
+    // faded identity without flattening ordinary shadows and midtones as much.
+    1: freezeProfile({ brightness: 0.07, contrast: -0.18, saturation: -0.2, temperature: 0.12, tint: 0.02 }),
+    2: freezeProfile({ brightness: 0.04, contrast: -0.13, saturation: -0.18, temperature: 0.12, tint: 0.02 })
   }) }),
   vibrant_social: Object.freeze({ currentVersion: 1, versions: Object.freeze({
     1: freezeProfile({ brightness: 0.04, contrast: 0.16, saturation: 0.28, temperature: 0.03, tint: 0 })
