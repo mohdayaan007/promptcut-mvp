@@ -18,7 +18,7 @@ import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createDelegatedStyleDecisionJsonSchema, createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { buildDelegatedStyleContents, createAiEditPlan, createStylePlanningDiagnostics, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, summarizeStylePlanDiagnostic, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt, buildDelegatedStyleDecisionPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
-import { buildStyleProfileFilters, buildVisualAdjustmentFilters, compileStyleProfileForExecution, createExecutionController, createStyleProfileExecutionDiagnostic, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
+import { buildStyleProfileFilters, buildStyleRecipeFilters, buildToneCurveFilter, buildToneCurvePoints, buildVibranceFilter, buildVisualAdjustmentFilters, compileStyleProfileForExecution, createExecutionController, createStyleProfileExecutionDiagnostic, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
 import { CAPABILITY_REGISTRY } from "@/lib/editor-core/capability-registry";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
 import { extractSpeechAudio, transcribeSource, wordAnnotations, SpokenTranscriptionError } from "@/lib/editor-core/spoken-transcription";
@@ -30,6 +30,10 @@ import { extractAudioControlIntent, reconcileAudioControls } from "@/lib/editor-
 import { extractVisualAdjustmentIntent, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
 import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL_VISUAL_RECIPE, STYLE_PROFILE_CATALOG, STYLE_PROFILE_CONSTRAINTS, STYLE_PROFILE_IDS, STYLE_PROFILE_STRENGTHS, compileStyleProfile, createCanonicalVisualRecipe, interpolateCanonicalVisualRecipe, resolveCurrentStyleProfile, resolveStyleProfile } from "@/lib/editor-core/style-profiles";
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
+
+function canonicalStyleRecipe(recipe) {
+  return { shadows: 0, highlights: 0, vibrance: 0, ...recipe };
+}
 
 test("B1 style profiles compile server-owned bounded canonical recipes", () => {
   assert.deepEqual(STYLE_PROFILE_IDS, ["clean_commercial", "warm_travel", "cinematic", "soft_nostalgic", "vibrant_social", "dark_moody", "natural_documentary"]);
@@ -102,17 +106,17 @@ test("B1 style profiles compile server-owned bounded canonical recipes", () => {
 
 test("B1 calibration v2 preserves historical recipes and strengthens only commercial and documentary profiles", () => {
   const v1Recipes = {
-    clean_commercial: { brightness: 0.04, contrast: 0.2, saturation: 0.05, temperature: 0.02, tint: 0 },
-    natural_documentary: { brightness: 0.015, contrast: 0.08, saturation: 0.02, temperature: 0.01, tint: 0 }
+    clean_commercial: canonicalStyleRecipe({ brightness: 0.04, contrast: 0.2, saturation: 0.05, temperature: 0.02, tint: 0 }),
+    natural_documentary: canonicalStyleRecipe({ brightness: 0.015, contrast: 0.08, saturation: 0.02, temperature: 0.01, tint: 0 })
   };
   const v2Recipes = {
-    clean_commercial: { brightness: 0.075, contrast: 0.31, saturation: 0.12, temperature: 0.05, tint: 0 },
-    natural_documentary: { brightness: 0.045, contrast: 0.22, saturation: 0.075, temperature: 0.015, tint: 0 }
+    clean_commercial: canonicalStyleRecipe({ brightness: 0.075, contrast: 0.31, saturation: 0.12, temperature: 0.05, tint: 0 }),
+    natural_documentary: canonicalStyleRecipe({ brightness: 0.045, contrast: 0.22, saturation: 0.075, temperature: 0.015, tint: 0 })
   };
   const unchangedProfiles = {
-    warm_travel: { brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 },
-    vibrant_social: { brightness: 0.04, contrast: 0.16, saturation: 0.28, temperature: 0.03, tint: 0 },
-    dark_moody: { brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 }
+    warm_travel: canonicalStyleRecipe({ brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 }),
+    vibrant_social: canonicalStyleRecipe({ brightness: 0.04, contrast: 0.16, saturation: 0.28, temperature: 0.03, tint: 0 }),
+    dark_moody: canonicalStyleRecipe({ brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 })
   };
   for (const [profileId, recipe] of Object.entries(v1Recipes)) {
     assert.deepEqual(resolveStyleProfile(profileId, 1).recipe, recipe, `${profileId} v1 remains reproducible`);
@@ -133,7 +137,7 @@ test("B1 calibration v2 preserves historical recipes and strengthens only commer
 
   const cleanV1 = compileStyleProfile({ profileId: "clean_commercial", profileVersion: 1, strength: "standard", constraints: ["skin_tone_conservative"] });
   const cleanV2 = compileStyleProfile({ profileId: "clean_commercial", strength: "standard", constraints: ["skin_tone_conservative"] });
-  assert.deepEqual(cleanV2.recipe, { brightness: 0.0525, contrast: 0.18445, saturation: 0.054599999999999996, temperature: 0.01575, tint: 0 });
+  assert.deepEqual(cleanV2.recipe, canonicalStyleRecipe({ brightness: 0.0525, contrast: 0.18445, saturation: 0.054599999999999996, temperature: 0.01575, tint: 0 }));
   assert.ok(Object.values(cleanV2.recipe).reduce((sum, value) => sum + Math.abs(value), 0) > Object.values(cleanV1.recipe).reduce((sum, value) => sum + Math.abs(value), 0));
   assert.deepEqual(buildStyleProfileFilters({ profileId: "clean_commercial", strength: "standard", constraints: ["skin_tone_conservative"] }), [
     "eq=brightness=0.0602:contrast=1.2537:saturation=1.1539",
@@ -142,7 +146,7 @@ test("B1 calibration v2 preserves historical recipes and strengthens only commer
 
   const naturalV1 = compileStyleProfile({ profileId: "natural_documentary", profileVersion: 1, strength: "standard", constraints: ["avoid_darkening"] });
   const naturalV2 = compileStyleProfile({ profileId: "natural_documentary", strength: "standard", constraints: ["avoid_darkening"] });
-  assert.deepEqual(naturalV2.recipe, { brightness: 0.0315, contrast: 0.154, saturation: 0.0525, temperature: 0.010499999999999999, tint: 0 });
+  assert.deepEqual(naturalV2.recipe, canonicalStyleRecipe({ brightness: 0.0315, contrast: 0.154, saturation: 0.0525, temperature: 0.010499999999999999, tint: 0 }));
   assert.ok(Object.values(naturalV2.recipe).reduce((sum, value) => sum + Math.abs(value), 0) > Object.values(naturalV1.recipe).reduce((sum, value) => sum + Math.abs(value), 0));
   assert.deepEqual(buildStyleProfileFilters({ profileId: "natural_documentary", strength: "standard", constraints: ["avoid_darkening"] }), [
     "eq=brightness=0.0455:contrast=1.2280:saturation=1.1506",
@@ -154,8 +158,8 @@ test("B1 calibration v2 preserves historical recipes and strengthens only commer
 });
 
 test("B1 cinematic v2 protects shadows while retaining the v1 filmic character", () => {
-  const v1Recipe = { brightness: -0.04, contrast: 0.3, saturation: -0.08, temperature: 0.05, tint: -0.02 };
-  const v2Recipe = { brightness: 0, contrast: 0.23, saturation: -0.08, temperature: 0.05, tint: -0.02 };
+  const v1Recipe = canonicalStyleRecipe({ brightness: -0.04, contrast: 0.3, saturation: -0.08, temperature: 0.05, tint: -0.02 });
+  const v2Recipe = canonicalStyleRecipe({ brightness: 0, contrast: 0.23, saturation: -0.08, temperature: 0.05, tint: -0.02 });
   const otherCurrentVersions = {
     clean_commercial: 2,
     warm_travel: 1,
@@ -187,13 +191,13 @@ test("B1 cinematic v2 protects shadows while retaining the v1 filmic character",
 
   const v1Standard = compileStyleProfile({ profileId: "cinematic", profileVersion: 1, strength: "standard" });
   const v2Standard = compileStyleProfile({ profileId: "cinematic", strength: "standard" });
-  assert.deepEqual(v2Standard.recipe, {
+  assert.deepEqual(v2Standard.recipe, canonicalStyleRecipe({
     brightness: 0,
     contrast: 0.161,
     saturation: -0.055999999999999994,
     temperature: 0.034999999999999996,
     tint: -0.013999999999999999
-  });
+  }));
   assert.ok(v2Standard.recipe.brightness > v1Standard.recipe.brightness, "v2 removes automatic brightness darkening");
   assert.ok(v2Standard.recipe.contrast > 0 && v2Standard.recipe.contrast < v1Standard.recipe.contrast, "v2 retains moderated contrast");
   for (const field of ["saturation", "temperature", "tint"]) {
@@ -211,15 +215,15 @@ test("B1 cinematic v2 protects shadows while retaining the v1 filmic character",
 });
 
 test("B1 soft nostalgic v2 retains warmth while reducing v1 washout", () => {
-  const v1Recipe = { brightness: 0.07, contrast: -0.18, saturation: -0.2, temperature: 0.12, tint: 0.02 };
-  const v2Recipe = { brightness: 0.04, contrast: -0.13, saturation: -0.18, temperature: 0.12, tint: 0.02 };
+  const v1Recipe = canonicalStyleRecipe({ brightness: 0.07, contrast: -0.18, saturation: -0.2, temperature: 0.12, tint: 0.02 });
+  const v2Recipe = canonicalStyleRecipe({ brightness: 0.04, contrast: -0.13, saturation: -0.18, temperature: 0.12, tint: 0.02 });
   const otherCurrentProfiles = {
-    clean_commercial: { profileVersion: 2, recipe: { brightness: 0.075, contrast: 0.31, saturation: 0.12, temperature: 0.05, tint: 0 } },
-    warm_travel: { profileVersion: 1, recipe: { brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 } },
-    cinematic: { profileVersion: 2, recipe: { brightness: 0, contrast: 0.23, saturation: -0.08, temperature: 0.05, tint: -0.02 } },
-    vibrant_social: { profileVersion: 1, recipe: { brightness: 0.04, contrast: 0.16, saturation: 0.28, temperature: 0.03, tint: 0 } },
-    dark_moody: { profileVersion: 1, recipe: { brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 } },
-    natural_documentary: { profileVersion: 2, recipe: { brightness: 0.045, contrast: 0.22, saturation: 0.075, temperature: 0.015, tint: 0 } }
+    clean_commercial: { profileVersion: 2, recipe: canonicalStyleRecipe({ brightness: 0.075, contrast: 0.31, saturation: 0.12, temperature: 0.05, tint: 0 }) },
+    warm_travel: { profileVersion: 1, recipe: canonicalStyleRecipe({ brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 }) },
+    cinematic: { profileVersion: 2, recipe: canonicalStyleRecipe({ brightness: 0, contrast: 0.23, saturation: -0.08, temperature: 0.05, tint: -0.02 }) },
+    vibrant_social: { profileVersion: 1, recipe: canonicalStyleRecipe({ brightness: 0.04, contrast: 0.16, saturation: 0.28, temperature: 0.03, tint: 0 }) },
+    dark_moody: { profileVersion: 1, recipe: canonicalStyleRecipe({ brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 }) },
+    natural_documentary: { profileVersion: 2, recipe: canonicalStyleRecipe({ brightness: 0.045, contrast: 0.22, saturation: 0.075, temperature: 0.015, tint: 0 }) }
   };
 
   assert.deepEqual(resolveStyleProfile("soft_nostalgic", 1).recipe, v1Recipe, "soft nostalgic v1 remains reproducible");
@@ -243,13 +247,13 @@ test("B1 soft nostalgic v2 retains warmth while reducing v1 washout", () => {
 
   const v1Standard = compileStyleProfile({ profileId: "soft_nostalgic", profileVersion: 1, strength: "standard" });
   const v2Standard = compileStyleProfile({ profileId: "soft_nostalgic", strength: "standard" });
-  assert.deepEqual(v2Standard.recipe, {
+  assert.deepEqual(v2Standard.recipe, canonicalStyleRecipe({
     brightness: 0.027999999999999997,
     contrast: -0.091,
     saturation: -0.126,
     temperature: 0.08399999999999999,
     tint: 0.013999999999999999
-  });
+  }));
   assert.ok(v2Standard.recipe.brightness < v1Standard.recipe.brightness, "v2 materially reduces the brightness lift");
   assert.ok(v2Standard.recipe.contrast > v1Standard.recipe.contrast && v2Standard.recipe.contrast < 0, "v2 retains but moderates lower contrast");
   assert.ok(v2Standard.recipe.saturation < 0, "v2 keeps color intentionally restrained");
@@ -265,6 +269,64 @@ test("B1 soft nostalgic v2 retains warmth while reducing v1 washout", () => {
     "eq=brightness=0.0534:contrast=0.7949:saturation=0.7527",
     "colorbalance=rs=0.0392:gs=-0.0155:bs=-0.0392:rm=0.0523:gm=-0.0155:bm=-0.0523:rh=0.0392:gh=-0.0155:bh=-0.0392:pl=1"
   ]);
+});
+
+test("B1 internal tone and vibrance primitives are bounded, deterministic, and legacy-neutral", () => {
+  assert.deepEqual(CANONICAL_VISUAL_RECIPE_FIELDS, ["brightness", "contrast", "saturation", "temperature", "tint", "shadows", "highlights", "vibrance"]);
+  assert.deepEqual(createCanonicalVisualRecipe({ brightness: 0.2 }), canonicalStyleRecipe({ brightness: 0.2, contrast: 0, saturation: 0, temperature: 0, tint: 0 }));
+  for (const field of ["shadows", "highlights", "vibrance"]) {
+    assert.throws(() => createCanonicalVisualRecipe({ [field]: 1.01 }), new RegExp(`${field} must be a finite number`));
+    assert.throws(() => createCanonicalVisualRecipe({ [field]: -1.01 }), new RegExp(`${field} must be a finite number`));
+    assert.throws(() => createCanonicalVisualRecipe({ [field]: Number.NaN }), new RegExp(`${field} must be a finite number`));
+  }
+
+  assert.deepEqual(buildToneCurvePoints(), { shadowPoint: 0.25, highlightPoint: 0.75 });
+  assert.deepEqual(buildToneCurvePoints({ shadows: 1, highlights: 1 }), { shadowPoint: 0.35, highlightPoint: 0.83 });
+  assert.deepEqual(buildToneCurvePoints({ shadows: -1, highlights: -1 }), { shadowPoint: 0.15, highlightPoint: 0.67 });
+  for (const values of [{ shadows: -1, highlights: 1 }, { shadows: 1, highlights: -1 }]) {
+    const { shadowPoint, highlightPoint } = buildToneCurvePoints(values);
+    assert.ok(shadowPoint >= 0.08 && shadowPoint <= 0.42);
+    assert.ok(highlightPoint >= shadowPoint + 0.12 && highlightPoint <= 0.94);
+  }
+  assert.equal(buildToneCurveFilter(), null);
+  assert.equal(buildVibranceFilter(), null);
+  assert.equal(buildToneCurveFilter({ shadows: 1, highlights: -1 }), "curves=master='0/0 0.25/0.3500 0.75/0.6700 1/1':interp=pchip");
+  assert.equal(buildVibranceFilter({ vibrance: 1 }), "vibrance=intensity=0.5000:rbal=1:gbal=1:bbal=1:alternate=0");
+  assert.equal(buildVibranceFilter({ vibrance: -1 }), "vibrance=intensity=-0.5000:rbal=1:gbal=1:bbal=1:alternate=0");
+  assert.throws(() => buildToneCurveFilter({ shadows: Infinity }), /shadows must be a finite number/);
+  assert.throws(() => buildVibranceFilter({ vibrance: -2 }), /vibrance must be a finite number/);
+
+  const extendedRecipe = canonicalStyleRecipe({ brightness: 0.1, contrast: 0.1, saturation: 0.05, temperature: 0.03, tint: -0.02, shadows: 0.5, highlights: -0.5, vibrance: 0.4 });
+  assert.deepEqual(buildStyleRecipeFilters(extendedRecipe), [
+    "curves=master='0/0 0.25/0.3135 0.75/0.6992 1/1':interp=pchip",
+    "eq=brightness=0.0866:contrast=1.1775:saturation=1.1466",
+    "vibrance=intensity=0.2755:rbal=1:gbal=1:bbal=1:alternate=0",
+    "colorbalance=rs=0.0199:gs=0.0188:bs=-0.0199:rm=0.0266:gm=0.0188:bm=-0.0266:rh=0.0199:gh=0.0188:bh=-0.0199:pl=1"
+  ]);
+
+  const legacyFilterChains = {
+    "clean_commercial@1": ["eq=brightness=0.0427:contrast=1.2156:saturation=1.1205", "colorbalance=rs=0.0133:gs=0.0000:bs=-0.0133:rm=0.0177:gm=0.0000:bm=-0.0177:rh=0.0133:gh=0.0000:bh=-0.0133:pl=1"],
+    "clean_commercial@2": ["eq=brightness=0.0602:contrast=1.2795:saturation=1.1960", "colorbalance=rs=0.0217:gs=0.0000:bs=-0.0217:rm=0.0289:gm=0.0000:bm=-0.0289:rh=0.0217:gh=0.0000:bh=-0.0217:pl=1"],
+    "warm_travel@1": ["eq=brightness=0.0482:contrast=1.1895:saturation=1.2311", "colorbalance=rs=0.0527:gs=-0.0108:bs=-0.0527:rm=0.0702:gm=-0.0108:bm=-0.0702:rh=0.0527:gh=-0.0108:bh=-0.0527:pl=1"],
+    "cinematic@1": ["eq=brightness=-0.0534:contrast=1.3342:saturation=0.8439", "colorbalance=rs=0.0241:gs=0.0155:bs=-0.0241:rm=0.0321:gm=0.0155:bm=-0.0321:rh=0.0241:gh=0.0155:bh=-0.0241:pl=1"],
+    "cinematic@2": ["eq=brightness=0.0000:contrast=1.2854:saturation=0.8439", "colorbalance=rs=0.0241:gs=0.0155:bs=-0.0241:rm=0.0321:gm=0.0155:bm=-0.0321:rh=0.0241:gh=0.0155:bh=-0.0241:pl=1"],
+    "soft_nostalgic@1": ["eq=brightness=0.0725:contrast=0.7527:saturation=0.7370", "colorbalance=rs=0.0392:gs=-0.0155:bs=-0.0392:rm=0.0523:gm=-0.0155:bm=-0.0523:rh=0.0392:gh=-0.0155:bh=-0.0392:pl=1"],
+    "soft_nostalgic@2": ["eq=brightness=0.0534:contrast=0.7949:saturation=0.7527", "colorbalance=rs=0.0392:gs=-0.0155:bs=-0.0392:rm=0.0523:gm=-0.0155:bm=-0.0523:rh=0.0392:gh=-0.0155:bh=-0.0392:pl=1"],
+    "vibrant_social@1": ["eq=brightness=0.0427:contrast=1.1895:saturation=1.3207", "colorbalance=rs=0.0165:gs=0.0000:bs=-0.0165:rm=0.0219:gm=0.0000:bm=-0.0219:rh=0.0165:gh=0.0000:bh=-0.0165:pl=1"],
+    "dark_moody@1": ["eq=brightness=-0.1155:contrast=1.2927:saturation=0.8232", "colorbalance=rs=-0.0213:gs=0.0193:bs=0.0213:rm=-0.0285:gm=0.0193:bm=0.0285:rh=-0.0213:gh=0.0193:bh=0.0213:pl=1"],
+    "natural_documentary@1": ["eq=brightness=0.0253:contrast=1.1280:saturation=1.0736", "colorbalance=rs=0.0092:gs=0.0000:bs=-0.0092:rm=0.0123:gm=0.0000:bm=-0.0123:rh=0.0092:gh=0.0000:bh=-0.0092:pl=1"],
+    "natural_documentary@2": ["eq=brightness=0.0455:contrast=1.2280:saturation=1.1506", "colorbalance=rs=0.0114:gs=0.0000:bs=-0.0114:rm=0.0152:gm=0.0000:bm=-0.0152:rh=0.0114:gh=0.0000:bh=-0.0114:pl=1"]
+  };
+  for (const [key, expectedFilters] of Object.entries(legacyFilterChains)) {
+    const [profileId, version] = key.split("@");
+    const profileVersion = Number(version);
+    const recipe = compileStyleProfile({ profileId, profileVersion, strength: "standard" }).recipe;
+    assert.equal(recipe.shadows, 0, `${profileId} v${profileVersion} defaults shadows to neutral`);
+    assert.equal(recipe.highlights, 0, `${profileId} v${profileVersion} defaults highlights to neutral`);
+    assert.equal(recipe.vibrance, 0, `${profileId} v${profileVersion} defaults vibrance to neutral`);
+    assert.deepEqual(buildStyleRecipeFilters(recipe), expectedFilters, `${profileId} v${profileVersion} preserves its exact legacy filter chain`);
+    assert.deepEqual(buildStyleRecipeFilters(recipe), buildVisualAdjustmentFilters(recipe), `${profileId} v${profileVersion} emits no extended filter`);
+  }
 });
 
 test("B1 style diagnostics contain only validated server-owned planning and execution facts", () => {
@@ -2958,6 +3020,149 @@ async function videoFrameDifference(firstPath, secondPath, time = 1) {
   ], { encoding: "buffer", maxBuffer: 2 * 1024 * 1024 });
   return [...stdout].reduce((sum, value) => sum + value, 0);
 }
+
+async function makeStyleFixture(output, filter) {
+  await execFileAsync("ffmpeg", [
+    "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", filter,
+    "-t", "1", "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-an", output
+  ]);
+}
+
+async function renderStyleFixture(input, output, filters = []) {
+  await execFileAsync("ffmpeg", [
+    "-y", "-hide_banner", "-loglevel", "error", "-i", input,
+    ...(filters.length ? ["-vf", filters.join(",")] : []),
+    "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-an", output
+  ]);
+}
+
+async function readRgbFrame(input) {
+  const { stdout } = await execFileAsync("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-i", input, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"
+  ], { encoding: "buffer", maxBuffer: 4 * 1024 * 1024 });
+  return stdout;
+}
+
+function rgbFixtureStats(frame) {
+  const extrema = { red: [255, 0], green: [255, 0], blue: [255, 0] };
+  let lumaTotal = 0;
+  let chromaTotal = 0;
+  for (let index = 0; index < frame.length; index += 3) {
+    const [red, green, blue] = [frame[index], frame[index + 1], frame[index + 2]];
+    extrema.red[0] = Math.min(extrema.red[0], red); extrema.red[1] = Math.max(extrema.red[1], red);
+    extrema.green[0] = Math.min(extrema.green[0], green); extrema.green[1] = Math.max(extrema.green[1], green);
+    extrema.blue[0] = Math.min(extrema.blue[0], blue); extrema.blue[1] = Math.max(extrema.blue[1], blue);
+    lumaTotal += (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+    chromaTotal += Math.max(red, green, blue) - Math.min(red, green, blue);
+  }
+  const pixels = frame.length / 3;
+  return { extrema, meanLuma: lumaTotal / pixels, meanChroma: chromaTotal / pixels };
+}
+
+async function probeStyleFixture(input) {
+  const { stdout } = await execFileAsync("ffprobe", [
+    "-v", "error", "-show_entries", "stream=codec_type,width,height,pix_fmt,color_range,color_space,color_transfer,color_primaries", "-of", "json", input
+  ]);
+  const streams = JSON.parse(stdout).streams;
+  return {
+    video: streams.find((stream) => stream.codec_type === "video"),
+    hasAudio: streams.some((stream) => stream.codec_type === "audio")
+  };
+}
+
+function grayscaleValues(frame, width = 320) {
+  const values = [];
+  for (let index = 0; index < width * 3; index += 3) values.push(frame[index]);
+  return values;
+}
+
+function longestRepeatedRun(values) {
+  let longest = 0;
+  let current = 0;
+  let previous = null;
+  for (const value of values) {
+    current = value === previous ? current + 1 : 1;
+    longest = Math.max(longest, current);
+    previous = value;
+  }
+  return longest;
+}
+
+test("B1 internal tone and vibrance filters render safely across deterministic grading fixtures", { timeout: 60_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-style-fixtures-"));
+  const fixtureFilters = {
+    food: "color=c=0x120c0a:size=320x180:rate=30,drawbox=x=10:y=15:w=65:h=65:color=0x5a1606:t=fill,drawbox=x=90:y=15:w=65:h=65:color=0xa33a0c:t=fill,drawbox=x=170:y=15:w=65:h=65:color=0x7d4a1f:t=fill",
+    skin: "color=c=0x6b3f24:size=320x180:rate=30,drawbox=x=55:y=25:w=210:h=125:color=0xc68642:t=fill,drawbox=x=105:y=50:w=110:h=75:color=0xe0ac69:t=fill",
+    foliage: "color=c=0x102613:size=320x180:rate=30,drawbox=x=15:y=20:w=95:h=130:color=0x1e5d31:t=fill,drawbox=x=120:y=10:w=85:h=145:color=0x3b7e36:t=fill,drawbox=x=220:y=30:w=85:h=120:color=0x6c963c:t=fill",
+    practical: "color=c=0x080b12:size=320x180:rate=30,drawbox=x=135:y=28:w=45:h=105:color=0xffd36a:t=fill,drawbox=x=205:y=45:w=25:h=65:color=0xdcecff:t=fill",
+    gradient: "nullsrc=size=320x180:rate=30,geq=lum='16+219*X/W':cb=128:cr=128"
+  };
+  const extendedFilters = buildStyleRecipeFilters(canonicalStyleRecipe({
+    brightness: 0.06, contrast: 0.08, saturation: 0.03, temperature: 0.02, tint: -0.01,
+    shadows: 0.45, highlights: -0.35, vibrance: 0.4
+  }));
+  try {
+    for (const [name, filter] of Object.entries(fixtureFilters)) {
+      const source = path.join(tempDirectory, `${name}-source.mp4`);
+      const rendered = path.join(tempDirectory, `${name}-extended.mp4`);
+      await makeStyleFixture(source, filter);
+      await renderStyleFixture(source, rendered, extendedFilters);
+      const [sourceProbe, renderedProbe, sourceFrame, renderedFrame] = await Promise.all([
+        probeStyleFixture(source), probeStyleFixture(rendered), readRgbFrame(source), readRgbFrame(rendered)
+      ]);
+      assert.deepEqual(
+        { width: renderedProbe.video.width, height: renderedProbe.video.height, pix_fmt: renderedProbe.video.pix_fmt },
+        { width: sourceProbe.video.width, height: sourceProbe.video.height, pix_fmt: "yuv420p" },
+        `${name} retains production-compatible geometry and pixel format`
+      );
+      assert.equal(
+        renderedProbe.video.color_range ?? null,
+        sourceProbe.video.color_range ?? null,
+        `${name} does not introduce a conflicting color-range tag`
+      );
+      assert.equal(renderedProbe.hasAudio, false, `${name} grading-only render does not introduce audio`);
+      assert.notDeepEqual(renderedFrame, sourceFrame, `${name} receives a measurable non-neutral pixel treatment`);
+      const stats = rgbFixtureStats(renderedFrame);
+      for (const [channel, [minimum, maximum]] of Object.entries(stats.extrema)) {
+        assert.ok(minimum >= 0 && maximum <= 255, `${name} ${channel} remains in RGB display bounds`);
+      }
+    }
+
+    const gradientSource = path.join(tempDirectory, "gradient-source.mp4");
+    const gradientCurved = path.join(tempDirectory, "gradient-curved.mp4");
+    await renderStyleFixture(gradientSource, gradientCurved, [buildToneCurveFilter({ shadows: 0.5, highlights: -0.5 })]);
+    const sourceValues = grayscaleValues(await readRgbFrame(gradientSource));
+    const curvedValues = grayscaleValues(await readRgbFrame(gradientCurved));
+    assert.ok(new Set(curvedValues).size >= 128, "PCHIP curve retains a broad grayscale ramp after yuv420p encoding");
+    assert.ok(
+      longestRepeatedRun(curvedValues) <= longestRepeatedRun(sourceValues) + 2,
+      "PCHIP curve does not materially worsen flat gradient bands after yuv420p encoding"
+    );
+
+    const foodSource = path.join(tempDirectory, "food-source.mp4");
+    const stages = {
+      brightnessContrast: ["eq=brightness=0.0427:contrast=1.1895"],
+      brightnessContrastSaturation: ["eq=brightness=0.0427:contrast=1.1895:saturation=1.3207"],
+      colorBalance: ["colorbalance=rs=0.0165:gs=0.0000:bs=-0.0165:rm=0.0219:gm=0.0000:bm=-0.0219:rh=0.0165:gh=0.0000:bh=-0.0165:pl=1"],
+      combinedLegacy: buildStyleRecipeFilters(compileStyleProfile({ profileId: "vibrant_social", strength: "standard" }).recipe),
+      saferCandidate: ["eq=brightness=0.0350:contrast=1.1400:saturation=1.0800", buildVibranceFilter({ vibrance: 0.35 }), "colorbalance=rs=0.0165:gs=0.0000:bs=-0.0165:rm=0.0219:gm=0.0000:bm=-0.0219:rh=0.0165:gh=0.0000:bh=-0.0165:pl=1"]
+    };
+    const stageStats = {};
+    for (const [name, filters] of Object.entries(stages)) {
+      const output = path.join(tempDirectory, `food-${name}.mp4`);
+      await renderStyleFixture(foodSource, output, filters);
+      stageStats[name] = rgbFixtureStats(await readRgbFrame(output));
+    }
+    assert.ok(stageStats.brightnessContrastSaturation.meanChroma > stageStats.brightnessContrast.meanChroma, "legacy saturation is the stage that materially raises food-fixture chroma");
+    assert.notEqual(stageStats.combinedLegacy.meanLuma, stageStats.brightnessContrastSaturation.meanLuma, "warm colorbalance remains a separately measurable legacy stage");
+    assert.ok(stageStats.saferCandidate.meanChroma < stageStats.brightnessContrastSaturation.meanChroma, "candidate direction reduces global saturation pressure before any future profile calibration");
+    for (const stats of Object.values(stageStats)) for (const [minimum, maximum] of Object.values(stats.extrema)) {
+      assert.ok(minimum >= 0 && maximum <= 255, "Vibrant Social diagnostic stages stay in displayable RGB bounds");
+    }
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
 
 test("style profiles apply source scope before sequence assembly and global scope after it", { timeout: 30_000 }, async () => {
   const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-style-profile-order-"));

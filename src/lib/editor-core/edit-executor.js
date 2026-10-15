@@ -166,9 +166,84 @@ const TEMPERATURE_SHADOW_HIGHLIGHT_WEIGHT = 0.75;
 const COMBINED_BRIGHTNESS_HEADROOM = 0.8;
 const COMBINED_CONTRAST_HEADROOM = 0.82;
 const THREE_WAY_TEMPERATURE_HEADROOM = 0.9;
+const TONE_CURVE_SHADOW_ANCHOR = 0.25;
+const TONE_CURVE_HIGHLIGHT_ANCHOR = 0.75;
+const TONE_CURVE_SHADOW_RANGE = Object.freeze({ min: 0.08, max: 0.42 });
+const TONE_CURVE_HIGHLIGHT_MAX = 0.94;
+const TONE_CURVE_MINIMUM_SEPARATION = 0.12;
+const TONE_CURVE_SHADOW_SCALE = 0.1;
+const TONE_CURVE_HIGHLIGHT_SCALE = 0.08;
+const VIBRANCE_MAX = 0.5;
 
 function boundedColorBalance(value) {
   return Math.max(-COLORBALANCE_MAX, Math.min(COLORBALANCE_MAX, value));
+}
+
+function boundedStylePrimitive(value, name) {
+  if (value === undefined) return 0;
+  if (!Number.isFinite(value) || value < -1 || value > 1) {
+    throw new Error(`Invalid style recipe: ${name} must be a finite number between -1 and 1`);
+  }
+  return value;
+}
+
+/** Builds only server-owned, monotonic curve points; no raw curve text enters plans. */
+export function buildToneCurvePoints({ shadows, highlights } = {}) {
+  const shadowValue = boundedStylePrimitive(shadows, "shadows");
+  const highlightValue = boundedStylePrimitive(highlights, "highlights");
+  const shadowPoint = Math.max(
+    TONE_CURVE_SHADOW_RANGE.min,
+    Math.min(TONE_CURVE_SHADOW_RANGE.max, TONE_CURVE_SHADOW_ANCHOR + TONE_CURVE_SHADOW_SCALE * perceptualAdjustmentMagnitude(shadowValue))
+  );
+  const highlightPoint = Math.max(
+    shadowPoint + TONE_CURVE_MINIMUM_SEPARATION,
+    Math.min(TONE_CURVE_HIGHLIGHT_MAX, TONE_CURVE_HIGHLIGHT_ANCHOR + TONE_CURVE_HIGHLIGHT_SCALE * perceptualAdjustmentMagnitude(highlightValue))
+  );
+  return Object.freeze({ shadowPoint, highlightPoint });
+}
+
+export function buildToneCurveFilter(recipe = {}) {
+  const shadows = boundedStylePrimitive(recipe.shadows, "shadows");
+  const highlights = boundedStylePrimitive(recipe.highlights, "highlights");
+  if (shadows === 0 && highlights === 0) return null;
+  const { shadowPoint, highlightPoint } = buildToneCurvePoints({ shadows, highlights });
+  return `curves=master='0/0 0.25/${shadowPoint.toFixed(4)} 0.75/${highlightPoint.toFixed(4)} 1/1':interp=pchip`;
+}
+
+export function buildVibranceFilter(recipe = {}) {
+  const vibrance = boundedStylePrimitive(recipe.vibrance, "vibrance");
+  if (vibrance === 0) return null;
+  const intensity = perceptualAdjustmentMagnitude(vibrance) * VIBRANCE_MAX;
+  return `vibrance=intensity=${intensity.toFixed(4)}:rbal=1:gbal=1:bbal=1:alternate=0`;
+}
+
+function buildEqFilter(operation) {
+  const eq = [];
+  const brightnessAndPositiveContrast = operation.brightness > 0 && operation.contrast > 0;
+  const brightnessHeadroom = brightnessAndPositiveContrast ? COMBINED_BRIGHTNESS_HEADROOM : 1;
+  const contrastHeadroom = brightnessAndPositiveContrast ? COMBINED_CONTRAST_HEADROOM : 1;
+  if (operation.brightness !== undefined) eq.push(`brightness=${(perceptualAdjustmentMagnitude(operation.brightness) * 0.45 * brightnessHeadroom).toFixed(4)}`);
+  if (operation.contrast !== undefined) eq.push(`contrast=${(1 + perceptualAdjustmentMagnitude(operation.contrast) * 0.9 * contrastHeadroom).toFixed(4)}`);
+  if (operation.saturation !== undefined) eq.push(`saturation=${(1 + perceptualAdjustmentMagnitude(operation.saturation) * 0.9).toFixed(4)}`);
+  return eq.length ? `eq=${eq.join(":")}` : null;
+}
+
+function buildColorBalanceFilter(operation) {
+  if (operation.temperature === undefined && operation.tint === undefined) return null;
+  const brightnessAndPositiveContrast = operation.brightness > 0 && operation.contrast > 0;
+  const temperatureHeadroom = brightnessAndPositiveContrast && operation.temperature !== undefined
+    ? THREE_WAY_TEMPERATURE_HEADROOM
+    : 1;
+  const temperature = perceptualAdjustmentMagnitude(operation.temperature || 0) * TEMPERATURE_MAX * temperatureHeadroom;
+  const tint = perceptualAdjustmentMagnitude(operation.tint || 0) * TINT_MAX;
+  // Temperature is strongest through useful midtones and gentler in shadows
+  // and highlights. Tint moves the green↔magenta axis rather than adding red.
+  const redShadowHighlight = boundedColorBalance(temperature * TEMPERATURE_SHADOW_HIGHLIGHT_WEIGHT);
+  const redMidtone = boundedColorBalance(temperature);
+  const green = boundedColorBalance(-tint);
+  const blueShadowHighlight = boundedColorBalance(-temperature * TEMPERATURE_SHADOW_HIGHLIGHT_WEIGHT);
+  const blueMidtone = boundedColorBalance(-temperature);
+  return `colorbalance=rs=${redShadowHighlight.toFixed(4)}:gs=${green.toFixed(4)}:bs=${blueShadowHighlight.toFixed(4)}:rm=${redMidtone.toFixed(4)}:gm=${green.toFixed(4)}:bm=${blueMidtone.toFixed(4)}:rh=${redShadowHighlight.toFixed(4)}:gh=${green.toFixed(4)}:bh=${blueShadowHighlight.toFixed(4)}:pl=1`;
 }
 
 // Converts bounded server-facing controls to perceptible, still bounded FFmpeg
@@ -176,29 +251,24 @@ function boundedColorBalance(value) {
 // never reach FFmpeg directly as user-controlled filter syntax.
 export function buildVisualAdjustmentFilters(operation) {
   const filters = [];
-  const eq = [];
-  const brightnessAndPositiveContrast = operation.brightness > 0 && operation.contrast > 0;
-  const brightnessHeadroom = brightnessAndPositiveContrast ? COMBINED_BRIGHTNESS_HEADROOM : 1;
-  const contrastHeadroom = brightnessAndPositiveContrast ? COMBINED_CONTRAST_HEADROOM : 1;
-  const temperatureHeadroom = brightnessAndPositiveContrast && operation.temperature !== undefined
-    ? THREE_WAY_TEMPERATURE_HEADROOM
-    : 1;
-  if (operation.brightness !== undefined) eq.push(`brightness=${(perceptualAdjustmentMagnitude(operation.brightness) * 0.45 * brightnessHeadroom).toFixed(4)}`);
-  if (operation.contrast !== undefined) eq.push(`contrast=${(1 + perceptualAdjustmentMagnitude(operation.contrast) * 0.9 * contrastHeadroom).toFixed(4)}`);
-  if (operation.saturation !== undefined) eq.push(`saturation=${(1 + perceptualAdjustmentMagnitude(operation.saturation) * 0.9).toFixed(4)}`);
-  if (eq.length) filters.push(`eq=${eq.join(":")}`);
-  if (operation.temperature !== undefined || operation.tint !== undefined) {
-    const temperature = perceptualAdjustmentMagnitude(operation.temperature || 0) * TEMPERATURE_MAX * temperatureHeadroom;
-    const tint = perceptualAdjustmentMagnitude(operation.tint || 0) * TINT_MAX;
-    // Temperature is strongest through useful midtones and gentler in shadows
-    // and highlights. Tint moves the green↔magenta axis rather than adding red.
-    const redShadowHighlight = boundedColorBalance(temperature * TEMPERATURE_SHADOW_HIGHLIGHT_WEIGHT);
-    const redMidtone = boundedColorBalance(temperature);
-    const green = boundedColorBalance(-tint);
-    const blueShadowHighlight = boundedColorBalance(-temperature * TEMPERATURE_SHADOW_HIGHLIGHT_WEIGHT);
-    const blueMidtone = boundedColorBalance(-temperature);
-    filters.push(`colorbalance=rs=${redShadowHighlight.toFixed(4)}:gs=${green.toFixed(4)}:bs=${blueShadowHighlight.toFixed(4)}:rm=${redMidtone.toFixed(4)}:gm=${green.toFixed(4)}:bm=${blueMidtone.toFixed(4)}:rh=${redShadowHighlight.toFixed(4)}:gh=${green.toFixed(4)}:bh=${blueShadowHighlight.toFixed(4)}:pl=1`);
-  }
+  const eq = buildEqFilter(operation);
+  const colorbalance = buildColorBalanceFilter(operation);
+  if (eq) filters.push(eq);
+  if (colorbalance) filters.push(colorbalance);
+  return filters;
+}
+
+/** Style recipes may use extra server-owned primitives; user adjustments may not. */
+export function buildStyleRecipeFilters(recipe) {
+  const filters = [];
+  const toneCurve = buildToneCurveFilter(recipe);
+  const eq = buildEqFilter(recipe);
+  const vibrance = buildVibranceFilter(recipe);
+  const colorbalance = buildColorBalanceFilter(recipe);
+  if (toneCurve) filters.push(toneCurve);
+  if (eq) filters.push(eq);
+  if (vibrance) filters.push(vibrance);
+  if (colorbalance) filters.push(colorbalance);
   return filters;
 }
 
@@ -209,7 +279,7 @@ export function compileStyleProfileForExecution(operation) {
     ...(operation.strength === undefined ? {} : { strength: operation.strength }),
     ...(operation.constraints === undefined ? {} : { constraints: operation.constraints })
   });
-  return { compiled, filters: buildVisualAdjustmentFilters(compiled.recipe) };
+  return { compiled, filters: buildStyleRecipeFilters(compiled.recipe) };
 }
 
 export function buildStyleProfileFilters(operation) {

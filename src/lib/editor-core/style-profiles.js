@@ -8,7 +8,11 @@ export const CANONICAL_VISUAL_RECIPE_LIMITS = Object.freeze({
   contrast: Object.freeze({ min: -1, max: 1 }),
   saturation: Object.freeze({ min: -1, max: 1 }),
   temperature: Object.freeze({ min: -1, max: 1 }),
-  tint: Object.freeze({ min: -1, max: 1 })
+  tint: Object.freeze({ min: -1, max: 1 }),
+  // Internal B1/B2 grading primitives. They are not user prompt controls.
+  shadows: Object.freeze({ min: -1, max: 1 }),
+  highlights: Object.freeze({ min: -1, max: 1 }),
+  vibrance: Object.freeze({ min: -1, max: 1 })
 });
 
 export const CANONICAL_VISUAL_RECIPE_FIELDS = Object.freeze(Object.keys(CANONICAL_VISUAL_RECIPE_LIMITS));
