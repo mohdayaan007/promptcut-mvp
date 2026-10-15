@@ -67,8 +67,11 @@ export const STYLE_PROFILE_CATALOG = Object.freeze({
     1: freezeProfile({ brightness: 0.07, contrast: -0.18, saturation: -0.2, temperature: 0.12, tint: 0.02 }),
     2: freezeProfile({ brightness: 0.04, contrast: -0.13, saturation: -0.18, temperature: 0.12, tint: 0.02 })
   }) }),
-  vibrant_social: Object.freeze({ currentVersion: 1, versions: Object.freeze({
-    1: freezeProfile({ brightness: 0.04, contrast: 0.16, saturation: 0.28, temperature: 0.03, tint: 0 })
+  vibrant_social: Object.freeze({ currentVersion: 2, versions: Object.freeze({
+    // Preserve v1 exactly. v2 gets campaign energy from tonal separation and
+    // vibrance instead of the high-saturation plus warm-colorbalance pairing.
+    1: freezeProfile({ brightness: 0.04, contrast: 0.16, saturation: 0.28, temperature: 0.03, tint: 0 }),
+    2: freezeProfile({ brightness: 0.025, contrast: 0.06, saturation: 0.025, temperature: 0, tint: 0, shadows: 0.04, highlights: 0.03, vibrance: 0.18 })
   }) }),
   dark_moody: Object.freeze({ currentVersion: 1, versions: Object.freeze({
     1: freezeProfile({ brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 })

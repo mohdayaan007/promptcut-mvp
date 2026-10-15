@@ -264,7 +264,9 @@ export function buildStyleRecipeFilters(recipe) {
   const toneCurve = buildToneCurveFilter(recipe);
   const eq = buildEqFilter(recipe);
   const vibrance = buildVibranceFilter(recipe);
-  const colorbalance = buildColorBalanceFilter(recipe);
+  const colorbalance = (recipe.temperature ?? 0) !== 0 || (recipe.tint ?? 0) !== 0
+    ? buildColorBalanceFilter(recipe)
+    : null;
   if (toneCurve) filters.push(toneCurve);
   if (eq) filters.push(eq);
   if (vibrance) filters.push(vibrance);
