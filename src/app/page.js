@@ -10,6 +10,7 @@ import { Workspace } from "@/components/cliponaut/Workspace";
 import { JobRecoveryModal } from "@/components/cliponaut/JobRecoveryModal";
 import {
   cancelJob,
+  clearTerminalJob,
   clearUndoState,
   consumeUndo,
   describeUndoRestoration,
@@ -18,12 +19,15 @@ import {
   getInitialUndoAnchor,
   getJobStatus,
   isActiveJobStatus,
+  isCurrentPresentationAttempt,
   isRecoverableJobStatus,
   loadUndoState,
   promoteSuccessfulJob,
+  recordTerminalJob,
   resolveUndoRestoration,
   saveUndoState,
   setUndoActiveJob,
+  terminalAttemptPresentation,
   shouldScheduleUndoOriginalReveal,
   undoPreviewMode,
   uploadAndQueueJob,
@@ -88,6 +92,7 @@ export default function HomePage() {
   const undoStateRef = useRef(null);
   const originalRevealScheduledRef = useRef(false);
   const turnIdRef = useRef(0);
+  const presentationAttemptRef = useRef(0);
 
   const hasWorkspace = Boolean(videos.length || images.length || activeJob || undoState?.current);
   const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
@@ -118,6 +123,32 @@ export default function HomePage() {
     setError(null);
   }, []);
 
+  const showTerminalAttempt = useCallback((job) => {
+    const presentation = terminalAttemptPresentation(job);
+    setActiveJob(null);
+    setRestoredSources(job?.sources || []);
+    setStatus(presentation.status);
+    setResultUrl(presentation.resultUrl);
+    setError(presentation.error);
+    setUploadProgress(null);
+  }, []);
+
+  const beginPresentationAttempt = useCallback(() => {
+    const nextAttempt = presentationAttemptRef.current + 1;
+    presentationAttemptRef.current = nextAttempt;
+    // Successful history remains in Undo state, but cannot be displayed as the
+    // current output while a new attempt is uploading or processing.
+    setActiveJob(null);
+    setRestoredSources([]);
+    setResultUrl(null);
+    setIsUndoing(false);
+    setIsRestoringPrevious(false);
+    setRestoringOriginal(false);
+    setOriginalPreviewArmed(false);
+    setRestoringResultUrl(null);
+    return nextAttempt;
+  }, []);
+
   const finishUndoRestoration = useCallback(() => {
     originalRevealScheduledRef.current = false;
     setIsRestoringPrevious(false);
@@ -127,8 +158,9 @@ export default function HomePage() {
     setRestoringResultUrl(null);
   }, []);
 
-  const restoreCurrentVersion = useCallback(async (current) => {
+  const restoreCurrentVersion = useCallback(async (current, attempt = presentationAttemptRef.current) => {
     if (!current) {
+      if (!isCurrentPresentationAttempt(attempt, presentationAttemptRef.current)) return false;
       setActiveJob(null);
       setRestoredSources([]);
       setStatus("idle");
@@ -136,12 +168,14 @@ export default function HomePage() {
       return true;
     }
     if (current.kind === "original") {
+      if (!isCurrentPresentationAttempt(attempt, presentationAttemptRef.current)) return false;
       showOriginal(current.sources);
       return true;
     }
     try {
       const job = await getJobStatus(current.session);
       if (job.status !== "completed" || !job.outputUrl) throw new Error("The previous version is no longer available.");
+      if (!isCurrentPresentationAttempt(attempt, presentationAttemptRef.current)) return false;
       showCompletedJob(current.session, job);
       return true;
     } catch {
@@ -150,85 +184,81 @@ export default function HomePage() {
   }, [showCompletedJob, showOriginal]);
 
   useEffect(() => {
+    const hydrationAttempt = presentationAttemptRef.current;
     const saved = loadUndoState();
     undoStateRef.current = saved;
     setUndoState(saved);
     setUndoAnchor(getInitialUndoAnchor(saved));
+    if (saved.terminal) {
+      showTerminalAttempt(saved.terminal);
+      return undefined;
+    }
     if (!saved.active?.id || !saved.active?.accessToken) {
-      if (saved.current) restoreCurrentVersion(saved.current);
+      if (saved.current) restoreCurrentVersion(saved.current, hydrationAttempt);
       return undefined;
     }
     let stopped = false;
     const discover = async () => {
       try {
         const job = await getJobStatus(saved.active);
-        if (stopped) return;
+        if (stopped || !isCurrentPresentationAttempt(hydrationAttempt, presentationAttemptRef.current)) return;
         if (job.status === "completed" && job.outputUrl) {
           const next = persistUndoState(promoteSuccessfulJob(saved, saved.active, job.sources));
           setRecovery({ session: next.current.session, job });
         } else if (isRecoverableJobStatus(job.status)) {
           setRecovery({ session: saved.active, job });
         } else {
-          const next = persistUndoState(discardUndoActiveJob(saved));
-          await restoreCurrentVersion(next.current);
+          persistUndoState(recordTerminalJob(saved, saved.active, job));
+          showTerminalAttempt(job);
         }
       } catch {
-        if (!stopped) {
-          const next = persistUndoState(discardUndoActiveJob(saved));
-          await restoreCurrentVersion(next.current);
+        if (!stopped && isCurrentPresentationAttempt(hydrationAttempt, presentationAttemptRef.current)) {
+          setActiveJob(saved.active);
+          setStatus("error");
+          setResultUrl(null);
+          setError("We couldn’t check that edit. Please try again.");
         }
       }
     };
     discover();
     return () => { stopped = true; };
-  }, [persistUndoState, restoreCurrentVersion]);
+  }, [persistUndoState, restoreCurrentVersion, showTerminalAttempt]);
 
   useEffect(() => {
     if (!activeJob || !isActiveJobStatus(status)) return undefined;
     let stopped = false;
+    const pollingAttempt = presentationAttemptRef.current;
+    const pollingSession = activeJob;
     const check = async () => {
       try {
-        const job = await getJobStatus(activeJob);
-        if (stopped) return;
+        const job = await getJobStatus(pollingSession);
+        if (stopped || !isCurrentPresentationAttempt(pollingAttempt, presentationAttemptRef.current)) return;
         setRestoredSources(job.sources || []);
         setStatus(job.status === "completed" ? "done" : job.status);
         if (job.status === "completed") {
           if (job.outputUrl) {
-            const next = persistUndoState(promoteSuccessfulJob(undoStateRef.current || emptyUndoState(), activeJob, job.sources));
+            const next = persistUndoState(promoteSuccessfulJob(undoStateRef.current || emptyUndoState(), pollingSession, job.sources));
             setUndoAnchor(undoAnchorForCurrent(next.current));
             showCompletedJob(next.current.session, job);
             setMessages((current) => [...current, { role: "assistant", text: "Your edit is ready." }]);
           } else {
-            const next = persistUndoState(discardUndoActiveJob(undoStateRef.current || emptyUndoState()));
-            const restored = next.current ? await restoreCurrentVersion(next.current) : false;
-            if (stopped) return;
-            if (restored) setMessages((current) => [...current, { role: "assistant", text: "We couldn’t retrieve that edit. Your previous version is still available." }]);
-            else {
-              setActiveJob(null);
-              setError("We couldn’t retrieve that edit.");
-              setStatus("error");
-            }
+            persistUndoState(recordTerminalJob(undoStateRef.current || emptyUndoState(), pollingSession, { ...job, status: "failed", error: "We couldn’t retrieve that edit." }));
+            showTerminalAttempt({ ...job, status: "failed", error: "We couldn’t retrieve that edit." });
+            setMessages((current) => [...current, { role: "assistant", text: "We couldn’t retrieve that edit. Your previous version is still available." }]);
           }
         } else if (["failed", "cancelled"].includes(job.status)) {
-          const next = persistUndoState(discardUndoActiveJob(undoStateRef.current || emptyUndoState()));
-          const restored = next.current ? await restoreCurrentVersion(next.current) : false;
-          if (stopped) return;
-          if (restored) {
-            setMessages((current) => [...current, { role: "assistant", text: job.status === "cancelled" ? "This edit was cancelled. Your previous version is still available." : "We couldn’t complete that edit. Your previous version is still available." }]);
-          } else {
-            setActiveJob(null);
-            setError(job.status === "cancelled" ? "This edit was cancelled." : job.error || "We couldn’t complete that edit.");
-            setStatus("error");
-          }
+          persistUndoState(recordTerminalJob(undoStateRef.current || emptyUndoState(), pollingSession, job));
+          showTerminalAttempt(job);
+          setMessages((current) => [...current, { role: "assistant", text: job.status === "cancelled" ? "This edit was cancelled. Your previous version is still available." : "We couldn’t complete that edit. Your previous version is still available." }]);
         }
       } catch (statusError) {
-        if (!stopped) setError(statusError.message);
+        if (!stopped && isCurrentPresentationAttempt(pollingAttempt, presentationAttemptRef.current)) setError(statusError.message);
       }
     };
     check();
     const timer = setInterval(check, 3_000);
     return () => { stopped = true; clearInterval(timer); };
-  }, [activeJob, persistUndoState, restoreCurrentVersion, showCompletedJob, status]);
+  }, [activeJob, persistUndoState, showCompletedJob, showTerminalAttempt, status]);
 
   useEffect(() => {
     return () => {
@@ -291,6 +321,7 @@ export default function HomePage() {
     if (!videos.length || !prompt.trim() || isProcessing) return;
 
     const submittedPrompt = prompt;
+    const presentationAttempt = beginPresentationAttempt();
     const turnId = `turn-${Date.now()}-${++turnIdRef.current}`;
     const controller = new AbortController();
     requestControllerRef.current?.abort();
@@ -307,28 +338,28 @@ export default function HomePage() {
         videos, prompt: submittedPrompt, exportQuality, signal: controller.signal,
         onProgress: setUploadProgress,
         onSession: (session) => {
+          if (!isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
           persistUndoState(setUndoActiveJob(undoStateRef.current || emptyUndoState(), session, submittedPrompt));
           setMessages((currentMessages) => currentMessages.map((message) => message.turnId === turnId ? { ...message, jobId: session.id } : message));
           setActiveJob(session);
           history.replaceState(null, "", `/?job=${session.id}`);
         }
       });
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
+      if (["failed", "cancelled"].includes(job.status)) {
+          persistUndoState(recordTerminalJob(undoStateRef.current || emptyUndoState(), undoStateRef.current?.active, job));
+        showTerminalAttempt(job);
+        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: job.status === "cancelled" ? "This edit was cancelled. Your previous version is still available." : "We couldn’t complete that edit. Your previous version is still available." }]);
+        return;
+      }
       setStatus(job.status);
       setUploadProgress(null);
       setPrompt("");
     } catch (processingError) {
-      if (controller.signal.aborted) return;
-      const next = persistUndoState(discardUndoActiveJob(undoStateRef.current || emptyUndoState()));
-      const restored = next.current ? await restoreCurrentVersion(next.current) : false;
-      if (restored) {
-        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: "We couldn’t complete that edit. Your previous version is still available." }]);
-      } else {
-        setActiveJob(null);
-        setError(processingError.message);
-        setStatus("error");
-        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: "We couldn’t complete that edit. Please try again." }]);
-      }
+      if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
+      persistUndoState(discardUndoActiveJob(undoStateRef.current || emptyUndoState()));
+      showTerminalAttempt({ status: "failed", error: processingError.message });
+      setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: "We couldn’t complete that edit. Your previous version is still available." }]);
     } finally {
       if (requestControllerRef.current === controller) requestControllerRef.current = null;
     }
@@ -339,6 +370,20 @@ export default function HomePage() {
     setStatus("idle");
     setError(null);
     promptRef.current?.focus();
+  };
+
+  const handleViewPreviousEdit = async () => {
+    const current = undoStateRef.current?.current;
+    if (status !== "error" || current?.kind !== "job") return;
+    const attempt = presentationAttemptRef.current;
+    const restored = await restoreCurrentVersion(current, attempt);
+    if (!isCurrentPresentationAttempt(attempt, presentationAttemptRef.current)) return;
+    if (restored) {
+      persistUndoState(clearTerminalJob(undoStateRef.current || emptyUndoState()));
+      setMessages((messages) => [...messages, { role: "assistant", text: "Restored your previous successful edit." }]);
+    } else {
+      setError("The previous version is no longer available.");
+    }
   };
 
   const resetWorkspace = () => {
@@ -413,6 +458,7 @@ export default function HomePage() {
     const previous = undoStateRef.current?.previous;
     if (!previous || isUndoing) return;
     const current = undoStateRef.current?.current;
+    const restorationAttempt = presentationAttemptRef.current;
     // Commit the opaque restoring state before either an in-memory or network
     // restoration path can replace the current preview.
     flushSync(() => {
@@ -424,6 +470,7 @@ export default function HomePage() {
       originalRevealScheduledRef.current = false;
     });
     await waitForBrowserPaint();
+    if (!isCurrentPresentationAttempt(restorationAttempt, presentationAttemptRef.current)) return;
 
     if (previous.kind === "original") {
       // The source preview is intentionally mounted only after the opaque
@@ -439,6 +486,7 @@ export default function HomePage() {
     let waitingForMedia = false;
     try {
       const job = await getJobStatus(previous.session);
+      if (!isCurrentPresentationAttempt(restorationAttempt, presentationAttemptRef.current)) return;
       const resolution = resolveUndoRestoration(undoStateRef.current, job);
       if (resolution.outcome === "restored") {
         const next = persistUndoState(resolution.state);
@@ -457,7 +505,7 @@ export default function HomePage() {
     } catch {
       setMessages((messages) => [...messages, { role: "assistant", text: "Couldn’t restore the previous version. Please try again." }]);
     } finally {
-      if (!waitingForMedia) finishUndoRestoration();
+      if (!waitingForMedia && isCurrentPresentationAttempt(restorationAttempt, presentationAttemptRef.current)) finishUndoRestoration();
     }
   };
 
@@ -524,6 +572,8 @@ export default function HomePage() {
               setImages((currentImages) => currentImages.filter((_, imageIndex) => imageIndex !== index))
             }
             onEditAgain={handleEditAgain}
+            canViewPreviousEdit={status === "error" && undoState?.current?.kind === "job"}
+            onViewPreviousEdit={handleViewPreviousEdit}
             isOriginalState={undoState?.current?.kind === "original"}
             previewMode={previewMode}
             originalVideo={videos[0] || null}

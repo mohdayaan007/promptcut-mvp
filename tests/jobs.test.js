@@ -10,7 +10,7 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validat
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
@@ -1816,7 +1816,7 @@ test("single-step Undo state migrates legacy sessions and retains only current a
   };
   const sources = [{ index: 1, name: "second.mp4", type: "video/mp4", size: 20 }, { index: 0, name: "first.mp4", type: "video/mp4", size: 10, key: "must-not-persist" }];
   const legacy = loadUndoState(storage);
-  assert.deepEqual(legacy, { version: UNDO_STATE_VERSION, active: { id: "legacy-job", accessToken: "legacy-token" }, current: null, previous: null });
+  assert.deepEqual(legacy, { version: UNDO_STATE_VERSION, active: { id: "legacy-job", accessToken: "legacy-token" }, current: null, previous: null, terminal: null });
   assert.deepEqual(JSON.parse(values.get("cliponaut-active-job")), legacy);
   values.set("cliponaut-active-job", JSON.stringify({ version: UNDO_STATE_VERSION, active: null, current: { kind: "job", session: { id: "job-without-token" }, sources }, previous: null }));
   assert.equal(loadUndoState(storage).current, null, "historical results require the matching access token");
@@ -1875,6 +1875,36 @@ test("single-step Undo only invalidates a previous job after a confirmed unavail
   const retry = resolveUndoRestoration(state, { status: "rendering" });
   assert.equal(retry.outcome, "retry");
   assert.deepEqual(retry.state, state, "temporary or unexpected retrieval results retain the previous undo target");
+});
+
+test("terminal attempts clear stale output presentation without consuming Undo history", () => {
+  const sessionA = { id: "job-a", accessToken: "token-a" };
+  const sessionB = { id: "job-b", accessToken: "token-b" };
+  const sources = [{ index: 0, name: "source.mp4", type: "video/mp4", size: 10 }];
+  const successfulA = promoteSuccessfulJob(setUndoActiveJob(emptyUndoState(), sessionA, "Make it warmer."), sessionA, sources);
+  const duringB = setUndoActiveJob(successfulA, sessionB, "Make it brighter.");
+  const afterBFailure = discardUndoActiveJob(duringB);
+
+  assert.deepEqual(afterBFailure.current, successfulA.current, "the prior result remains an explicit recovery target");
+  assert.deepEqual(afterBFailure.previous, successfulA.previous, "failure does not consume a valid Undo target");
+  assert.deepEqual(terminalAttemptPresentation({ status: "failed", error: "Rendering failed." }), {
+    status: "error", resultUrl: null, error: "Rendering failed."
+  }, "a failed current job cannot present an old MP4 as Ready");
+  assert.deepEqual(terminalAttemptPresentation({ status: "cancelled" }), {
+    status: "error", resultUrl: null, error: "This edit was cancelled."
+  }, "a cancelled current job cannot present an old MP4 as Ready");
+
+  const terminal = recordTerminalJob(duringB, sessionB, { status: "failed", error: "Rendering failed.", sources });
+  assert.deepEqual(terminal.terminal, {
+    session: sessionB, status: "failed", error: "Rendering failed.", sources
+  }, "an authoritative terminal job survives refresh without altering successful history");
+  assert.equal(clearTerminalJob(terminal).terminal, null, "explicitly restoring the previous result clears only terminal presentation state");
+});
+
+test("client presentation generation rejects late polling and restoration responses", () => {
+  assert.equal(isCurrentPresentationAttempt(7, 7), true);
+  assert.equal(isCurrentPresentationAttempt(6, 7), false, "a late A/B response cannot overwrite generation C");
+  assert.equal(isCurrentPresentationAttempt(null, 7), false);
 });
 
 test("single-step Undo remains visible for a restored Original workspace without showing result actions", () => {

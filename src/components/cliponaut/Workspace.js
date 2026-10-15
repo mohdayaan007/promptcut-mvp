@@ -22,6 +22,8 @@ export function Workspace({
   onRemoveVideo,
   onRemoveImage,
   onEditAgain,
+  canViewPreviousEdit,
+  onViewPreviousEdit,
   isOriginalState,
   previewMode,
   originalVideo,
@@ -93,6 +95,8 @@ export function Workspace({
         canExport4k={canExport4k}
         onExportQualityChange={onExportQualityChange}
         onEditAgain={onEditAgain}
+        canViewPreviousEdit={canViewPreviousEdit}
+        onViewPreviousEdit={onViewPreviousEdit}
         previewMode={previewMode}
         originalVideo={originalVideo}
         restoringOriginal={restoringOriginal}
@@ -157,7 +161,7 @@ function SourcePreview({ file, onMediaReady }) {
   return <video key={sourceUrl} src={sourceUrl} controls playsInline className="cliponaut-result-video" aria-label="Original source preview" onLoadedData={onMediaReady} />;
 }
 
-function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain, previewMode, originalVideo, restoringOriginal, originalPreviewArmed, restoringResultUrl, onRestoredMediaReady }) {
+function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain, canViewPreviousEdit, onViewPreviousEdit, previewMode, originalVideo, restoringOriginal, originalPreviewArmed, restoringResultUrl, onRestoredMediaReady }) {
   const videoRef = useRef(null);
   const [playbackRate, setPlaybackRate] = useState("1");
 
@@ -202,7 +206,7 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
         )}
         {previewMode === "normal" && status === "idle" && <PreviewEmptyState />}
         {previewMode === "normal" && ["uploading", "queued", "analyzing", "rendering"].includes(status) && <PreviewProcessingState status={status} uploadProgress={uploadProgress} />}
-        {previewMode === "normal" && status === "error" && <PreviewErrorState error={error} />}
+        {previewMode === "normal" && status === "error" && <PreviewErrorState error={error} canViewPreviousEdit={canViewPreviousEdit} onViewPreviousEdit={onViewPreviousEdit} />}
         {status === "done" && resultUrl && (
           <video key={resultUrl} ref={videoRef} src={resultUrl} controls playsInline className="cliponaut-result-video" onLoadedData={previewMode === "restoring" && resultUrl === restoringResultUrl ? onRestoredMediaReady : undefined} />
         )}
@@ -304,11 +308,16 @@ function processingLabel(status) {
   return "Rendering your edit…";
 }
 
-function PreviewErrorState({ error }) {
+function PreviewErrorState({ error, canViewPreviousEdit, onViewPreviousEdit }) {
   return (
     <div className="cliponaut-preview-placeholder is-error" role="alert">
       <p>We couldn’t generate that video.</p>
       <span>{error || "Please try again."}</span>
+      {canViewPreviousEdit && (
+        <button className="cliponaut-text-button" type="button" onClick={onViewPreviousEdit}>
+          View previous edit
+        </button>
+      )}
     </div>
   );
 }

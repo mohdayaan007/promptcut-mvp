@@ -38,7 +38,7 @@ function withPrompt(state, prompt) {
 }
 
 export function emptyUndoState() {
-  return { version: UNDO_STATE_VERSION, active: null, current: null, previous: null };
+  return { version: UNDO_STATE_VERSION, active: null, current: null, previous: null, terminal: null };
 }
 
 function safeSuccessfulState(state) {
@@ -48,6 +48,16 @@ function safeSuccessfulState(state) {
     return withPrompt({ kind: "job", session: { id: state.session.id, accessToken: state.session.accessToken }, sources: safeSources(state.sources) }, state.prompt);
   }
   return null;
+}
+
+function safeTerminalState(state) {
+  if (!state || !["failed", "cancelled"].includes(state.status) || !validSession(state.session)) return null;
+  return {
+    session: { id: state.session.id, accessToken: state.session.accessToken },
+    status: state.status,
+    error: safePrompt(state.error),
+    sources: safeSources(state.sources)
+  };
 }
 
 function normalizeUndoState(value) {
@@ -60,7 +70,8 @@ function normalizeUndoState(value) {
       version: UNDO_STATE_VERSION,
       active: validSession(value.active) ? withPrompt({ id: value.active.id, accessToken: value.active.accessToken }, value.active.prompt) : null,
       current: safeSuccessfulState(value.current),
-      previous: safeSuccessfulState(value.previous)
+      previous: safeSuccessfulState(value.previous),
+      terminal: safeTerminalState(value.terminal)
     },
     migrated: false
   };
@@ -87,7 +98,7 @@ export function saveUndoState(state, storage) {
 
 export function setUndoActiveJob(state, session, prompt) {
   const normalized = normalizeUndoState(state).state;
-  return { ...normalized, active: validSession(session) ? withPrompt({ id: session.id, accessToken: session.accessToken }, prompt) : null };
+  return { ...normalized, active: validSession(session) ? withPrompt({ id: session.id, accessToken: session.accessToken }, prompt) : null, terminal: null };
 }
 
 export function discardUndoActiveJob(state) {
@@ -101,14 +112,26 @@ export function promoteSuccessfulJob(state, session, sources, prompt) {
     version: UNDO_STATE_VERSION,
     active: null,
     current: nextCurrent,
-    previous: normalized.current || { kind: "original", sources: safeSources(sources) }
+    previous: normalized.current || { kind: "original", sources: safeSources(sources) },
+    terminal: null
   };
 }
 
 export function consumeUndo(state) {
   const normalized = normalizeUndoState(state).state;
   if (!normalized.previous) return normalized;
-  return { ...normalized, active: null, current: normalized.previous, previous: null };
+  return { ...normalized, active: null, current: normalized.previous, previous: null, terminal: null };
+}
+
+/** Persists only the latest authoritative terminal presentation, never history. */
+export function recordTerminalJob(state, session, job) {
+  const normalized = normalizeUndoState(state).state;
+  const terminal = safeTerminalState({ session, status: job?.status, error: job?.error, sources: job?.sources });
+  return { ...normalized, active: null, terminal };
+}
+
+export function clearTerminalJob(state) {
+  return { ...normalizeUndoState(state).state, terminal: null };
 }
 
 export function invalidateUndoPrevious(state) {
@@ -337,6 +360,23 @@ export async function cancelJob(session, signal) {
 
 export function isActiveJobStatus(status) { return ACTIVE_JOB_STATUSES.includes(status); }
 export function isRecoverableJobStatus(status) { return isActiveJobStatus(status) || status === "completed"; }
+
+/** Terminal attempts are presented independently from retained Undo history. */
+export function terminalAttemptPresentation(job) {
+  const cancelled = job?.status === "cancelled";
+  return Object.freeze({
+    status: "error",
+    resultUrl: null,
+    error: cancelled
+      ? "This edit was cancelled."
+      : job?.error || "We couldn’t complete that edit."
+  });
+}
+
+/** Prevents an older polling or restoration response from replacing a newer attempt. */
+export function isCurrentPresentationAttempt(attempt, currentAttempt) {
+  return Number.isInteger(attempt) && attempt === currentAttempt;
+}
 
 /** Legacy active-job helpers preserve current recovery callers while retaining undo state. */
 export function saveActiveJob(session, prompt) { return saveUndoState(setUndoActiveJob(loadUndoState(), session, prompt)); }
