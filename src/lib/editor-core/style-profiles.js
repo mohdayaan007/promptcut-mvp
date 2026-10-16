@@ -178,12 +178,24 @@ function towardNeutral(value, factor) {
   return value * factor;
 }
 
-function applyConstraint(recipe, constraint) {
+function applyConstraint(recipe, constraint, { profileId, profileVersion }) {
   const constrained = { ...recipe };
   if (constraint === "avoid_darkening") {
     constrained.brightness = Math.max(0, constrained.brightness);
   } else if (constraint === "avoid_oversaturation") {
     constrained.saturation = Math.min(constrained.saturation, 0.12);
+    // Cinematic v2's normal filmic chain intentionally adds contrast and a
+    // warm/cool balance shift. When visual analysis has explicitly identified
+    // already-saturated material, preserve highlight detail and color headroom
+    // by moderating only that constrained v2 execution. The catalog recipe and
+    // unconstrained explicit cinematic behavior remain unchanged.
+    if (profileId === "cinematic" && profileVersion === 2) {
+      constrained.contrast = towardNeutral(constrained.contrast, 0.65);
+      constrained.saturation = towardNeutral(constrained.saturation, 0.75);
+      constrained.temperature = towardNeutral(constrained.temperature, 0.5);
+      constrained.tint = towardNeutral(constrained.tint, 0.5);
+      constrained.highlights = Math.min(constrained.highlights, -0.12);
+    }
   } else if (constraint === "conservative_color") {
     constrained.saturation = towardNeutral(constrained.saturation, 0.75);
     constrained.temperature = towardNeutral(constrained.temperature, 0.65);
@@ -211,7 +223,12 @@ export function compileStyleProfile(input = {}) {
     : resolveStyleProfile(profileId, profileVersion);
   const normalized = normalizedConstraints(constraints);
   let recipe = interpolateCanonicalVisualRecipe(resolved.recipe, STYLE_PROFILE_STRENGTHS[strength]);
-  for (const constraint of normalized) recipe = applyConstraint(recipe, constraint);
+  for (const constraint of normalized) {
+    recipe = applyConstraint(recipe, constraint, {
+      profileId: resolved.profileId,
+      profileVersion: resolved.profileVersion
+    });
+  }
   return Object.freeze({
     profileId: resolved.profileId,
     profileVersion: resolved.profileVersion,

@@ -212,6 +212,45 @@ test("B1 cinematic v2 protects shadows while retaining the v1 filmic character",
   ]);
 });
 
+test("B1 cinematic v2 protects bright saturated highlights only when existing risk evidence is present", () => {
+  const unconstrained = compileStyleProfile({ profileId: "cinematic", strength: "standard" });
+  const protectedCinematic = compileStyleProfile({
+    profileId: "cinematic",
+    strength: "standard",
+    constraints: ["avoid_oversaturation"]
+  });
+
+  assert.deepEqual(unconstrained.recipe, canonicalStyleRecipe({
+    brightness: 0,
+    contrast: 0.161,
+    saturation: -0.055999999999999994,
+    temperature: 0.034999999999999996,
+    tint: -0.013999999999999999
+  }), "ordinary explicit cinematic remains its historical v2 treatment");
+  assert.deepEqual(protectedCinematic.recipe, canonicalStyleRecipe({
+    brightness: 0,
+    contrast: 0.10465000000000001,
+    saturation: -0.041999999999999996,
+    temperature: 0.017499999999999998,
+    tint: -0.006999999999999999,
+    highlights: -0.12
+  }));
+  assert.deepEqual(buildStyleProfileFilters({
+    profileId: "cinematic",
+    strength: "standard",
+    constraints: ["avoid_oversaturation"]
+  }), [
+    "curves=master='0/0 0.25/0.2500 0.75/0.7286 1/1'",
+    "eq=brightness=0.0000:contrast=1.2222:saturation=0.8669",
+    "colorbalance=rs=0.0166:gs=0.0108:bs=-0.0166:rm=0.0221:gm=0.0108:bm=-0.0221:rh=0.0166:gh=0.0108:bh=-0.0166:pl=1"
+  ]);
+  assert.deepEqual(
+    compileStyleProfile({ profileId: "vibrant_social", strength: "strong", constraints: ["avoid_oversaturation"] }).recipe,
+    canonicalStyleRecipe({ brightness: 0.025, contrast: 0.06, saturation: 0.025, temperature: 0, tint: 0, shadows: 0.04, highlights: 0.03, vibrance: 0.18 }),
+    "the cinematic-specific protection does not alter other profile compilation"
+  );
+});
+
 test("B1 soft nostalgic v3 preserves prior versions while restoring airy photographic color", () => {
   const v1Recipe = canonicalStyleRecipe({ brightness: 0.07, contrast: -0.18, saturation: -0.2, temperature: 0.12, tint: 0.02 });
   const v2Recipe = canonicalStyleRecipe({ brightness: 0.04, contrast: -0.13, saturation: -0.18, temperature: 0.12, tint: 0.02 });
@@ -989,6 +1028,89 @@ test("B1 delegated content-aware taste reuses active media and preserves server 
     if (savedKey === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = savedKey;
   }
+});
+
+test("B1 delegated taste failures preserve the safe refusal while logging bounded diagnostic reasons", async () => {
+  const catalog = sourceCatalog.slice(0, 1);
+  const delegatedText = JSON.stringify({
+    mode: "delegated_taste", profileId: "none", strength: "standard", styleText: "Make this look good", constraints: [], coverage: "style_only"
+  });
+  const cases = [
+    {
+      expectedReason: "DELEGATED_NO_SAFE_CHOICE",
+      client: createMockGemini({ responses: [delegatedText, JSON.stringify({ decision: "no_safe_choice", profileId: "none", strength: "standard", constraints: [] })] })
+    },
+    {
+      expectedReason: "DELEGATED_EMPTY_RESPONSE",
+      client: createMockGemini({ responses: [delegatedText, ""] })
+    },
+    {
+      expectedReason: "DELEGATED_INVALID_RESPONSE",
+      client: createMockGemini({ responses: [delegatedText, "{malformed"] })
+    },
+    {
+      expectedReason: "DELEGATED_MODEL_REQUEST_FAILED",
+      client: createMockGemini({
+        responses: [delegatedText],
+        failures: [null, Object.assign(new Error("request https://private.example/file?access_token=secret"), { status: 503 }), Object.assign(new Error("request https://private.example/file?access_token=secret"), { status: 503 }), Object.assign(new Error("request https://private.example/file?access_token=secret"), { status: 503 })]
+      }),
+      retryOptions: { sleepFn: async () => {}, random: () => 0 }
+    }
+  ];
+
+  for (const { expectedReason, client, retryOptions } of cases) {
+    const originalError = console.error;
+    const diagnostics = [];
+    console.error = (message, details) => {
+      if (message === "Gemini delegated style decision rejected:") diagnostics.push(details);
+    };
+    try {
+      await withGeminiKey(() => assert.rejects(
+        () => createAiEditPlan({
+          prompt: "Make this look good.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: client, retryOptions
+        }),
+        (error) => error instanceof UnsupportedEditRequestError && error.message === "This style request needs visual understanding"
+      ));
+    } finally {
+      console.error = originalError;
+    }
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].reason, expectedReason);
+    if (expectedReason === "DELEGATED_MODEL_REQUEST_FAILED") {
+      assert.equal(diagnostics[0].status, 503);
+      assert.equal(diagnostics[0].transient, true);
+      assert.doesNotMatch(diagnostics[0].message || "", /private\.example|secret/i);
+    }
+    assert.equal(client.deletes.length, 1, "uploaded Gemini media is still cleaned once after each safe rejection");
+  }
+});
+
+test("B1 delegated cinematic highlight protection composes with an authoritative visual moment", async () => {
+  const catalog = sourceCatalog.slice(0, 1);
+  const client = createMockGemini({ responses: [
+    JSON.stringify({
+      mode: "delegated_taste", profileId: "none", strength: "standard", styleText: "make this look good", constraints: [], coverage: "style_plus_other_edits"
+    }),
+    momentLocalizationResponse("source-1", [{ start: 2, end: 6 }]),
+    JSON.stringify({ decision: "selected_style", profileId: "cinematic", strength: "standard", constraints: ["avoid_oversaturation"] }),
+    JSON.stringify({ version: "1", operations: [] })
+  ] });
+
+  const planning = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Use the part where the person walks through the temple and make this look good.",
+    sourceCatalog: catalog,
+    sourceInputs: plannerSources(catalog),
+    aiClient: client
+  }));
+  assert.deepEqual(planning.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 2, end: 6 }] },
+    { type: "style_profile", profileId: "cinematic", constraints: ["avoid_oversaturation"] }
+  ]);
+  assert.deepEqual(buildStyleProfileFilters(planning.plan.operations[1]), [
+    "curves=master='0/0 0.25/0.2500 0.75/0.7286 1/1'",
+    "eq=brightness=0.0000:contrast=1.2222:saturation=0.8669",
+    "colorbalance=rs=0.0166:gs=0.0108:bs=-0.0166:rm=0.0221:gm=0.0108:bm=-0.0221:rh=0.0166:gh=0.0108:bh=-0.0166:pl=1"
+  ]);
 });
 
 const execFileAsync = promisify(execFile);

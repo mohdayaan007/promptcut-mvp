@@ -149,9 +149,24 @@ async function interpretTextStyle({ ai, prompt, retryOptions }) {
   }
 }
 
+/** Logs only bounded delegated-style decision facts before preserving the safe user refusal. */
+function rejectDelegatedStyleDecision(reason, error = null) {
+  const details = { reason };
+  if (error) {
+    details.name = error?.name || null;
+    details.message = safePlanningErrorMessage(error);
+    details.status = error?.status ?? error?.statusCode ?? error?.code ?? error?.$metadata?.httpStatusCode ?? null;
+    details.apiStatus = error?.statusText ?? null;
+    details.transient = isTransientPlanningError(error);
+  }
+  console.error("Gemini delegated style decision rejected:", details);
+  throw new UnsupportedEditRequestError("This style request needs visual understanding");
+}
+
 async function decideDelegatedStyle({ ai, activeSources, retryOptions }) {
+  let response;
   try {
-    const response = await generateWithRetries(ai, {
+    response = await generateWithRetries(ai, {
       model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
       contents: buildDelegatedStyleContents(activeSources, buildDelegatedStyleDecisionPrompt()),
       config: {
@@ -159,15 +174,23 @@ async function decideDelegatedStyle({ ai, activeSources, retryOptions }) {
         responseJsonSchema: createDelegatedStyleDecisionJsonSchema()
       }
     }, retryOptions);
-    if (!response.text) throw new DelegatedStyleDecisionValidationError("delegated style decision returned no response");
+  } catch (error) {
+    return rejectDelegatedStyleDecision("DELEGATED_MODEL_REQUEST_FAILED", error);
+  }
+
+  if (typeof response?.text !== "string" || !response.text.trim()) {
+    return rejectDelegatedStyleDecision("DELEGATED_EMPTY_RESPONSE");
+  }
+
+  try {
     const decision = normalizeDelegatedStyleDecision(JSON.parse(response.text));
     if (decision.decision !== "selected_style") {
-      throw new UnsupportedEditRequestError("This style request needs visual understanding");
+      return rejectDelegatedStyleDecision("DELEGATED_NO_SAFE_CHOICE");
     }
     return decision;
   } catch (error) {
     if (error instanceof UnsupportedEditRequestError) throw error;
-    throw new UnsupportedEditRequestError("This style request needs visual understanding");
+    return rejectDelegatedStyleDecision("DELEGATED_INVALID_RESPONSE", error);
   }
 }
 
