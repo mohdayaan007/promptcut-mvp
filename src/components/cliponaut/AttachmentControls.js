@@ -9,7 +9,7 @@ export function AttachmentControls({ onSelectVideo, onSelectImages, imageCount =
       </button>
       <button className="cliponaut-attachment" type="button" onClick={onSelectImages}>
         <ImageIcon />
-        <span>{imageCount ? `${imageCount} image${imageCount === 1 ? "" : "s"} added` : "Add Images"}</span>
+        <span>{imageCount ? "Style reference added" : "Add Style Reference"}</span>
         {!imageCount && <span className="cliponaut-attachment-optional">optional</span>}
       </button>
     </div>

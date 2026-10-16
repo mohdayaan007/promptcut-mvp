@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, validateJobRequest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, MAX_REFERENCE_IMAGE_BYTES, validateJobRequest, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
@@ -32,6 +32,7 @@ import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL
 import { createCanonicalReferenceStyleTreatment, REFERENCE_STYLE_TREATMENT_VERSION } from "@/lib/editor-core/reference-style-treatment";
 import { measureReferenceRgbFrame, REFERENCE_FRAME_METRICS_VERSION, summarizeReferenceFrameMetrics } from "@/lib/editor-core/reference-style-metrics";
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
+import { deriveReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, requestsReferenceStyleMatch, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
 
 function canonicalStyleRecipe(recipe) {
   return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
@@ -512,6 +513,34 @@ test("B2 Stage 0 RGB24 headroom metrics are deterministic and bounded", () => {
   assert.throws(() => summarizeReferenceFrameMetrics([{ ...metrics, lumaP95: 2 }]), /lumaP95 must be a finite number/);
 });
 
+test("B2A reference style contracts keep private image metadata separate and derive bounded target-aware treatments", () => {
+  assert.deepEqual(validateReferenceManifest({ name: "look.jpg", type: "image/jpeg", size: 42 }), { kind: "image", name: "look.jpg", type: "image/jpeg", size: 42 });
+  assert.equal(validateReferenceManifest(null), null);
+  assert.throws(() => validateReferenceManifest({ name: "look.gif", type: "image/gif", size: 42 }), /JPG, PNG, or WebP/);
+  assert.throws(() => validateReferenceManifest({ name: "look.jpg", type: "image/jpeg", size: MAX_REFERENCE_IMAGE_BYTES + 1 }), /25 MB/);
+  assert.equal(requestsReferenceStyleMatch("Make my video look like this.", true), true);
+  assert.equal(requestsReferenceStyleMatch("Make my video look like this.", false), false);
+  const analysis = {
+    safe: true,
+    reference: { peopleOrSkin: true, exposure: "medium", saturation: "medium", warmth: "warm" },
+    target: { coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "high", warmth: "neutral", compatible: true },
+    treatment: { exposure: "raise", contrast: "raise", blacks: "lower", highlights: "lower", color: "raise", warmth: "warm", mood: "luminous" }
+  };
+  assert.equal(referenceStyleAnalysisSchema().additionalProperties, false);
+  const treatment = deriveReferenceStyleTreatment({ analysis, metrics: { lumaP05: 0.02, lumaP50: 0.45, lumaP95: 0.96, nearBlackFraction: 0.1, nearWhiteFraction: 0.05, saturationIndex: 0.8 } });
+  assert.equal(treatment.version, 1);
+  assert.equal(treatment.recipe.brightness, 0.045, "near-clipped targets cap exposure lift");
+  assert.equal(treatment.recipe.saturation, 0.04, "already-saturated targets cap color lift");
+  assert.equal(treatment.recipe.temperature, 0.07, "skin is warmth-conservative");
+  assert.equal(treatment.recipe.shadows, 0, "underexposed targets do not deepen blacks");
+  assert.throws(() => validateReferenceStyleAnalysis({ ...analysis, safe: false }), (error) => error instanceof ReferenceStyleError && error.message === REFERENCE_STYLE_SAFE_ERROR);
+  assert.throws(() => deriveReferenceStyleTreatment({ analysis: { ...analysis, target: { ...analysis.target, coherent: false } }, metrics: { lumaP05: 0.1, lumaP50: 0.5, lumaP95: 0.8, nearBlackFraction: 0, nearWhiteFraction: 0, saturationIndex: 0.2 } }), /visually coherent footage/);
+  const plan = validateEditPlan({ version: "1", operations: [{ type: "reference_style_treatment", treatment }] });
+  assert.equal(plan.operations[0].treatment.recipe.temperature, 0.07);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "reference_style_treatment", sourceId: "source-1", treatment }] }), /sourceId is supported only/);
+  assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "reference_style_treatment", treatment }, { type: "style_profile", profileId: "cinematic" }] }), /conflicts with named visual styles/);
+});
+
 test("B1 style diagnostics contain only validated server-owned planning and execution facts", () => {
   const planning = createStylePlanningDiagnostics({
     styleIntent: { mode: "delegated_taste" },
@@ -552,7 +581,7 @@ test("B1 style diagnostics contain only validated server-owned planning and exec
 test("B1 style_profile remains planner-dormant while validating and rendering through server-owned recipes", () => {
   assert.deepEqual(CAPABILITY_REGISTRY.style_profile.requiredFields, ["profileId"]);
   assert.deepEqual(CAPABILITY_REGISTRY.style_profile.profileIds, STYLE_PROFILE_IDS);
-  assert.deepEqual(VISUAL_OPERATION_ORDER, ["color_grade", "style_profile", "visual_adjustment"]);
+  assert.deepEqual(VISUAL_OPERATION_ORDER, ["color_grade", "style_profile", "reference_style_treatment", "visual_adjustment"]);
   const unorderedVisualOperations = [
     { type: "visual_adjustment", brightness: 0.2 },
     { type: "style_profile", profileId: "cinematic" },

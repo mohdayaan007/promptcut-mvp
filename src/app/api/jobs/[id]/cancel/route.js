@@ -9,8 +9,8 @@ export async function POST(req, { params }) {
     const { id } = await params;
     const result = await cancelAuthorizedJob(id, jobToken(req));
     if (!result) return jsonError(new PublicRequestError("Edit job was not found", 404));
-    if (result.cancelled && result.job.sources.some((source) => source.uploadId)) {
-      await Promise.all(result.job.sources.map((source) => abortMultipartUpload(source).catch(() => {})));
+    if (result.cancelled && [...result.job.sources, ...(result.job.reference ? [result.job.reference] : [])].some((source) => source.uploadId)) {
+      await Promise.all([...result.job.sources, ...(result.job.reference ? [result.job.reference] : [])].map((source) => abortMultipartUpload(source).catch(() => {})));
     }
     return Response.json(safeJobResponse(result.job), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {

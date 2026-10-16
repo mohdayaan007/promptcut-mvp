@@ -6,6 +6,7 @@ import { buildAssFilter, writeTitleAssFile } from "@/lib/title-renderer";
 import { FONT_CATALOG, titleFontSize } from "@/lib/title-config";
 import { buildNormalizationFilter, createMediaProfile, getCropSettings } from "@/lib/editor-core/media-profile";
 import { compileStyleProfile, createCanonicalVisualRecipe } from "@/lib/editor-core/style-profiles";
+import { createCanonicalReferenceStyleTreatment } from "@/lib/editor-core/reference-style-treatment";
 
 const FFMPEG = "ffmpeg";
 const FFPROBE = "ffprobe";
@@ -21,6 +22,7 @@ const AUDIO_ONLY_ENCODING_ARGS = ["-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
 export const VISUAL_OPERATION_ORDER = Object.freeze([
   "color_grade",
   "style_profile",
+  "reference_style_treatment",
   "visual_adjustment"
 ]);
 
@@ -148,6 +150,11 @@ async function applyColorGrade(input, output, style, executionController) {
     "-y", "-hide_banner", "-loglevel", "error", "-i", input,
     "-vf", COLOR_PRESETS[style].join(","), ...VIDEO_ENCODING_ARGS, output
   ], { executionController });
+}
+
+async function applyReferenceStyleTreatment(input, output, operation, executionController) {
+  const treatment = createCanonicalReferenceStyleTreatment(operation.treatment);
+  await exec(FFMPEG, ["-y", "-hide_banner", "-loglevel", "error", "-i", input, "-vf", buildReferenceStyleTreatmentFilters(treatment.recipe).join(","), ...VIDEO_ENCODING_ARGS, output], { executionController });
 }
 
 // The server preserves the normalized -1..1 contract but curves low and medium
@@ -567,6 +574,7 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
       const adjustedPath = path.join(tempDirectory, `${type}-${source.index}.mp4`);
       if (type === "color_grade") await applyColorGrade(normalizedPaths.get(source.index), adjustedPath, operation.style, executionController);
       else if (type === "style_profile") await applyStyleProfile(normalizedPaths.get(source.index), adjustedPath, operation, executionController, jobId);
+      else if (type === "reference_style_treatment") await applyReferenceStyleTreatment(normalizedPaths.get(source.index), adjustedPath, operation, executionController);
       else await applyVisualAdjustment(normalizedPaths.get(source.index), adjustedPath, operation, executionController);
       normalizedPaths.set(source.index, adjustedPath);
     }
@@ -603,6 +611,7 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
   for (const operation of orderedVisualOperations(plan.operations)) {
     if (operation.type === "color_grade") filters.push(...COLOR_PRESETS[operation.style]);
     else if (operation.type === "style_profile") filters.push(...logStyleProfileExecution(operation, { jobId, scope: "global" }));
+    else if (operation.type === "reference_style_treatment") filters.push(...buildReferenceStyleTreatmentFilters(operation.treatment.recipe));
     else filters.push(...buildVisualAdjustmentFilters(operation));
   }
 

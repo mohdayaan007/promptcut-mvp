@@ -65,7 +65,7 @@ export default function HomePage() {
   const [videos, setVideos] = useState([]);
   const [videoMetadata, setVideoMetadata] = useState([]);
   const [exportQuality, setExportQuality] = useState("standard");
-  const [images, setImages] = useState([]);
+  const [referenceImage, setReferenceImage] = useState(null);
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState(null);
@@ -94,7 +94,7 @@ export default function HomePage() {
   const turnIdRef = useRef(0);
   const presentationAttemptRef = useRef(0);
 
-  const hasWorkspace = Boolean(videos.length || images.length || activeJob || undoState?.current);
+  const hasWorkspace = Boolean(videos.length || referenceImage || activeJob || undoState?.current);
   const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
   const isProcessing = isActiveJobStatus(status);
   const previewMode = undoPreviewMode({ isRestoring: isRestoringPrevious, current: undoState?.current, localVideoCount: videos.length });
@@ -304,10 +304,14 @@ export default function HomePage() {
   };
 
   const handleImagesChange = (event) => {
-    const addedImages = Array.from(event.target.files || []);
-    if (!addedImages.length) return;
-
-    setImages((currentImages) => [...currentImages, ...addedImages]);
+    const image = event.target.files?.[0];
+    if (!image) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(image.type)) {
+      setError("Style references must be JPG, PNG, or WebP images.");
+      event.target.value = "";
+      return;
+    }
+    setReferenceImage(image);
     event.target.value = "";
   };
 
@@ -335,7 +339,7 @@ export default function HomePage() {
 
     try {
       const job = await uploadAndQueueJob({
-        videos, prompt: submittedPrompt, exportQuality, signal: controller.signal,
+        videos, referenceImage, prompt: submittedPrompt, exportQuality, signal: controller.signal,
         onProgress: setUploadProgress,
         onSession: (session) => {
           if (!isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
@@ -392,7 +396,7 @@ export default function HomePage() {
     setVideos([]);
     setVideoMetadata([]);
     setExportQuality("standard");
-    setImages([]);
+    setReferenceImage(null);
     setPrompt("");
     setStatus("idle");
     setError(null);
@@ -545,8 +549,7 @@ export default function HomePage() {
       <input
         ref={imageInputRef}
         type="file"
-        accept="image/*"
-        multiple
+        accept="image/jpeg,image/png,image/webp"
         className="cliponaut-visually-hidden"
         onChange={handleImagesChange}
       />
@@ -556,7 +559,7 @@ export default function HomePage() {
           <Workspace
             videos={videos}
             restoredSources={restoredSources}
-            images={images}
+            referenceImage={referenceImage}
             status={status}
             uploadProgress={uploadProgress}
             error={error}
@@ -566,11 +569,9 @@ export default function HomePage() {
             canExport4k={canExport4k}
             onExportQualityChange={setExportQuality}
             onSelectVideos={() => videoInputRef.current?.click()}
-            onSelectImages={() => imageInputRef.current?.click()}
+            onSelectReferenceImage={() => imageInputRef.current?.click()}
             onRemoveVideo={handleRemoveVideo}
-            onRemoveImage={(index) =>
-              setImages((currentImages) => currentImages.filter((_, imageIndex) => imageIndex !== index))
-            }
+            onRemoveReferenceImage={() => setReferenceImage(null)}
             onEditAgain={handleEditAgain}
             canViewPreviousEdit={status === "error" && undoState?.current?.kind === "job"}
             onViewPreviousEdit={handleViewPreviousEdit}
@@ -609,7 +610,7 @@ export default function HomePage() {
           onSelectVideo={() => videoInputRef.current?.click()}
           onSelectImages={() => imageInputRef.current?.click()}
           onSelectSuggestion={setPrompt}
-          imageCount={images.length}
+          imageCount={referenceImage ? 1 : 0}
         />
       )}
       {recovery ? (

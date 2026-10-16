@@ -13,6 +13,7 @@ function storageConfig() {
 function s3() { if (!client) { const { bucket, ...config } = storageConfig(); client = new S3Client(config); } return client; }
 function bucket() { return storageConfig().bucket; }
 export function sourceObjectKey(jobId, index) { return `jobs/${jobId}/sources/${index}`; }
+export function referenceObjectKey(jobId) { return `jobs/${jobId}/reference/image`; }
 export function outputObjectKey(jobId) { return `jobs/${jobId}/output/cliponaut.mp4`; }
 export const DIRECT_UPLOAD_CORS = {
   CORSRules: [{

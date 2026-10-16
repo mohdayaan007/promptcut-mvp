@@ -3,11 +3,14 @@ import os from "os";
 import path from "path";
 import crypto from "crypto";
 import { createAiEditPlan, summarizeStylePlanDiagnostic, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
+import { createEditPlan } from "@/lib/editor-core/edit-plan";
 import { createExecutionController, EditExecutionCancelledError, executeEditPlan } from "@/lib/editor-core/edit-executor";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { CaptionError, createCaptionCues, extractCaptionCorrection, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
+import { analyzeReferenceStyle, ReferenceStyleError, requestsReferenceStyleMatch } from "@/lib/editor-core/reference-style-matching";
+import { extractTargetReferenceFrames, validateReferenceImageFile } from "@/lib/editor-core/reference-style-media";
 import { is4kCapableMedia } from "@/lib/media/media-config";
 import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
 import { jobConfig } from "@/lib/jobs/job-config";
@@ -32,6 +35,12 @@ function safeError(error) {
     if (error.message === "CAPTION_CORRECTION_NO_MATCH") return "I couldn't find that subtitle text to replace.";
     return "This video has no usable speech for subtitles.";
   }
+  if (error instanceof ReferenceStyleError) {
+    if (error.reason === "REFERENCE_SAFETY_REJECTED") return "This reference can’t be used for style matching. Please choose another image or video.";
+    if (error.reason === "REFERENCE_TARGET_HETEROGENEOUS") return "This first version works best with visually coherent footage. Please choose another video.";
+    if (["REFERENCE_TARGET_COUNT", "REFERENCE_COMPATIBILITY_WEAK"].includes(error.reason)) return error.message;
+    return "This reference image could not be used safely.";
+  }
   return "Unable to process this video. Please try again.";
 }
 class JobCancelledError extends Error {}
@@ -42,13 +51,13 @@ async function throwIfCancelled(jobId) {
 async function cleanExpiredObjects() {
   const abandonedUploads = await getAbandonedUploads(config.sourceRetentionHours);
   for (const job of abandonedUploads) {
-    await Promise.all(job.sources.map((source) => abortMultipartUpload(source).catch(() => {})));
+    await Promise.all([...job.sources, ...(job.reference ? [job.reference] : [])].map((source) => abortMultipartUpload(source).catch(() => {})));
     await expireUploadJob(job.id).catch(() => {});
   }
   const jobs = await getJobsForCleanup(config);
   for (const job of jobs) {
     if (!job.sourceCleanedAt && ["completed", "failed", "cancelled"].includes(job.status)) {
-      await deleteObjects(job.sources.map((source) => source.key));
+      await deleteObjects([...job.sources.map((source) => source.key), job.reference?.key]);
       await markSourcesCleaned(job.id);
     }
     if (!job.outputCleanedAt && job.status === "completed" && job.outputKey) {
@@ -88,12 +97,34 @@ async function processJob(job) {
     if (job.exportQuality === "4k" && !media.every(is4kCapableMedia)) {
       throw new Error("4K export requires every uploaded video to be 4K-capable");
     }
-    const planning = await createAiEditPlan({
-      inputPath: inputPaths[0], inputMimeType: sources[0].type,
-      sourceInputs: sources.map((source) => ({ inputPath: inputPaths[source.index], inputMimeType: source.type, source: sourceCatalog.find((entry) => entry.index === source.index) })),
-      prompt: job.prompt, hasMultipleVideos: inputPaths.length > 1, sourceCatalog, scratchDirectory: scratch, executionController
-    });
+    let referenceTreatment = null;
+    if (job.reference && requestsReferenceStyleMatch(job.prompt, true)) {
+      if (sources.length !== 1) throw new ReferenceStyleError("REFERENCE_TARGET_COUNT", "Reference style matching currently supports one target video.");
+      const extension = job.reference.type === "image/png" ? "png" : job.reference.type === "image/webp" ? "webp" : "jpg";
+      const referencePath = path.join(scratch, `reference.${extension}`);
+      await downloadObject(job.reference.key, referencePath);
+      await validateReferenceImageFile({ inputPath: referencePath, type: job.reference.type, executionController });
+      const samples = await extractTargetReferenceFrames({ inputPath: inputPaths[0], duration: media[0].duration, scratchDirectory: scratch, executionController });
+      const result = await analyzeReferenceStyle({ referencePath, referenceMimeType: job.reference.type, targetFrames: samples.frames, metrics: samples.metrics });
+      referenceTreatment = result.treatment;
+      console.info("Reference style treatment prepared:", { jobId: job.id, frameCount: samples.frames.length, metrics: samples.metrics, version: referenceTreatment.version });
+    }
+    let planning;
+    try {
+      planning = await createAiEditPlan({
+        inputPath: inputPaths[0], inputMimeType: sources[0].type,
+        sourceInputs: sources.map((source) => ({ inputPath: inputPaths[source.index], inputMimeType: source.type, source: sourceCatalog.find((entry) => entry.index === source.index) })),
+        prompt: job.prompt, hasMultipleVideos: inputPaths.length > 1, sourceCatalog, scratchDirectory: scratch, executionController
+      });
+    } catch (error) {
+      // A reference-only phrase ("make my video look like this") has no
+      // ordinary editor operation. The server-owned B2 operation is sufficient;
+      // unrelated unsupported requests still retain normal planner behavior.
+      if (!referenceTreatment || !(error instanceof UnsupportedEditRequestError)) throw error;
+      planning = { plan: createEditPlan({ prompt: job.prompt, hasMultipleVideos: false, sourceCatalog }), source: "reference_style" };
+    }
     const plan = planning.plan;
+    if (referenceTreatment) plan.operations = [...plan.operations, { type: "reference_style_treatment", treatment: referenceTreatment }];
     if (requestsCaptions(job.prompt) && !plan.operations.some((operation) => operation.type === "captions")) plan.operations.push({ type: "captions" });
     const editPlan = validateEditPlan(plan, { sourceCatalog });
     const stylePlanDiagnostic = summarizeStylePlanDiagnostic(planning, editPlan);

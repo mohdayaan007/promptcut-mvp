@@ -2,6 +2,8 @@ import { MAX_VIDEO_COUNT, MAX_VIDEO_DURATION_SECONDS } from "@/lib/media/media-c
 
 export const MAX_DIRECT_UPLOAD_FILE_BYTES = 5 * 1024 * 1024 * 1024;
 export const MAX_DIRECT_UPLOAD_JOB_BYTES = 25 * 1024 * 1024 * 1024;
+export const MAX_REFERENCE_IMAGE_BYTES = 25 * 1024 * 1024;
+export const REFERENCE_IMAGE_TYPES = Object.freeze(["image/jpeg", "image/png", "image/webp"]);
 export const MULTIPART_PART_SIZE_BYTES = 16 * 1024 * 1024;
 export const UPLOAD_URL_BATCH_SIZE = 8;
 export const JOB_STATUSES = ["uploading", "queued", "analyzing", "rendering", "completed", "failed", "cancelled"];
@@ -32,6 +34,17 @@ export function validateUploadManifest(files) {
   }
   if (totalBytes > MAX_DIRECT_UPLOAD_JOB_BYTES) throw new Error("The combined upload must be 25 GB or smaller");
   return totalBytes;
+}
+
+/** A reference is deliberately not an edit source: it has its own bounded contract. */
+export function validateReferenceManifest(reference) {
+  if (reference == null) return null;
+  if (!reference || typeof reference.name !== "string" || typeof reference.type !== "string" || !Number.isSafeInteger(reference.size)) {
+    throw new Error("The style reference must include valid image metadata");
+  }
+  if (!REFERENCE_IMAGE_TYPES.includes(reference.type)) throw new Error("Style references must be JPG, PNG, or WebP images");
+  if (reference.size <= 0 || reference.size > MAX_REFERENCE_IMAGE_BYTES) throw new Error("The style reference image must be 25 MB or smaller");
+  return { kind: "image", name: reference.name, type: reference.type, size: reference.size };
 }
 
 export function validateJobRequest({ prompt, exportQuality, sources }) {

@@ -8,7 +8,7 @@ import { findUndoTurnIndex } from "@/lib/client/direct-upload";
 export function Workspace({
   videos,
   restoredSources,
-  images,
+  referenceImage,
   status,
   uploadProgress,
   error,
@@ -18,9 +18,9 @@ export function Workspace({
   canExport4k,
   onExportQualityChange,
   onSelectVideos,
-  onSelectImages,
+  onSelectReferenceImage,
   onRemoveVideo,
-  onRemoveImage,
+  onRemoveReferenceImage,
   onEditAgain,
   canViewPreviousEdit,
   onViewPreviousEdit,
@@ -47,8 +47,8 @@ export function Workspace({
       <section className="cliponaut-panel cliponaut-media-panel" aria-labelledby="media-heading">
         <div className="cliponaut-panel-heading">
           <div>
-            <p className="cliponaut-panel-kicker">Source</p>
-            <h1 id="media-heading">Your media</h1>
+            <p className="cliponaut-panel-kicker">Target video</p>
+            <h1 id="media-heading">Your target media</h1>
           </div>
           <button className="cliponaut-text-button" type="button" onClick={onSelectVideos}>
             Add video
@@ -61,9 +61,6 @@ export function Workspace({
               <MediaCard key={`${video.name}-${index}`} file={video} kind="video" onRemove={() => onRemoveVideo(index)} />
             ))
             : restoredSources.map((source) => <RestoredMediaCard key={source.index} source={source} />)}
-          {images.map((image, index) => (
-            <MediaCard key={`${image.name}-${index}`} file={image} kind="image" onRemove={() => onRemoveImage(index)} />
-          ))}
         </div>
 
         <div className="cliponaut-media-actions">
@@ -77,12 +74,13 @@ export function Workspace({
               {videos.length ? "Add another video" : "Add a video"}
             </button>
           )}
-          <button className="cliponaut-add-media" type="button" onClick={onSelectImages}>
+          <button className="cliponaut-add-media" type="button" onClick={onSelectReferenceImage}>
             <ImageIcon />
-            Add images
+            {referenceImage ? "Replace style reference" : "Add style reference"}
           </button>
         </div>
-        <p className="cliponaut-media-note">{isOriginalState && !videos.length ? "Your original upload list was restored. Re-upload the files to edit them again." : "Add up to five videos. Images are kept locally for a future editing feature and are not sent to render yet."}</p>
+        {referenceImage ? <><p className="cliponaut-panel-kicker">Style reference image</p><MediaCard file={referenceImage} kind="image" onRemove={onRemoveReferenceImage} /></> : null}
+        <p className="cliponaut-media-note">{isOriginalState && !videos.length ? "Your original upload list was restored. Re-upload the files to edit them again." : "Add up to five videos. A style reference image is uploaded privately and never becomes a video source."}</p>
       </section>
 
       <PreviewPanel

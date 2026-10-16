@@ -32,6 +32,9 @@ export const CAPABILITY_REGISTRY = {
     strengths: Object.keys(STYLE_PROFILE_STRENGTHS),
     constraints: STYLE_PROFILE_CONSTRAINTS
   },
+  // B2A is server-injected after reference analysis. It is intentionally
+  // omitted from the Gemini capability contract.
+  reference_style_treatment: { requiredFields: ["treatment"] },
   crop: { requiredFields: ["aspect_ratio"], aspectRatios: CAPABILITY_LIMITS.aspectRatios }
 };
 

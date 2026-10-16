@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS edit_jobs (
   prompt TEXT,
   export_quality TEXT NOT NULL DEFAULT 'standard' CHECK (export_quality IN ('standard','4k')),
   sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+  reference JSONB,
   output_key TEXT,
   error_message TEXT,
   attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -39,7 +40,7 @@ function newToken() { return crypto.randomBytes(32).toString("base64url"); }
 function safeRow(row) {
   return {
     id: row.id, status: row.status, prompt: row.prompt, exportQuality: row.export_quality,
-    sources: row.sources, outputKey: row.output_key, errorMessage: row.error_message,
+    sources: row.sources, reference: row.reference, outputKey: row.output_key, errorMessage: row.error_message,
     attemptCount: row.attempt_count, workerId: row.worker_id, claimedAt: row.claimed_at,
     heartbeatAt: row.heartbeat_at, sourceCleanedAt: row.source_cleaned_at,
     outputCleanedAt: row.output_cleaned_at, createdAt: row.created_at, updatedAt: row.updated_at
@@ -48,13 +49,14 @@ function safeRow(row) {
 
 export async function migrateEditJobs() {
   await database().query(EDIT_JOBS_SCHEMA);
+  await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS reference JSONB;");
   await database().query(`ALTER TABLE edit_jobs DROP CONSTRAINT IF EXISTS edit_jobs_status_check;
     ALTER TABLE edit_jobs ADD CONSTRAINT edit_jobs_status_check
     CHECK (status IN ('uploading','queued','analyzing','rendering','completed','failed','cancelled'));`);
 }
-export async function createUploadJob(sources) {
+export async function createUploadJob(sources, reference = null) {
   const id = newId(); const accessToken = newToken();
-  const { rows } = await database().query("INSERT INTO edit_jobs (id, access_token, status, sources) VALUES ($1,$2,'uploading',$3::jsonb) RETURNING *", [id, accessToken, JSON.stringify(sources)]);
+  const { rows } = await database().query("INSERT INTO edit_jobs (id, access_token, status, sources, reference) VALUES ($1,$2,'uploading',$3::jsonb,$4::jsonb) RETURNING *", [id, accessToken, JSON.stringify(sources), JSON.stringify(reference)]);
   return { job: safeRow(rows[0]), accessToken };
 }
 export async function getAuthorizedJob(id, token) {
@@ -74,12 +76,12 @@ export async function isJobCancelled(id, workerId) {
   const { rows } = await database().query("SELECT status FROM edit_jobs WHERE id=$1 AND worker_id=$2", [id, workerId]);
   return rows[0]?.status === "cancelled";
 }
-export async function setUploadSources(id, sources) {
-  const { rows } = await database().query("UPDATE edit_jobs SET sources=$2::jsonb, updated_at=now() WHERE id=$1 RETURNING *", [id, JSON.stringify(sources)]);
+export async function setUploadSources(id, sources, reference) {
+  const { rows } = await database().query("UPDATE edit_jobs SET sources=$2::jsonb, reference=$3::jsonb, updated_at=now() WHERE id=$1 RETURNING *", [id, JSON.stringify(sources), JSON.stringify(reference ?? null)]);
   return rows[0] ? safeRow(rows[0]) : null;
 }
-export async function queueJob(id, { prompt, exportQuality, sources }) {
-  const { rows } = await database().query(`UPDATE edit_jobs SET status='queued', prompt=$2, export_quality=$3, sources=$4::jsonb, error_message=NULL, worker_id=NULL, claimed_at=NULL, heartbeat_at=NULL, updated_at=now() WHERE id=$1 AND status='uploading' RETURNING *`, [id, prompt, exportQuality, JSON.stringify(sources)]);
+export async function queueJob(id, { prompt, exportQuality, sources, reference = null }) {
+  const { rows } = await database().query(`UPDATE edit_jobs SET status='queued', prompt=$2, export_quality=$3, sources=$4::jsonb, reference=$5::jsonb, error_message=NULL, worker_id=NULL, claimed_at=NULL, heartbeat_at=NULL, updated_at=now() WHERE id=$1 AND status='uploading' RETURNING *`, [id, prompt, exportQuality, JSON.stringify(sources), JSON.stringify(reference)]);
   return rows[0] ? safeRow(rows[0]) : null;
 }
 export async function failUploadJob(id, message) { await database().query("UPDATE edit_jobs SET status='failed', error_message=$2, updated_at=now() WHERE id=$1 AND status='uploading'", [id, message]); }

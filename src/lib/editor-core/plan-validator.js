@@ -1,6 +1,7 @@
 import { CAPTION_DEFAULTS, FONT_CATALOG, normalizeTitleColor, normalizeTitlePosition, normalizeTitleSize, normalizeTitleWeight, resolveFontId, resolveSemanticFontIntent } from "@/lib/title-config";
 import { CAPABILITY_LIMITS, getCapability } from "@/lib/editor-core/capability-registry";
 import { compileStyleProfile } from "@/lib/editor-core/style-profiles";
+import { createCanonicalReferenceStyleTreatment } from "@/lib/editor-core/reference-style-treatment";
 
 function validationError(message) {
   return new Error(`Invalid edit plan: ${message}`);
@@ -105,6 +106,13 @@ function validateStyleProfile(operation) {
   }
 }
 
+function validateReferenceStyleTreatment(operation) {
+  const allowedFields = new Set(["type", "treatment"]);
+  for (const field of Object.keys(operation)) if (!allowedFields.has(field)) throw validationError(`reference_style_treatment does not support ${field}`);
+  try { operation.treatment = createCanonicalReferenceStyleTreatment(operation.treatment); }
+  catch (error) { throw validationError(error.message.replace(/^Invalid reference style treatment: /, "reference_style_treatment ")); }
+}
+
 export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
   if (!plan || !["1", "2"].includes(plan.version) || !Array.isArray(plan.operations)) {
     throw validationError("version 1 or 2 with an operations array is required");
@@ -117,6 +125,7 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
   const zoomRanges = [];
   const colorGradeScopes = new Set();
   const styleProfileScopes = new Set();
+  let referenceStyleTreatmentCount = 0;
   let sequenceCount = 0;
   for (const operation of plan.operations) {
     const capability = getCapability(operation?.type);
@@ -143,7 +152,7 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
       }
     }
 
-    if (["merge", "color_grade", "style_profile", "visual_adjustment", "trim", "speed", "fade", "audio_volume", "audio_fade", "crop", "captions"].includes(operation.type)) {
+    if (["merge", "color_grade", "style_profile", "reference_style_treatment", "visual_adjustment", "trim", "speed", "fade", "audio_volume", "audio_fade", "crop", "captions"].includes(operation.type)) {
       if (seenSingletons.has(operation.type)) throw validationError(`only one ${operation.type} operation is allowed`);
       seenSingletons.add(operation.type);
     }
@@ -155,6 +164,10 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
     if (operation.type === "style_profile") {
       validateStyleProfile(operation);
       styleProfileScopes.add(operation.sourceId || "global");
+    }
+    if (operation.type === "reference_style_treatment") {
+      validateReferenceStyleTreatment(operation);
+      referenceStyleTreatmentCount += 1;
     }
     if (operation.type === "visual_adjustment") {
       const fields = ["brightness", "contrast", "saturation", "temperature", "tint"];
@@ -210,6 +223,9 @@ export function validateEditPlan(plan, { sourceCatalog = [] } = {}) {
     if (colorGradeScopes.has(scope)) {
       throw validationError(`style_profile conflicts with color_grade for ${scope === "global" ? "global" : scope} scope`);
     }
+  }
+  if (referenceStyleTreatmentCount && (styleProfileScopes.size || colorGradeScopes.size)) {
+    throw validationError("reference_style_treatment conflicts with named visual styles");
   }
 
   if (sourceAware) {

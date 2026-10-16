@@ -307,40 +307,45 @@ export async function uploadPartWithRetry({ url, chunk, signal, fetchFn = fetch,
   throw lastError;
 }
 
-export async function uploadAndQueueJob({ videos, prompt, exportQuality, signal, onProgress, onSession, fetchFn = fetch, sleepFn }) {
+async function uploadMultipartFile({ session, file, fileIndex, kind = "source", signal, fetchFn, sleepFn, onPartUploaded }) {
+  const upload = kind === "reference" ? session.referenceUpload : session.uploads.find((entry) => entry.index === fileIndex);
+  if (!upload) throw new Error("Upload session did not include the selected file");
+  const partCount = Math.ceil(file.size / session.partSize);
+  const parts = [];
+  for (let firstPart = 1; firstPart <= partCount; firstPart += 8) {
+    const partNumbers = Array.from({ length: Math.min(8, partCount - firstPart + 1) }, (_, offset) => firstPart + offset);
+    const signed = await requestJson(`/api/uploads/${session.id}/parts`, {
+      method: "POST", headers: jobHeaders(session.accessToken), body: JSON.stringify({ ...(kind === "reference" ? { kind } : { fileIndex }), partNumbers }), signal
+    }, fetchFn);
+    for (const part of signed.parts) {
+      const start = (part.partNumber - 1) * session.partSize;
+      const chunk = file.slice(start, Math.min(file.size, start + session.partSize));
+      const eTag = await uploadPartWithRetry({ url: part.url, chunk, signal, fetchFn, ...(sleepFn ? { sleepFn } : {}) });
+      parts.push({ partNumber: part.partNumber, eTag });
+      onPartUploaded?.(chunk.size);
+    }
+  }
+  return { key: upload.key, uploadId: upload.uploadId, parts };
+}
+
+export async function uploadAndQueueJob({ videos, referenceImage = null, prompt, exportQuality, signal, onProgress, onSession, fetchFn = fetch, sleepFn }) {
   const session = await requestJson("/api/uploads", {
     method: "POST",
-    body: JSON.stringify({ files: videos.map((file) => ({ name: file.name, size: file.size, type: file.type || "video/mp4" })) }),
+    body: JSON.stringify({ files: videos.map((file) => ({ name: file.name, size: file.size, type: file.type || "video/mp4" })), reference: referenceImage ? { name: referenceImage.name, size: referenceImage.size, type: referenceImage.type } : null }),
     signal
   }, fetchFn);
   onSession?.({ id: session.id, accessToken: session.accessToken });
   const completedFiles = [];
   let uploadedBytes = 0;
-  const totalBytes = videos.reduce((total, file) => total + file.size, 0);
+  const totalBytes = videos.reduce((total, file) => total + file.size, 0) + (referenceImage?.size || 0);
   try {
     for (const [fileIndex, file] of videos.entries()) {
-      const upload = session.uploads.find((entry) => entry.index === fileIndex);
-      const partCount = Math.ceil(file.size / session.partSize);
-      const parts = [];
-      for (let firstPart = 1; firstPart <= partCount; firstPart += 8) {
-        const partNumbers = Array.from({ length: Math.min(8, partCount - firstPart + 1) }, (_, offset) => firstPart + offset);
-        const signed = await requestJson(`/api/uploads/${session.id}/parts`, {
-          method: "POST", headers: jobHeaders(session.accessToken), body: JSON.stringify({ fileIndex, partNumbers }), signal
-        }, fetchFn);
-        for (const part of signed.parts) {
-          const start = (part.partNumber - 1) * session.partSize;
-          const chunk = file.slice(start, Math.min(file.size, start + session.partSize));
-          const eTag = await uploadPartWithRetry({ url: part.url, chunk, signal, fetchFn, ...(sleepFn ? { sleepFn } : {}) });
-          parts.push({ partNumber: part.partNumber, eTag });
-          uploadedBytes += chunk.size;
-          onProgress?.({ uploadedBytes, totalBytes });
-        }
-      }
-      completedFiles.push({ key: upload.key, uploadId: upload.uploadId, parts });
+      completedFiles.push(await uploadMultipartFile({ session, file, fileIndex, signal, fetchFn, sleepFn, onPartUploaded: (size) => { uploadedBytes += size; onProgress?.({ uploadedBytes, totalBytes }); } }));
     }
+    const completedReference = referenceImage ? await uploadMultipartFile({ session, file: referenceImage, kind: "reference", signal, fetchFn, sleepFn, onPartUploaded: (size) => { uploadedBytes += size; onProgress?.({ uploadedBytes, totalBytes }); } }) : null;
     return await requestJson(`/api/uploads/${session.id}/complete`, {
       method: "POST", headers: jobHeaders(session.accessToken),
-      body: JSON.stringify({ prompt, exportQuality, files: completedFiles }), signal
+      body: JSON.stringify({ prompt, exportQuality, files: completedFiles, ...(completedReference ? { reference: completedReference } : {}) }), signal
     }, fetchFn);
   } catch (error) {
     await fetchFn(`/api/uploads/${session.id}/abort`, { method: "POST", headers: jobHeaders(session.accessToken) }).catch(() => {});
