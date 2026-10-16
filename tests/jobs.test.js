@@ -32,7 +32,7 @@ import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL
 import { createCanonicalReferenceStyleTreatment, REFERENCE_STYLE_TREATMENT_VERSION } from "@/lib/editor-core/reference-style-treatment";
 import { measureReferenceRgbFrame, REFERENCE_FRAME_METRICS_VERSION, summarizeReferenceFrameMetrics } from "@/lib/editor-core/reference-style-metrics";
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
-import { deriveReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, requestsReferenceStyleMatch, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
+import { createReferenceStyleDiagnostic, deriveReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, requestsReferenceStyleMatch, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
 
 function canonicalStyleRecipe(recipe) {
   return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
@@ -493,6 +493,7 @@ test("B2 Stage 0 RGB24 headroom metrics are deterministic and bounded", () => {
     lumaP05: 0,
     lumaP50: 54 / 255,
     lumaP95: 1,
+    lumaP99: 1,
     nearBlackFraction: 0.25,
     nearWhiteFraction: 0.25,
     saturationIndex: 0.25
@@ -505,6 +506,7 @@ test("B2 Stage 0 RGB24 headroom metrics are deterministic and bounded", () => {
     lumaP05: 0,
     lumaP50: (0.25 + (54 / 255)) / 2,
     lumaP95: 1,
+    lumaP99: 1,
     nearBlackFraction: 0.25,
     nearWhiteFraction: 0.25,
     saturationIndex: 0.5
@@ -522,23 +524,44 @@ test("B2A reference style contracts keep private image metadata separate and der
   assert.equal(requestsReferenceStyleMatch("Make my video look like this.", false), false);
   const analysis = {
     safe: true,
-    reference: { peopleOrSkin: true, exposure: "medium", saturation: "medium", warmth: "warm" },
-    target: { coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "high", warmth: "neutral", compatible: true },
-    treatment: { exposure: "raise", contrast: "raise", blacks: "lower", highlights: "lower", color: "raise", warmth: "warm", mood: "luminous" }
+    reference: { context: "lifestyle", peopleOrSkin: true, exposure: "medium", saturation: "medium", warmth: "warm" },
+    target: { context: "portrait", coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "high", warmth: "neutral", compatible: true },
+    treatment: { exposure: "raise", exposureIntensity: "strong", contrast: "raise", contrastIntensity: "strong", blacks: "lower", blackIntensity: "strong", highlights: "lower", highlightIntensity: "strong", color: "raise", colorIntensity: "strong", warmth: "warm", warmthIntensity: "strong", ambientColorCharacter: "warm_golden", highlightCharacter: "flash", colorSeparation: "editorial", mood: "luminous" }
   };
   assert.equal(referenceStyleAnalysisSchema().additionalProperties, false);
   const treatment = deriveReferenceStyleTreatment({ analysis, metrics: { lumaP05: 0.02, lumaP50: 0.45, lumaP95: 0.96, nearBlackFraction: 0.1, nearWhiteFraction: 0.05, saturationIndex: 0.8 } });
   assert.equal(treatment.version, 1);
-  assert.equal(treatment.recipe.brightness, 0.045, "near-clipped targets cap exposure lift");
-  assert.equal(treatment.recipe.saturation, 0.04, "already-saturated targets cap color lift");
-  assert.equal(treatment.recipe.temperature, 0.07, "skin is warmth-conservative");
+  assert.equal(treatment.recipe.brightness, 0.07, "near-clipped targets cap exposure lift");
+  assert.equal(treatment.recipe.saturation, 0.11, "already-saturated targets cap color lift without neutralizing it");
+  assert.equal(treatment.recipe.temperature, 0.12, "skin caps hue authority without weakening tonal treatment");
   assert.equal(treatment.recipe.shadows, 0, "underexposed targets do not deepen blacks");
   assert.throws(() => validateReferenceStyleAnalysis({ ...analysis, safe: false }), (error) => error instanceof ReferenceStyleError && error.message === REFERENCE_STYLE_SAFE_ERROR);
   assert.throws(() => deriveReferenceStyleTreatment({ analysis: { ...analysis, target: { ...analysis.target, coherent: false } }, metrics: { lumaP05: 0.1, lumaP50: 0.5, lumaP95: 0.8, nearBlackFraction: 0, nearWhiteFraction: 0, saturationIndex: 0.2 } }), /visually coherent footage/);
   const plan = validateEditPlan({ version: "1", operations: [{ type: "reference_style_treatment", treatment }] });
-  assert.equal(plan.operations[0].treatment.recipe.temperature, 0.07);
+  assert.equal(plan.operations[0].treatment.recipe.temperature, 0.12);
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "reference_style_treatment", sourceId: "source-1", treatment }] }), /sourceId is supported only/);
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "reference_style_treatment", treatment }, { type: "style_profile", profileId: "cinematic" }] }), /conflicts with named visual styles/);
+  const diagnostic = createReferenceStyleDiagnostic({ jobId: "job-safe", analysis, metrics: { lumaP05: 0.02, lumaP50: 0.45, lumaP95: 0.96, nearBlackFraction: 0.1, nearWhiteFraction: 0.05, saturationIndex: 0.8 }, treatment });
+  assert.equal(diagnostic.reference.context, "lifestyle");
+  assert.equal(diagnostic.target.context, "portrait");
+  assert.deepEqual(diagnostic.recipe, treatment.recipe);
+  assert.ok(diagnostic.filters.every((filter) => typeof filter === "string"));
+  assert.doesNotMatch(JSON.stringify(diagnostic), /uri|path|secret|token|https?:/i);
+});
+
+test("B2A strong editorial intent has visible bounded authority while skin protects only hue axes", () => {
+  const analysis = {
+    safe: true,
+    reference: { context: "lifestyle", peopleOrSkin: true, exposure: "high", saturation: "high", warmth: "cool" },
+    target: { context: "portrait", coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "low", warmth: "neutral", compatible: true },
+    treatment: { exposure: "raise", exposureIntensity: "strong", contrast: "raise", contrastIntensity: "strong", blacks: "lower", blackIntensity: "standard", highlights: "raise", highlightIntensity: "strong", color: "raise", colorIntensity: "strong", warmth: "cool", warmthIntensity: "strong", ambientColorCharacter: "cool_mint", highlightCharacter: "flash", colorSeparation: "editorial", mood: "rich" }
+  };
+  const treatment = deriveReferenceStyleTreatment({ analysis, metrics: { lumaP05: 0.18, lumaP50: 0.71, lumaP95: 0.8, lumaP99: 0.82, nearBlackFraction: 0, nearWhiteFraction: 0, saturationIndex: 0.105 } });
+  assert.deepEqual(treatment.recipe, {
+    brightness: 0.25, contrast: 0.29, saturation: 0.26, temperature: -0.12, tint: -0.055,
+    shadows: -0.1, highlights: 0.22, vibrance: 0.36, blackLift: -0.14, midtoneGamma: 0.16
+  });
+  assert.ok(buildReferenceStyleTreatmentFilters(treatment.recipe).length >= 4);
 });
 
 test("B1 style diagnostics contain only validated server-owned planning and execution facts", () => {
@@ -3384,6 +3407,25 @@ function rgbFixtureStats(frame) {
   return { extrema, meanLuma: lumaTotal / pixels, meanChroma: chromaTotal / pixels };
 }
 
+function rgbRegionStats(frame, { width, height, x, y, regionWidth, regionHeight }) {
+  assert.ok(x >= 0 && y >= 0 && x + regionWidth <= width && y + regionHeight <= height, "RGB region stays inside its frame");
+  const extrema = { red: [255, 0], green: [255, 0], blue: [255, 0] };
+  let lumaTotal = 0;
+  let chromaTotal = 0;
+  let pixels = 0;
+  for (let row = y; row < y + regionHeight; row += 1) for (let column = x; column < x + regionWidth; column += 1) {
+    const index = ((row * width) + column) * 3;
+    const [red, green, blue] = [frame[index], frame[index + 1], frame[index + 2]];
+    extrema.red[0] = Math.min(extrema.red[0], red); extrema.red[1] = Math.max(extrema.red[1], red);
+    extrema.green[0] = Math.min(extrema.green[0], green); extrema.green[1] = Math.max(extrema.green[1], green);
+    extrema.blue[0] = Math.min(extrema.blue[0], blue); extrema.blue[1] = Math.max(extrema.blue[1], blue);
+    lumaTotal += (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+    chromaTotal += Math.max(red, green, blue) - Math.min(red, green, blue);
+    pixels += 1;
+  }
+  return { extrema, meanLuma: lumaTotal / pixels, meanChroma: chromaTotal / pixels };
+}
+
 function upperClippedRgbSampleCount(frame) {
   return [...frame].reduce((count, value) => count + (value === 255 ? 1 : 0), 0);
 }
@@ -3557,6 +3599,57 @@ test("B2 Stage 0 black lift and midtone gamma render safely across the determini
     assert.ok(
       longestRepeatedRun(gradientValues) <= longestRepeatedRun(sourceGradientValues) + 8,
       `black lift and gamma do not materially posterize the smooth gradient (source=${longestRepeatedRun(sourceGradientValues)}, rendered=${longestRepeatedRun(gradientValues)})`
+    );
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test("B2A strong cool-mint editorial treatment remains photographic on skin highlights and smooth gradients", { timeout: 60_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-b2a-fidelity-"));
+  const analysis = {
+    safe: true,
+    reference: { context: "lifestyle", peopleOrSkin: true, exposure: "high", saturation: "high", warmth: "cool" },
+    target: { context: "portrait", coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "low", warmth: "neutral", compatible: true },
+    treatment: { exposure: "raise", exposureIntensity: "strong", contrast: "raise", contrastIntensity: "strong", blacks: "lower", blackIntensity: "standard", highlights: "raise", highlightIntensity: "strong", color: "raise", colorIntensity: "strong", warmth: "cool", warmthIntensity: "strong", ambientColorCharacter: "cool_mint", highlightCharacter: "flash", colorSeparation: "editorial", mood: "rich" }
+  };
+  try {
+    const skinSource = path.join(tempDirectory, "skin-source.mp4");
+    const skinOutput = path.join(tempDirectory, "skin-output.mp4");
+    await makeStyleFixture(
+      skinSource,
+      "color=c=0x687070:size=320x180:rate=30,drawbox=x=48:y=18:w=224:h=144:color=0xc68759:t=fill,drawbox=x=98:y=42:w=124:h=88:color=0xedbf92:t=fill,drawbox=x=122:y=58:w=76:h=48:color=0xffd8b5:t=fill"
+    );
+    const skinBefore = await readRgbFrame(skinSource);
+    const treatment = deriveReferenceStyleTreatment({ analysis, metrics: measureReferenceRgbFrame(skinBefore) });
+    const filters = buildReferenceStyleTreatmentFilters(treatment.recipe);
+    await renderStyleFixture(skinSource, skinOutput, filters);
+    const skinAfter = await readRgbFrame(skinOutput);
+    const cheekBefore = rgbRegionStats(skinBefore, { width: 320, height: 180, x: 128, y: 64, regionWidth: 60, regionHeight: 36 });
+    const cheekAfter = rgbRegionStats(skinAfter, { width: 320, height: 180, x: 128, y: 64, regionWidth: 60, regionHeight: 36 });
+    assert.notDeepEqual(skinAfter, skinBefore, "the strong reference treatment creates a visible pixel-level movement");
+    assert.equal(treatment.recipe.brightness, 0.07, "small bright skin highlights cap only unsafe global exposure lift");
+    assert.equal(treatment.recipe.highlights, 0, "small bright skin highlights suppress only unsafe highlight lift");
+    assert.ok(cheekAfter.meanChroma >= Math.max(18, cheekBefore.meanChroma * 0.45), "skin-highlight pixels retain meaningful chroma instead of collapsing grey");
+    assert.ok(cheekAfter.meanLuma < 248, "skin-highlight pixels retain headroom instead of becoming a pale clipped patch");
+    for (const [minimum, maximum] of Object.values(cheekAfter.extrema)) {
+      assert.ok(minimum >= 0 && maximum <= 255, "skin-highlight channels remain displayable after color balance and curves");
+    }
+
+    const gradientSource = path.join(tempDirectory, "gradient-source.mp4");
+    const gradientOutput = path.join(tempDirectory, "gradient-output.mp4");
+    await makeStyleFixture(gradientSource, "nullsrc=size=320x180:rate=30,geq=lum='16+219*X/W':cb=128:cr=128");
+    await renderStyleFixture(gradientSource, gradientOutput, filters);
+    const [gradientBefore, gradientAfter] = await Promise.all([
+      readRgbFrame(gradientSource).then((frame) => grayscaleValues(frame)),
+      readRgbFrame(gradientOutput).then((frame) => grayscaleValues(frame))
+    ]);
+    const midtoneSource = gradientBefore.slice(32, 288);
+    const midtoneOutput = gradientAfter.slice(32, 288);
+    assert.ok(new Set(midtoneOutput).size >= 150, "strong B2A processing retains a broad smooth-gradient midtone ramp");
+    assert.ok(
+      longestRepeatedRun(midtoneOutput) <= longestRepeatedRun(midtoneSource) + 5,
+      "strong B2A processing does not materially posterize smooth-gradient midtones"
     );
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });

@@ -1,7 +1,7 @@
 // B2 frame metrics are deterministic measurements over decoded RGB24 frames.
 // They are intentionally server-owned: Gemini may describe a reference, but it
 // never invents pixel headroom, percentile, or saturation values.
-export const REFERENCE_FRAME_METRICS_VERSION = 1;
+export const REFERENCE_FRAME_METRICS_VERSION = 2;
 
 function metricsError(message) {
   return new Error(`Invalid reference frame metrics: ${message}`);
@@ -9,7 +9,7 @@ function metricsError(message) {
 
 function quantileFromHistogram(histogram, pixelCount, percentile) {
   // Nearest-rank quantiles make results deterministic without retaining every
-  // pixel. p05/p50/p95 are normalized luma values in the closed 0..1 range.
+  // pixel. The luma percentiles are normalized values in the closed 0..1 range.
   const rank = Math.max(0, Math.ceil(percentile * pixelCount) - 1);
   let seen = 0;
   for (let value = 0; value < histogram.length; value += 1) {
@@ -49,6 +49,10 @@ export function measureReferenceRgbFrame(frame) {
     lumaP05: quantileFromHistogram(lumaHistogram, pixelCount, 0.05),
     lumaP50: quantileFromHistogram(lumaHistogram, pixelCount, 0.5),
     lumaP95: quantileFromHistogram(lumaHistogram, pixelCount, 0.95),
+    // p99 detects small, bright skin/practical-light areas that p95 can miss.
+    // It lets B2 constrain only highlight-risky axes without weakening the
+    // broader treatment for an otherwise safe target.
+    lumaP99: quantileFromHistogram(lumaHistogram, pixelCount, 0.99),
     nearBlackFraction: nearBlackPixels / pixelCount,
     nearWhiteFraction: nearWhitePixels / pixelCount,
     saturationIndex: saturationTotal / pixelCount
@@ -66,7 +70,7 @@ export function summarizeReferenceFrameMetrics(measurements) {
   if (!Array.isArray(measurements) || measurements.length === 0) {
     throw metricsError("measurements must be a non-empty array");
   }
-  const fields = ["lumaP05", "lumaP50", "lumaP95", "nearBlackFraction", "nearWhiteFraction", "saturationIndex"];
+  const fields = ["lumaP05", "lumaP50", "lumaP95", "lumaP99", "nearBlackFraction", "nearWhiteFraction", "saturationIndex"];
   for (const measurement of measurements) {
     if (!measurement || typeof measurement !== "object") throw metricsError("measurement must be an object");
     for (const field of fields) {

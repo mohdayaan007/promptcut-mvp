@@ -9,7 +9,7 @@ import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { CaptionError, createCaptionCues, extractCaptionCorrection, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
-import { analyzeReferenceStyle, ReferenceStyleError, requestsReferenceStyleMatch } from "@/lib/editor-core/reference-style-matching";
+import { analyzeReferenceStyle, createReferenceStyleDiagnostic, ReferenceStyleError, requestsReferenceStyleMatch } from "@/lib/editor-core/reference-style-matching";
 import { extractTargetReferenceFrames, validateReferenceImageFile } from "@/lib/editor-core/reference-style-media";
 import { is4kCapableMedia } from "@/lib/media/media-config";
 import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
@@ -107,7 +107,10 @@ async function processJob(job) {
       const samples = await extractTargetReferenceFrames({ inputPath: inputPaths[0], duration: media[0].duration, scratchDirectory: scratch, executionController });
       const result = await analyzeReferenceStyle({ referencePath, referenceMimeType: job.reference.type, targetFrames: samples.frames, metrics: samples.metrics });
       referenceTreatment = result.treatment;
-      console.info("Reference style treatment prepared:", { jobId: job.id, frameCount: samples.frames.length, metrics: samples.metrics, version: referenceTreatment.version });
+      console.info("Reference style treatment prepared:", {
+        frameCount: samples.frames.length,
+        ...createReferenceStyleDiagnostic({ jobId: job.id, analysis: result.analysis, metrics: samples.metrics, treatment: referenceTreatment })
+      });
     }
     let planning;
     try {
