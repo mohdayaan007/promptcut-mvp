@@ -77,8 +77,11 @@ export const STYLE_PROFILE_CATALOG = Object.freeze({
     1: freezeProfile({ brightness: 0.04, contrast: 0.16, saturation: 0.28, temperature: 0.03, tint: 0 }),
     2: freezeProfile({ brightness: 0.025, contrast: 0.06, saturation: 0.025, temperature: 0, tint: 0, shadows: 0.04, highlights: 0.03, vibrance: 0.18 })
   }) }),
-  dark_moody: Object.freeze({ currentVersion: 1, versions: Object.freeze({
-    1: freezeProfile({ brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 })
+  dark_moody: Object.freeze({ currentVersion: 2, versions: Object.freeze({
+    // Preserve v1 for historical reproducibility. v2 builds a low-key world
+    // with tonal separation and selective color instead of blanket darkening.
+    1: freezeProfile({ brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 }),
+    2: freezeProfile({ brightness: -0.045, contrast: 0.16, saturation: -0.02, temperature: -0.03, tint: -0.01, shadows: 0.12, highlights: 0.15, vibrance: 0.1 })
   }) }),
   natural_documentary: Object.freeze({ currentVersion: 2, versions: Object.freeze({
     // Preserve v1 for historical reproducibility; v2 remains natural while

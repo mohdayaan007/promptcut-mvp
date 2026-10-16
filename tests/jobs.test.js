@@ -37,7 +37,7 @@ function canonicalStyleRecipe(recipe) {
 
 test("B1 style profiles compile server-owned bounded canonical recipes", () => {
   assert.deepEqual(STYLE_PROFILE_IDS, ["clean_commercial", "warm_travel", "cinematic", "soft_nostalgic", "vibrant_social", "dark_moody", "natural_documentary"]);
-  const currentVersions = { clean_commercial: 2, cinematic: 2, soft_nostalgic: 3, vibrant_social: 2, natural_documentary: 2 };
+  const currentVersions = { clean_commercial: 2, cinematic: 2, soft_nostalgic: 3, vibrant_social: 2, dark_moody: 2, natural_documentary: 2 };
   for (const profileId of STYLE_PROFILE_IDS) {
     const current = resolveCurrentStyleProfile(profileId);
     assert.equal(current.profileId, profileId);
@@ -114,8 +114,7 @@ test("B1 profile calibrations preserve historical recipes and explicit current v
     natural_documentary: canonicalStyleRecipe({ brightness: 0.045, contrast: 0.22, saturation: 0.075, temperature: 0.015, tint: 0 })
   };
   const unchangedProfiles = {
-    warm_travel: canonicalStyleRecipe({ brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 }),
-    dark_moody: canonicalStyleRecipe({ brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 })
+    warm_travel: canonicalStyleRecipe({ brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 })
   };
   for (const [profileId, recipe] of Object.entries(v1Recipes)) {
     assert.deepEqual(resolveStyleProfile(profileId, 1).recipe, recipe, `${profileId} v1 remains reproducible`);
@@ -164,7 +163,7 @@ test("B1 cinematic v2 protects shadows while retaining the v1 filmic character",
     warm_travel: 1,
     soft_nostalgic: 3,
     vibrant_social: 2,
-    dark_moody: 1,
+    dark_moody: 2,
     natural_documentary: 2
   };
 
@@ -222,7 +221,7 @@ test("B1 soft nostalgic v3 preserves prior versions while restoring airy photogr
     warm_travel: { profileVersion: 1, recipe: canonicalStyleRecipe({ brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 }) },
     cinematic: { profileVersion: 2, recipe: canonicalStyleRecipe({ brightness: 0, contrast: 0.23, saturation: -0.08, temperature: 0.05, tint: -0.02 }) },
     vibrant_social: { profileVersion: 2, recipe: canonicalStyleRecipe({ brightness: 0.025, contrast: 0.06, saturation: 0.025, temperature: 0, tint: 0, shadows: 0.04, highlights: 0.03, vibrance: 0.18 }) },
-    dark_moody: { profileVersion: 1, recipe: canonicalStyleRecipe({ brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 }) },
+    dark_moody: { profileVersion: 2, recipe: canonicalStyleRecipe({ brightness: -0.045, contrast: 0.16, saturation: -0.02, temperature: -0.03, tint: -0.01, shadows: 0.12, highlights: 0.15, vibrance: 0.1 }) },
     natural_documentary: { profileVersion: 2, recipe: canonicalStyleRecipe({ brightness: 0.045, contrast: 0.22, saturation: 0.075, temperature: 0.015, tint: 0 }) }
   };
 
@@ -278,6 +277,66 @@ test("B1 soft nostalgic v3 preserves prior versions while restoring airy photogr
     "eq=brightness=0.0635:contrast=0.9007:saturation=0.8731",
     "vibrance=intensity=0.1089:rbal=1:gbal=1:bbal=1:alternate=0",
     "colorbalance=rs=0.0354:gs=-0.0134:bs=-0.0354:rm=0.0472:gm=-0.0134:bm=-0.0472:rh=0.0354:gh=-0.0134:bh=-0.0354:pl=1"
+  ]);
+});
+
+test("B1 dark moody v2 preserves practical-light color and low-key structure without v1 blanket darkening", () => {
+  const v1Recipe = canonicalStyleRecipe({ brightness: -0.16, contrast: 0.24, saturation: -0.1, temperature: -0.04, tint: -0.03 });
+  const v2Recipe = canonicalStyleRecipe({ brightness: -0.045, contrast: 0.16, saturation: -0.02, temperature: -0.03, tint: -0.01, shadows: 0.12, highlights: 0.15, vibrance: 0.1 });
+  const founderLockedProfiles = {
+    clean_commercial: { profileVersion: 2, recipe: canonicalStyleRecipe({ brightness: 0.075, contrast: 0.31, saturation: 0.12, temperature: 0.05, tint: 0 }) },
+    warm_travel: { profileVersion: 1, recipe: canonicalStyleRecipe({ brightness: 0.05, contrast: 0.16, saturation: 0.16, temperature: 0.24, tint: 0.01 }) },
+    cinematic: { profileVersion: 2, recipe: canonicalStyleRecipe({ brightness: 0, contrast: 0.23, saturation: -0.08, temperature: 0.05, tint: -0.02 }) },
+    soft_nostalgic: { profileVersion: 3, recipe: canonicalStyleRecipe({ brightness: 0.055, contrast: -0.035, saturation: -0.055, temperature: 0.1, tint: 0.015, shadows: 0.1, highlights: 0.08, vibrance: 0.12 }) },
+    vibrant_social: { profileVersion: 2, recipe: canonicalStyleRecipe({ brightness: 0.025, contrast: 0.06, saturation: 0.025, temperature: 0, tint: 0, shadows: 0.04, highlights: 0.03, vibrance: 0.18 }) },
+    natural_documentary: { profileVersion: 2, recipe: canonicalStyleRecipe({ brightness: 0.045, contrast: 0.22, saturation: 0.075, temperature: 0.015, tint: 0 }) }
+  };
+
+  assert.deepEqual(resolveStyleProfile("dark_moody", 1).recipe, v1Recipe, "dark moody v1 remains reproducible");
+  assert.deepEqual(resolveCurrentStyleProfile("dark_moody"), {
+    profileId: "dark_moody",
+    profileVersion: 2,
+    recipe: v2Recipe
+  });
+  for (const [profileId, expected] of Object.entries(founderLockedProfiles)) {
+    assert.deepEqual(resolveCurrentStyleProfile(profileId), { profileId, ...expected }, `${profileId} remains unchanged`);
+  }
+
+  for (const strength of ["subtle", "standard", "strong"]) {
+    const compiled = compileStyleProfile({ profileId: "dark_moody", strength });
+    const factor = STYLE_PROFILE_STRENGTHS[strength];
+    for (const field of CANONICAL_VISUAL_RECIPE_FIELDS) {
+      assert.equal(compiled.recipe[field], v2Recipe[field] * factor, `dark moody v2 ${strength} ${field}`);
+      assert.ok(compiled.recipe[field] >= -1 && compiled.recipe[field] <= 1, `dark moody v2 ${strength} ${field} remains bounded`);
+    }
+  }
+
+  const v1Standard = compileStyleProfile({ profileId: "dark_moody", profileVersion: 1, strength: "standard" });
+  const v2Standard = compileStyleProfile({ profileId: "dark_moody", strength: "standard" });
+  assert.deepEqual(v2Standard.recipe, canonicalStyleRecipe({
+    brightness: -0.0315,
+    contrast: 0.11199999999999999,
+    saturation: -0.013999999999999999,
+    temperature: -0.020999999999999998,
+    tint: -0.006999999999999999,
+    shadows: 0.08399999999999999,
+    highlights: 0.105,
+    vibrance: 0.06999999999999999
+  }));
+  assert.ok(v2Standard.recipe.brightness > v1Standard.recipe.brightness && v2Standard.recipe.brightness < 0, "v2 remains low-key without v1 blanket darkening");
+  assert.ok(v2Standard.recipe.contrast > 0 && v2Standard.recipe.contrast < v1Standard.recipe.contrast, "v2 retains controlled tonal separation");
+  assert.ok(v2Standard.recipe.saturation > v1Standard.recipe.saturation, "v2 preserves more practical-light color than v1");
+  assert.ok(v2Standard.recipe.shadows > 0 && v2Standard.recipe.highlights > 0 && v2Standard.recipe.vibrance > 0, "v2 uses bounded tonal structure and selective color");
+
+  assert.deepEqual(buildVisualAdjustmentFilters(v1Standard.recipe), [
+    "eq=brightness=-0.1155:contrast=1.2927:saturation=0.8232",
+    "colorbalance=rs=-0.0213:gs=0.0193:bs=0.0213:rm=-0.0285:gm=0.0193:bm=0.0285:rh=-0.0213:gh=0.0193:bh=0.0213:pl=1"
+  ]);
+  assert.deepEqual(buildStyleProfileFilters({ profileId: "dark_moody", strength: "standard" }), [
+    "curves=master='0/0 0.25/0.2718 0.75/0.7698 1/1'",
+    "eq=brightness=-0.0569:contrast=1.2311:saturation=0.9264",
+    "vibrance=intensity=0.0982:rbal=1:gbal=1:bbal=1:alternate=0",
+    "colorbalance=rs=-0.0183:gs=0.0108:bs=0.0183:rm=-0.0244:gm=0.0108:bm=0.0244:rh=-0.0183:gh=0.0108:bh=0.0183:pl=1"
   ]);
 });
 
@@ -3299,7 +3358,7 @@ test("style profiles apply source scope before sequence assembly and global scop
   ] };
   try {
     await makeSolidSequenceSource(sourcePaths[0], "0x9b5f2e");
-    await makeSolidSequenceSource(sourcePaths[1], "0x245f9b");
+    await makeSolidSequenceSource(sourcePaths[1], "0x3f694e");
     const baselineDirectory = path.join(tempDirectory, "baseline");
     const scopedDirectory = path.join(tempDirectory, "scoped");
     const globalDirectory = path.join(tempDirectory, "global");
@@ -3323,8 +3382,10 @@ test("style profiles apply source scope before sequence assembly and global scop
     const secondScopedDifference = await videoFrameDifference(baseline, sourceScoped, 2.5);
     assert.ok(firstScopedDifference > 5_000, "source-1 profile should visibly affect its pre-assembly segment");
     assert.ok(secondScopedDifference < 500, "source-2 segment should remain materially unchanged by a source-1 profile");
-    assert.ok(await videoFrameDifference(baseline, global, 0.5) > 5_000, "global profile should affect the first assembled segment");
-    assert.ok(await videoFrameDifference(baseline, global, 2.5) > 5_000, "global profile should affect the second assembled segment");
+    const firstGlobalDifference = await videoFrameDifference(baseline, global, 0.5);
+    const secondGlobalDifference = await videoFrameDifference(baseline, global, 2.5);
+    assert.ok(firstGlobalDifference > 5_000, "global profile should affect the first assembled segment");
+    assert.ok(secondGlobalDifference > 5_000, "global profile should affect the second assembled segment");
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });
   }
