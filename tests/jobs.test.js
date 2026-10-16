@@ -18,7 +18,7 @@ import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createDelegatedStyleDecisionJsonSchema, createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { buildDelegatedStyleContents, createAiEditPlan, createStylePlanningDiagnostics, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, summarizeStylePlanDiagnostic, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt, buildDelegatedStyleDecisionPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
-import { buildStyleProfileFilters, buildStyleRecipeFilters, buildToneCurveFilter, buildToneCurvePoints, buildVibranceFilter, buildVisualAdjustmentFilters, compileStyleProfileForExecution, createExecutionController, createStyleProfileExecutionDiagnostic, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
+import { buildReferenceStyleTreatmentFilters, buildReferenceToneCurveFilter, buildReferenceToneCurvePoints, buildStyleProfileFilters, buildStyleRecipeFilters, buildToneCurveFilter, buildToneCurvePoints, buildVibranceFilter, buildVisualAdjustmentFilters, compileStyleProfileForExecution, createExecutionController, createStyleProfileExecutionDiagnostic, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
 import { CAPABILITY_REGISTRY } from "@/lib/editor-core/capability-registry";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
 import { extractSpeechAudio, transcribeSource, wordAnnotations, SpokenTranscriptionError } from "@/lib/editor-core/spoken-transcription";
@@ -29,10 +29,12 @@ import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaption
 import { extractAudioControlIntent, reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { extractVisualAdjustmentIntent, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
 import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL_VISUAL_RECIPE, STYLE_PROFILE_CATALOG, STYLE_PROFILE_CONSTRAINTS, STYLE_PROFILE_IDS, STYLE_PROFILE_STRENGTHS, compileStyleProfile, createCanonicalVisualRecipe, interpolateCanonicalVisualRecipe, resolveCurrentStyleProfile, resolveStyleProfile } from "@/lib/editor-core/style-profiles";
+import { createCanonicalReferenceStyleTreatment, REFERENCE_STYLE_TREATMENT_VERSION } from "@/lib/editor-core/reference-style-treatment";
+import { measureReferenceRgbFrame, REFERENCE_FRAME_METRICS_VERSION, summarizeReferenceFrameMetrics } from "@/lib/editor-core/reference-style-metrics";
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
 
 function canonicalStyleRecipe(recipe) {
-  return { shadows: 0, highlights: 0, vibrance: 0, ...recipe };
+  return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
 }
 
 test("B1 style profiles compile server-owned bounded canonical recipes", () => {
@@ -380,9 +382,9 @@ test("B1 dark moody v2 preserves practical-light color and low-key structure wit
 });
 
 test("B1 internal tone and vibrance primitives are bounded, deterministic, and legacy-neutral", () => {
-  assert.deepEqual(CANONICAL_VISUAL_RECIPE_FIELDS, ["brightness", "contrast", "saturation", "temperature", "tint", "shadows", "highlights", "vibrance"]);
+  assert.deepEqual(CANONICAL_VISUAL_RECIPE_FIELDS, ["brightness", "contrast", "saturation", "temperature", "tint", "shadows", "highlights", "vibrance", "blackLift", "midtoneGamma"]);
   assert.deepEqual(createCanonicalVisualRecipe({ brightness: 0.2 }), canonicalStyleRecipe({ brightness: 0.2, contrast: 0, saturation: 0, temperature: 0, tint: 0 }));
-  for (const field of ["shadows", "highlights", "vibrance"]) {
+  for (const field of ["shadows", "highlights", "vibrance", "blackLift", "midtoneGamma"]) {
     assert.throws(() => createCanonicalVisualRecipe({ [field]: 1.01 }), new RegExp(`${field} must be a finite number`));
     assert.throws(() => createCanonicalVisualRecipe({ [field]: -1.01 }), new RegExp(`${field} must be a finite number`));
     assert.throws(() => createCanonicalVisualRecipe({ [field]: Number.NaN }), new RegExp(`${field} must be a finite number`));
@@ -434,9 +436,80 @@ test("B1 internal tone and vibrance primitives are bounded, deterministic, and l
     assert.equal(recipe.shadows, 0, `${profileId} v${profileVersion} defaults shadows to neutral`);
     assert.equal(recipe.highlights, 0, `${profileId} v${profileVersion} defaults highlights to neutral`);
     assert.equal(recipe.vibrance, 0, `${profileId} v${profileVersion} defaults vibrance to neutral`);
+    assert.equal(recipe.blackLift, 0, `${profileId} v${profileVersion} defaults blackLift to neutral`);
+    assert.equal(recipe.midtoneGamma, 0, `${profileId} v${profileVersion} defaults midtoneGamma to neutral`);
     assert.deepEqual(buildStyleRecipeFilters(recipe), expectedFilters, `${profileId} v${profileVersion} preserves its exact legacy filter chain`);
     assert.deepEqual(buildStyleRecipeFilters(recipe), buildVisualAdjustmentFilters(recipe), `${profileId} v${profileVersion} emits no extended filter`);
   }
+});
+
+test("B2 Stage 0 canonical reference treatments add bounded black and midtone controls without changing B1", () => {
+  const neutral = createCanonicalReferenceStyleTreatment();
+  assert.deepEqual(neutral, { version: REFERENCE_STYLE_TREATMENT_VERSION, recipe: NEUTRAL_VISUAL_RECIPE });
+  assert.equal(Object.isFrozen(neutral), true);
+  assert.equal(Object.isFrozen(neutral.recipe), true);
+  assert.throws(() => createCanonicalReferenceStyleTreatment(null), /treatment must be a plain object/);
+  assert.throws(() => createCanonicalReferenceStyleTreatment({ profileId: "cinematic" }), /unsupported treatment field/);
+  assert.throws(() => createCanonicalReferenceStyleTreatment({ version: 2 }), /unsupported version/);
+  assert.throws(() => createCanonicalReferenceStyleTreatment({ recipe: { blackLift: 1.01 } }), /blackLift must be a finite number/);
+  assert.throws(() => createCanonicalReferenceStyleTreatment({ recipe: { midtoneGamma: -1.01 } }), /midtoneGamma must be a finite number/);
+
+  const treatment = createCanonicalReferenceStyleTreatment({
+    recipe: {
+      brightness: 0.1, contrast: 0.1, saturation: 0.05, temperature: 0.1, tint: -0.05,
+      shadows: 0.2, highlights: -0.2, vibrance: 0.2, blackLift: 0.5, midtoneGamma: 0.5
+    }
+  });
+  assert.deepEqual(buildReferenceStyleTreatmentFilters(treatment.recipe), [
+    "eq=brightness=0.0866:contrast=1.1775:saturation=1.1466:gamma=1.1142",
+    "curves=master='0/0.0349 0.25/0.2861 0.75/0.7211 1/1'",
+    "vibrance=intensity=0.1803:rbal=1:gbal=1:bbal=1:alternate=0",
+    "colorbalance=rs=0.0390:gs=0.0309:bs=-0.0390:rm=0.0520:gm=0.0309:bm=-0.0520:rh=0.0390:gh=0.0309:bh=-0.0390:pl=1"
+  ]);
+  assert.deepEqual(buildReferenceToneCurvePoints({ blackLift: 1 }), { blackPoint: 0.055, shadowPoint: 0.25, highlightPoint: 0.75 });
+  assert.deepEqual(buildReferenceToneCurvePoints({ blackLift: -1 }), { blackPoint: 0, shadowPoint: 0.21, highlightPoint: 0.75 });
+  assert.equal(buildReferenceToneCurveFilter({ blackLift: 0, shadows: 0.2 }), buildToneCurveFilter({ shadows: 0.2 }), "neutral B2 black control delegates to the legacy curve exactly");
+  assert.throws(() => buildReferenceToneCurveFilter({ blackLift: Infinity }), /blackLift must be a finite number/);
+
+  for (const profileId of STYLE_PROFILE_IDS) {
+    const recipe = compileStyleProfile({ profileId, strength: "standard" }).recipe;
+    assert.equal(recipe.blackLift, 0, `${profileId} leaves blackLift neutral`);
+    assert.equal(recipe.midtoneGamma, 0, `${profileId} leaves midtoneGamma neutral`);
+    assert.deepEqual(buildReferenceStyleTreatmentFilters(recipe), buildStyleRecipeFilters(recipe), `${profileId} neutral B2 fields retain its legacy chain`);
+  }
+});
+
+test("B2 Stage 0 RGB24 headroom metrics are deterministic and bounded", () => {
+  const frame = Uint8Array.from([
+    0, 0, 0,
+    128, 128, 128,
+    255, 255, 255,
+    255, 0, 0
+  ]);
+  const metrics = measureReferenceRgbFrame(frame);
+  assert.deepEqual(metrics, {
+    version: REFERENCE_FRAME_METRICS_VERSION,
+    lumaP05: 0,
+    lumaP50: 54 / 255,
+    lumaP95: 1,
+    nearBlackFraction: 0.25,
+    nearWhiteFraction: 0.25,
+    saturationIndex: 0.25
+  });
+  assert.throws(() => measureReferenceRgbFrame(new Uint8Array()), /non-empty RGB24/);
+  assert.throws(() => measureReferenceRgbFrame(Uint8Array.from([1, 2])), /RGB24/);
+  assert.deepEqual(summarizeReferenceFrameMetrics([metrics, {
+    ...metrics, lumaP50: 0.25, saturationIndex: 0.75
+  }]), {
+    lumaP05: 0,
+    lumaP50: (0.25 + (54 / 255)) / 2,
+    lumaP95: 1,
+    nearBlackFraction: 0.25,
+    nearWhiteFraction: 0.25,
+    saturationIndex: 0.5
+  });
+  assert.throws(() => summarizeReferenceFrameMetrics([]), /non-empty array/);
+  assert.throws(() => summarizeReferenceFrameMetrics([{ ...metrics, lumaP95: 2 }]), /lumaP95 must be a finite number/);
 });
 
 test("B1 style diagnostics contain only validated server-owned planning and execution facts", () => {
@@ -3386,6 +3459,76 @@ test("B1 internal tone and vibrance filters render safely across deterministic g
     for (const stats of Object.values(stageStats)) for (const [minimum, maximum] of Object.values(stats.extrema)) {
       assert.ok(minimum >= 0 && maximum <= 255, "Vibrant Social diagnostic stages stay in displayable RGB bounds");
     }
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test("B2 Stage 0 black lift and midtone gamma render safely across the deterministic reference fixture matrix", { timeout: 90_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-b2-stage-zero-"));
+  const fixtureFilters = {
+    normalSkin: "color=c=0x483228:size=320x180:rate=30,drawbox=x=58:y=20:w=205:h=140:color=0xc68642:t=fill,drawbox=x=108:y=48:w=105:h=72:color=0xe0ac69:t=fill",
+    brightSkin: "color=c=0x9e7655:size=320x180:rate=30,drawbox=x=60:y=20:w=200:h=140:color=0xf0c491:t=fill,drawbox=x=110:y=52:w=100:h=68:color=0xffe0bc:t=fill",
+    foliage: "color=c=0x102613:size=320x180:rate=30,drawbox=x=15:y=20:w=90:h=130:color=0x1e5d31:t=fill,drawbox=x=118:y=10:w=88:h=145:color=0x3b7e36:t=fill,drawbox=x=220:y=30:w=85:h=120:color=0x6c963c:t=fill",
+    blueSky: "color=c=0x5ea8d8:size=320x180:rate=30,drawbox=x=0:y=125:w=320:h=55:color=0x335d32:t=fill",
+    warmSunset: "color=c=0x5a2a3c:size=320x180:rate=30,drawbox=x=0:y=0:w=320:h=80:color=0xffa15c:t=fill,drawbox=x=0:y=80:w=320:h=45:color=0xe85d4a:t=fill",
+    food: "color=c=0x120c0a:size=320x180:rate=30,drawbox=x=10:y=15:w=65:h=65:color=0x5a1606:t=fill,drawbox=x=90:y=15:w=65:h=65:color=0xa33a0c:t=fill,drawbox=x=170:y=15:w=65:h=65:color=0x7d4a1f:t=fill",
+    mutedInterior: "color=c=0x47413c:size=320x180:rate=30,drawbox=x=20:y=25:w=75:h=125:color=0x7b7163:t=fill,drawbox=x=120:y=25:w=75:h=125:color=0x686f72:t=fill,drawbox=x=220:y=25:w=75:h=125:color=0x746758:t=fill",
+    nightPracticals: "color=c=0x080b12:size=320x180:rate=30,drawbox=x=135:y=28:w=45:h=105:color=0xffd36a:t=fill,drawbox=x=205:y=45:w=25:h=65:color=0xdcecff:t=fill",
+    underexposed: "color=c=0x080b0d:size=320x180:rate=30,drawbox=x=45:y=45:w=85:h=100:color=0x25332d:t=fill,drawbox=x=180:y=35:w=85:h=110:color=0x3a3024:t=fill",
+    alreadySaturated: "color=c=0x141414:size=320x180:rate=30,drawbox=x=15:y=25:w=80:h=125:color=0xff1f18:t=fill,drawbox=x=120:y=25:w=80:h=125:color=0x16d451:t=fill,drawbox=x=225:y=25:w=80:h=125:color=0x176ee8:t=fill",
+    nearClippedHighlights: "color=c=0x302d28:size=320x180:rate=30,drawbox=x=85:y=20:w=150:h=135:color=0xfff4dc:t=fill,drawbox=x=125:y=55:w=70:h=65:color=white:t=fill",
+    smoothGradient: "nullsrc=size=320x180:rate=30,geq=lum='16+219*X/W':cb=128:cr=128"
+  };
+  const treatment = createCanonicalReferenceStyleTreatment({ recipe: {
+    brightness: 0.025, contrast: 0.04, saturation: 0.02, temperature: 0.035, tint: -0.01,
+    shadows: 0.1, highlights: -0.16, vibrance: 0.12, blackLift: 0.6, midtoneGamma: 0.28
+  } });
+  const filters = buildReferenceStyleTreatmentFilters(treatment.recipe);
+  const measured = {};
+  try {
+    for (const [name, filter] of Object.entries(fixtureFilters)) {
+      const source = path.join(tempDirectory, `${name}-source.mp4`);
+      const rendered = path.join(tempDirectory, `${name}-b2.mp4`);
+      await makeStyleFixture(source, filter);
+      await renderStyleFixture(source, rendered, filters);
+      const [sourceProbe, renderedProbe, sourceFrame, renderedFrame] = await Promise.all([
+        probeStyleFixture(source), probeStyleFixture(rendered), readRgbFrame(source), readRgbFrame(rendered)
+      ]);
+      measured[name] = { source: measureReferenceRgbFrame(sourceFrame), rendered: measureReferenceRgbFrame(renderedFrame) };
+      assert.deepEqual(
+        { width: renderedProbe.video.width, height: renderedProbe.video.height, pixFmt: renderedProbe.video.pix_fmt, hasAudio: renderedProbe.hasAudio },
+        { width: sourceProbe.video.width, height: sourceProbe.video.height, pixFmt: "yuv420p", hasAudio: false },
+        `${name} remains yuv420p-safe without changing geometry or audio behavior`
+      );
+      assert.notDeepEqual(renderedFrame, sourceFrame, `${name} receives a measurable non-neutral B2 treatment`);
+      const metrics = measured[name].rendered;
+      assert.ok(metrics.lumaP05 <= metrics.lumaP50 && metrics.lumaP50 <= metrics.lumaP95, `${name} luma percentiles remain ordered`);
+      for (const [field, value] of Object.entries(metrics)) {
+        if (field !== "version") assert.ok(value >= 0 && value <= 1, `${name} ${field} remains normalized and bounded`);
+      }
+    }
+
+    assert.ok(measured.nightPracticals.rendered.lumaP05 > measured.nightPracticals.source.lumaP05, "bounded positive black lift reveals dark practical-light detail instead of crushing it");
+    assert.ok(measured.nearClippedHighlights.rendered.nearWhiteFraction <= measured.nearClippedHighlights.source.nearWhiteFraction + 0.03, "highlight roll-off does not materially increase near-white clipping");
+    assert.ok(measured.alreadySaturated.rendered.saturationIndex < 0.95, "already-saturated material remains below neon-like saturation");
+
+    const gradientSource = path.join(tempDirectory, "smoothGradient-source.mp4");
+    const gradientOutput = path.join(tempDirectory, "smoothGradient-primitives-only.mp4");
+    await renderStyleFixture(
+      gradientSource,
+      gradientOutput,
+      buildReferenceStyleTreatmentFilters({ blackLift: 0.6, midtoneGamma: 0.28 })
+    );
+    const [sourceGradientValues, gradientValues] = await Promise.all([
+      readRgbFrame(gradientSource).then((frame) => grayscaleValues(frame)),
+      readRgbFrame(gradientOutput).then((frame) => grayscaleValues(frame))
+    ]);
+    assert.ok(new Set(gradientValues).size >= 128, "black lift and gamma retain a broad encoded gradient");
+    assert.ok(
+      longestRepeatedRun(gradientValues) <= longestRepeatedRun(sourceGradientValues) + 8,
+      `black lift and gamma do not materially posterize the smooth gradient (source=${longestRepeatedRun(sourceGradientValues)}, rendered=${longestRepeatedRun(gradientValues)})`
+    );
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });
   }

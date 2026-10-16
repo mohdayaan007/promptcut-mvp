@@ -5,7 +5,7 @@ import { applyCaptionCorrection, CaptionError, mapCaptionCuesToOutput } from "@/
 import { buildAssFilter, writeTitleAssFile } from "@/lib/title-renderer";
 import { FONT_CATALOG, titleFontSize } from "@/lib/title-config";
 import { buildNormalizationFilter, createMediaProfile, getCropSettings } from "@/lib/editor-core/media-profile";
-import { compileStyleProfile } from "@/lib/editor-core/style-profiles";
+import { compileStyleProfile, createCanonicalVisualRecipe } from "@/lib/editor-core/style-profiles";
 
 const FFMPEG = "ffmpeg";
 const FFPROBE = "ffprobe";
@@ -174,6 +174,11 @@ const TONE_CURVE_MINIMUM_SEPARATION = 0.12;
 const TONE_CURVE_SHADOW_SCALE = 0.1;
 const TONE_CURVE_HIGHLIGHT_SCALE = 0.08;
 const VIBRANCE_MAX = 0.5;
+const BLACK_LIFT_MAX = 0.055;
+const BLACK_DENSITY_SHADOW_MAX = 0.04;
+// A narrower gamma span prevents a strong midtone pivot from consuming too
+// many adjacent 8-bit code values before the later monotonic tone curve.
+const MIDTONE_GAMMA_MAX_OFFSET = 0.18;
 
 function boundedColorBalance(value) {
   return Math.max(-COLORBALANCE_MAX, Math.min(COLORBALANCE_MAX, value));
@@ -217,7 +222,7 @@ export function buildVibranceFilter(recipe = {}) {
   return `vibrance=intensity=${intensity.toFixed(4)}:rbal=1:gbal=1:bbal=1:alternate=0`;
 }
 
-function buildEqFilter(operation) {
+function buildEqFilter(operation, { includeMidtoneGamma = false } = {}) {
   const eq = [];
   const brightnessAndPositiveContrast = operation.brightness > 0 && operation.contrast > 0;
   const brightnessHeadroom = brightnessAndPositiveContrast ? COMBINED_BRIGHTNESS_HEADROOM : 1;
@@ -225,6 +230,13 @@ function buildEqFilter(operation) {
   if (operation.brightness !== undefined) eq.push(`brightness=${(perceptualAdjustmentMagnitude(operation.brightness) * 0.45 * brightnessHeadroom).toFixed(4)}`);
   if (operation.contrast !== undefined) eq.push(`contrast=${(1 + perceptualAdjustmentMagnitude(operation.contrast) * 0.9 * contrastHeadroom).toFixed(4)}`);
   if (operation.saturation !== undefined) eq.push(`saturation=${(1 + perceptualAdjustmentMagnitude(operation.saturation) * 0.9).toFixed(4)}`);
+  if (includeMidtoneGamma) {
+    const midtoneGamma = boundedStylePrimitive(operation.midtoneGamma, "midtoneGamma");
+    if (midtoneGamma !== 0) {
+      const gamma = 1 + (perceptualAdjustmentMagnitude(midtoneGamma) * MIDTONE_GAMMA_MAX_OFFSET);
+      eq.push(`gamma=${gamma.toFixed(4)}`);
+    }
+  }
   return eq.length ? `eq=${eq.join(":")}` : null;
 }
 
@@ -269,6 +281,63 @@ export function buildStyleRecipeFilters(recipe) {
     : null;
   if (toneCurve) filters.push(toneCurve);
   if (eq) filters.push(eq);
+  if (vibrance) filters.push(vibrance);
+  if (colorbalance) filters.push(colorbalance);
+  return filters;
+}
+
+/**
+ * Maps B2's bounded black endpoint/toe control into a monotonic master curve.
+ * Positive values lift code-zero blacks by at most 5.5%; negative values keep
+ * code zero at zero and add at most 4% density at the shadow anchor. That
+ * avoids impossible negative blacks and prevents a maximum treatment from
+ * becoming either a grey wash or a crushed-black transform.
+ */
+export function buildReferenceToneCurvePoints(recipe = {}) {
+  const blackLift = boundedStylePrimitive(recipe.blackLift, "blackLift");
+  const { shadowPoint: baseShadowPoint, highlightPoint } = buildToneCurvePoints(recipe);
+  const liftMagnitude = perceptualAdjustmentMagnitude(blackLift);
+  const blackPoint = liftMagnitude > 0 ? liftMagnitude * BLACK_LIFT_MAX : 0;
+  const shadowPoint = Math.max(
+    blackPoint + TONE_CURVE_SHADOW_RANGE.min,
+    Math.min(
+      TONE_CURVE_SHADOW_RANGE.max,
+      baseShadowPoint + (liftMagnitude < 0 ? liftMagnitude * BLACK_DENSITY_SHADOW_MAX : 0)
+    )
+  );
+  return Object.freeze({ blackPoint, shadowPoint, highlightPoint });
+}
+
+export function buildReferenceToneCurveFilter(recipe = {}) {
+  const blackLift = boundedStylePrimitive(recipe.blackLift, "blackLift");
+  if (blackLift === 0) return buildToneCurveFilter(recipe);
+  const { blackPoint, shadowPoint, highlightPoint } = buildReferenceToneCurvePoints(recipe);
+  return `curves=master='0/${blackPoint.toFixed(4)} 0.25/${shadowPoint.toFixed(4)} 0.75/${highlightPoint.toFixed(4)} 1/1'`;
+}
+
+/**
+ * B2 custom treatments intentionally use their own stable compiler order.
+ * EQ (including gamma) shapes the broad exposure/midtone response first;
+ * the monotonic curve then protects black/highlight anchors before selective
+ * color and color balance. Existing B1 profile compilation is not reordered.
+ */
+export function buildReferenceStyleTreatmentFilters(recipe = {}) {
+  const canonical = createCanonicalVisualRecipe(recipe);
+  // Preserve exact historical B1 filter order and strings for any recipe that
+  // does not activate either new B2 primitive. This also makes neutral B2
+  // treatments a true no-regression bridge during the staged rollout.
+  if (canonical.blackLift === 0 && canonical.midtoneGamma === 0) {
+    return buildStyleRecipeFilters(canonical);
+  }
+  const filters = [];
+  const eq = buildEqFilter(canonical, { includeMidtoneGamma: true });
+  const toneCurve = buildReferenceToneCurveFilter(canonical);
+  const vibrance = buildVibranceFilter(canonical);
+  const colorbalance = (canonical.temperature !== 0 || canonical.tint !== 0)
+    ? buildColorBalanceFilter(canonical)
+    : null;
+  if (eq) filters.push(eq);
+  if (toneCurve) filters.push(toneCurve);
   if (vibrance) filters.push(vibrance);
   if (colorbalance) filters.push(colorbalance);
   return filters;

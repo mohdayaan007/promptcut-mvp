@@ -12,7 +12,11 @@ export const CANONICAL_VISUAL_RECIPE_LIMITS = Object.freeze({
   // Internal B1/B2 grading primitives. They are not user prompt controls.
   shadows: Object.freeze({ min: -1, max: 1 }),
   highlights: Object.freeze({ min: -1, max: 1 }),
-  vibrance: Object.freeze({ min: -1, max: 1 })
+  vibrance: Object.freeze({ min: -1, max: 1 }),
+  // B2 reference treatments may move the black endpoint/toe and midtone
+  // pivot. Existing B1 profiles omit these fields and therefore remain neutral.
+  blackLift: Object.freeze({ min: -1, max: 1 }),
+  midtoneGamma: Object.freeze({ min: -1, max: 1 })
 });
 
 export const CANONICAL_VISUAL_RECIPE_FIELDS = Object.freeze(Object.keys(CANONICAL_VISUAL_RECIPE_LIMITS));
