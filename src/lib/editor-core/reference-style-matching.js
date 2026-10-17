@@ -90,12 +90,12 @@ export function validateReferenceStyleAnalysis(value) {
   const target = signature(value.target, "target", { target: true });
   // `treatment` is accepted only for compatibility with previously mocked
   // responses. It is never model authority; production schema requests omit it.
-  const treatment = value.treatment === undefined ? null : exactObject(value.treatment, ["exposure", "exposureIntensity", "contrast", "contrastIntensity", "blacks", "blackIntensity", "highlights", "highlightIntensity", "color", "colorIntensity", "warmth", "warmthIntensity", "ambientColorCharacter", "highlightCharacter", "colorSeparation", "mood"], "treatment");
+  const treatment = value.treatment === undefined ? undefined : exactObject(value.treatment, ["exposure", "exposureIntensity", "contrast", "contrastIntensity", "blacks", "blackIntensity", "highlights", "highlightIntensity", "color", "colorIntensity", "warmth", "warmthIntensity", "ambientColorCharacter", "highlightCharacter", "colorSeparation", "mood"], "treatment");
   return Object.freeze({
     safe: true,
     reference,
     target,
-    treatment: treatment && Object.freeze({
+    ...(treatment ? { treatment: Object.freeze({
       exposure: enumValue(treatment.exposure, DIRECTIONS, "treatment exposure"), exposureIntensity: optionalEnumValue(treatment.exposureIntensity, "standard", INTENSITIES, "treatment exposure intensity"),
       contrast: enumValue(treatment.contrast, DIRECTIONS, "treatment contrast"), contrastIntensity: optionalEnumValue(treatment.contrastIntensity, "standard", INTENSITIES, "treatment contrast intensity"),
       blacks: enumValue(treatment.blacks, DIRECTIONS, "treatment blacks"), blackIntensity: optionalEnumValue(treatment.blackIntensity, "standard", INTENSITIES, "treatment black intensity"),
@@ -106,7 +106,7 @@ export function validateReferenceStyleAnalysis(value) {
       highlightCharacter: optionalEnumValue(treatment.highlightCharacter, "natural", HIGHLIGHT_CHARACTERS, "highlight character"),
       colorSeparation: optionalEnumValue(treatment.colorSeparation, "neutral", COLOR_SEPARATIONS, "color separation"),
       mood: optionalEnumValue(treatment.mood, "natural", ["natural", "soft", "rich", "moody", "luminous"], "treatment mood")
-    })
+    }) } : {})
   });
 }
 

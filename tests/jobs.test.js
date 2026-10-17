@@ -641,7 +641,9 @@ test("B2A reference analysis contract defaults enrichment but fails closed on sa
   };
   const result = await analyzeReferenceStyle({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", targetFrames: [{ imagePath: "/private/frame.jpg" }], metrics, aiClient });
   assert.equal(result.analysis.reference.context, "lifestyle");
-  assert.equal(result.analysis.treatment, null, "production model response contains observations, not model treatment authority");
+  assert.equal(Object.hasOwn(result.analysis, "treatment"), false, "production model response contains observations, not model treatment authority");
+  assert.deepEqual(validateReferenceStyleAnalysis(result.analysis), result.analysis, "normalized production analysis is safe to validate again");
+  assert.doesNotThrow(() => deriveReferenceStyleTreatment({ analysis: result.analysis, metrics }), "normalized production analysis reaches server delta and canonical treatment");
   assert.ok(result.treatment.recipe.contrast > 0, "mocked ordinary photo path reaches canonical treatment");
   assert.equal(uploaded.length, 2, "reference and target frame are reused only as Gemini scratch files");
 
@@ -656,6 +658,29 @@ test("B2A reference analysis contract defaults enrichment but fails closed on sa
     analyzeReferenceStyle({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", targetFrames: [], metrics, aiClient: failedAiClient }),
     (error) => error instanceof ReferenceStyleError && error.reason === "REFERENCE_MODEL_REQUEST_FAILED"
   );
+});
+
+test("B2A normalized analysis omits absent legacy treatment and remains validator-idempotent", () => {
+  const productionAnalysis = {
+    safe: true,
+    reference: { peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint", highlightCharacter: "soft", blackCharacter: "deep", saturationCharacter: "rich", colorSeparation: "editorial" },
+    target: { coherent: true, peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "natural", colorSeparation: "neutral", compatible: true }
+  };
+  const normalized = validateReferenceStyleAnalysis(productionAnalysis);
+  assert.equal(Object.hasOwn(normalized, "treatment"), false, "absence remains absent after normalization");
+  assert.deepEqual(validateReferenceStyleAnalysis(normalized), normalized, "normalization is idempotent");
+  const treatment = deriveReferenceStyleTreatment({ analysis: normalized, metrics: { lumaP05: 0.1, lumaP50: 0.48, lumaP95: 0.78, lumaP99: 0.84, nearBlackFraction: 0.01, nearWhiteFraction: 0, saturationIndex: 0.2 } });
+  assert.ok(treatment.recipe.temperature < 0, "server derives cool direction from observations without legacy treatment");
+
+  const legacy = structuredClone(productionAnalysis);
+  legacy.treatment = { exposure: "lower", contrast: "lower", blacks: "raise", highlights: "lower", color: "lower", warmth: "warm" };
+  const normalizedLegacy = validateReferenceStyleAnalysis(legacy);
+  assert.deepEqual(validateReferenceStyleAnalysis(normalizedLegacy), normalizedLegacy, "valid legacy treatment remains revalidatable");
+  assert.ok(deriveReferenceStyleTreatment({ analysis: normalizedLegacy, metrics: { lumaP05: 0.1, lumaP50: 0.48, lumaP95: 0.78, lumaP99: 0.84, nearBlackFraction: 0.01, nearWhiteFraction: 0, saturationIndex: 0.2 } }).recipe.temperature < 0, "legacy treatment remains non-authoritative");
+
+  assert.throws(() => validateReferenceStyleAnalysis({ ...productionAnalysis, treatment: null }), (error) => error instanceof ReferenceStyleError && error.field === "treatment");
+  assert.throws(() => validateReferenceStyleAnalysis({ ...productionAnalysis, treatment: { exposure: "raise" } }), (error) => error instanceof ReferenceStyleError && error.field === "treatment contrast");
+  assert.throws(() => validateReferenceStyleAnalysis({ ...productionAnalysis, treatment: { exposure: "raise", contrast: "preserve", blacks: "preserve", highlights: "preserve", color: "preserve", warmth: "hot" } }), (error) => error instanceof ReferenceStyleError && error.field === "treatment warmth");
 });
 
 test("B2A derives photographic direction from bounded signatures, not model treatment advice", () => {
