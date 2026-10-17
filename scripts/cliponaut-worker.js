@@ -117,16 +117,26 @@ async function processJob(job) {
       planning = await createAiEditPlan({
         inputPath: inputPaths[0], inputMimeType: sources[0].type,
         sourceInputs: sources.map((source) => ({ inputPath: inputPaths[source.index], inputMimeType: source.type, source: sourceCatalog.find((entry) => entry.index === source.index) })),
-        prompt: job.prompt, hasMultipleVideos: inputPaths.length > 1, sourceCatalog, scratchDirectory: scratch, executionController
+        prompt: job.prompt, hasMultipleVideos: inputPaths.length > 1, sourceCatalog, scratchDirectory: scratch, executionController,
+        referenceStyleActive: Boolean(referenceTreatment)
       });
     } catch (error) {
       // A reference-only phrase ("make my video look like this") has no
       // ordinary editor operation. The server-owned B2 operation is sufficient;
       // unrelated unsupported requests still retain normal planner behavior.
-      if (!referenceTreatment || !(error instanceof UnsupportedEditRequestError)) throw error;
+      // Only an otherwise empty ordinary plan may fall back to the B2-only
+      // treatment. Deliberate reference + named-style conflicts must remain a
+      // safe rejection instead of being silently stacked by the fallback.
+      if (!referenceTreatment || !(error instanceof UnsupportedEditRequestError) || error.message !== "This edit is not supported yet") throw error;
       planning = { plan: createEditPlan({ prompt: job.prompt, hasMultipleVideos: false, sourceCatalog }), source: "reference_style" };
     }
     const plan = planning.plan;
+    if (referenceTreatment && plan.referenceStyleReconciliation?.suppressedVisualOperationTypes.length) {
+      console.info("Reference style planner visual operations suppressed:", {
+        jobId: job.id,
+        suppressedVisualOperationTypes: plan.referenceStyleReconciliation.suppressedVisualOperationTypes
+      });
+    }
     if (referenceTreatment) plan.operations = [...plan.operations, { type: "reference_style_treatment", treatment: referenceTreatment }];
     if (requestsCaptions(job.prompt) && !plan.operations.some((operation) => operation.type === "captions")) plan.operations.push({ type: "captions" });
     const editPlan = validateEditPlan(plan, { sourceCatalog });

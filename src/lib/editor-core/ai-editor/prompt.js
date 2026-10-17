@@ -71,7 +71,7 @@ export function buildDelegatedStyleDecisionPrompt() {
   ].join("\n\n");
 }
 
-export function buildAiEditorPrompt({ prompt, hasMultipleVideos = false, sourceCatalog = [], resolvedSemanticSources = [], authoritativeMomentSequence = null }) {
+export function buildAiEditorPrompt({ prompt, hasMultipleVideos = false, sourceCatalog = [], resolvedSemanticSources = [], authoritativeMomentSequence = null, referenceStyleActive = false }) {
   const capabilities = JSON.stringify(getAiCapabilityContract({
     hasMultipleVideos,
     supportsSequence: hasMultipleVideos || Boolean(authoritativeMomentSequence)
@@ -87,6 +87,7 @@ export function buildAiEditorPrompt({ prompt, hasMultipleVideos = false, sourceC
     "Fade is applied on the final output timeline, so use it only for beginning/end fades.",
     "audio_volume controls final-output audio only: use factor 0 for mute, an exact percentage as its decimal factor, 0.5 for quieter/lower/decrease, and 1.5 for louder/increase. audio_fade fades final-output audio only. 'Fade out at the end' uses the audiovisual fade operation; explicit 'Fade the audio ...' wording uses audio_fade and never fades video. Do not invent music, mixing, ducking, or other audio capabilities.",
     "visual_adjustment uses only normalized bounded values from -1 to 1 for brightness, contrast, saturation, temperature, and tint. Positive temperature is warmer; positive tint is magenta. Never emit FFmpeg filters or arbitrary visual fields. 'Warm filter' and 'cool look' remain named color_grade presets; 'make it warmer' or 'make it cooler' are visual_adjustment requests.",
+    referenceStyleActive ? "A server-authoritative reference style treatment is active for this request. Plan all non-style operations the user requests, but do not emit style_profile, color_grade, or visual_adjustment. Do not replace, combine with, or reinterpret the reference treatment." : null,
     "Title timestamps use the final assembled output timeline after sequence, trim, and speed. A title may include rich runs; concatenate every run's text to reproduce title.text exactly. Select exact fonts only from the catalog. For a stylistic font request, set fontIntent to a catalog-supported semantic tag while still providing a catalog font fallback. Never invent font files, colors, positions, or renderer syntax.",
     "For subtitles or captions, emit one captions operation with optional styling only. Never emit transcript text, words, source timestamps, or caption cues: the server owns all speech text and final-output timing.",
     sourceCatalog.length

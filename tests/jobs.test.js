@@ -16,7 +16,7 @@ import { createEditPlan, extractMomentCompositionRequests, extractSemanticSource
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createDelegatedStyleDecisionJsonSchema, createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { buildDelegatedStyleContents, createAiEditPlan, createStylePlanningDiagnostics, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, summarizeStylePlanDiagnostic, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
+import { buildDelegatedStyleContents, createAiEditPlan, createStylePlanningDiagnostics, reconcileReferenceStylePlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, summarizeStylePlanDiagnostic, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt, buildDelegatedStyleDecisionPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { buildReferenceStyleTreatmentFilters, buildReferenceToneCurveFilter, buildReferenceToneCurvePoints, buildStyleProfileFilters, buildStyleRecipeFilters, buildToneCurveFilter, buildToneCurvePoints, buildVibranceFilter, buildVisualAdjustmentFilters, compileStyleProfileForExecution, createExecutionController, createStyleProfileExecutionDiagnostic, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
 import { CAPABILITY_REGISTRY } from "@/lib/editor-core/capability-registry";
@@ -32,7 +32,7 @@ import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL
 import { createCanonicalReferenceStyleTreatment, REFERENCE_STYLE_TREATMENT_VERSION } from "@/lib/editor-core/reference-style-treatment";
 import { measureReferenceRgbFrame, REFERENCE_FRAME_METRICS_VERSION, summarizeReferenceFrameMetrics } from "@/lib/editor-core/reference-style-metrics";
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
-import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, referenceStyleReferenceAnalysisSchema, referenceStyleTargetAnalysisSchema, requestsReferenceStyleMatch, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
+import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, referenceStyleReferenceAnalysisSchema, referenceStyleTargetAnalysisSchema, requestsReferenceStyleMatch, TONAL_COLOR_BIASES, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
 
 function canonicalStyleRecipe(recipe) {
   return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
@@ -446,12 +446,12 @@ test("B1 internal tone and vibrance primitives are bounded, deterministic, and l
 
 test("B2 Stage 0 canonical reference treatments add bounded black and midtone controls without changing B1", () => {
   const neutral = createCanonicalReferenceStyleTreatment();
-  assert.deepEqual(neutral, { version: REFERENCE_STYLE_TREATMENT_VERSION, recipe: NEUTRAL_VISUAL_RECIPE });
+  assert.deepEqual(neutral, { version: REFERENCE_STYLE_TREATMENT_VERSION, recipe: { ...NEUTRAL_VISUAL_RECIPE, shadowTemperature: 0, midtoneTemperature: 0, highlightTemperature: 0 } });
   assert.equal(Object.isFrozen(neutral), true);
   assert.equal(Object.isFrozen(neutral.recipe), true);
   assert.throws(() => createCanonicalReferenceStyleTreatment(null), /treatment must be a plain object/);
   assert.throws(() => createCanonicalReferenceStyleTreatment({ profileId: "cinematic" }), /unsupported treatment field/);
-  assert.throws(() => createCanonicalReferenceStyleTreatment({ version: 2 }), /unsupported version/);
+  assert.throws(() => createCanonicalReferenceStyleTreatment({ version: 3 }), /unsupported version/);
   assert.throws(() => createCanonicalReferenceStyleTreatment({ recipe: { blackLift: 1.01 } }), /blackLift must be a finite number/);
   assert.throws(() => createCanonicalReferenceStyleTreatment({ recipe: { midtoneGamma: -1.01 } }), /midtoneGamma must be a finite number/);
 
@@ -542,7 +542,7 @@ test("B2A reference style contracts keep private image metadata separate and der
   };
   assert.equal(referenceStyleAnalysisSchema().additionalProperties, false);
   const treatment = deriveReferenceStyleTreatment({ analysis, metrics: { lumaP05: 0.02, lumaP50: 0.45, lumaP95: 0.96, nearBlackFraction: 0.1, nearWhiteFraction: 0.05, saturationIndex: 0.8 } });
-  assert.equal(treatment.version, 1);
+  assert.equal(treatment.version, 2);
   assert.equal(treatment.recipe.brightness, 0.07, "near-clipped targets cap reference-directed exposure lift");
   assert.equal(treatment.recipe.saturation, 0.11, "already-saturated targets cap color lift without neutralizing it");
   assert.equal(treatment.recipe.temperature, 0.12, "skin caps hue authority without weakening tonal treatment");
@@ -572,7 +572,8 @@ test("B2A reference-directed signatures retain strong bounded authority while sk
   const treatment = deriveReferenceStyleTreatment({ analysis, metrics: { lumaP05: 0.18, lumaP50: 0.71, lumaP95: 0.8, lumaP99: 0.82, nearBlackFraction: 0, nearWhiteFraction: 0, saturationIndex: 0.105 } });
   assert.deepEqual(treatment.recipe, {
     brightness: 0.14, contrast: 0.14, saturation: 0.22, temperature: -0.12, tint: -0.055,
-    shadows: -0.1, highlights: 0.15, vibrance: 0.32, blackLift: -0.14, midtoneGamma: 0.11
+    shadows: -0.1, highlights: 0.15, vibrance: 0.32, blackLift: -0.14, midtoneGamma: 0.11,
+    shadowTemperature: 0, midtoneTemperature: 0, highlightTemperature: 0
   });
   assert.ok(buildReferenceStyleTreatmentFilters(treatment.recipe).length >= 4);
 });
@@ -731,6 +732,46 @@ test("B2A normalized analysis omits absent legacy treatment and remains validato
   assert.throws(() => validateReferenceStyleAnalysis({ ...productionAnalysis, treatment: { exposure: "raise", contrast: "preserve", blacks: "preserve", highlights: "preserve", color: "preserve", warmth: "hot" } }), (error) => error instanceof ReferenceStyleError && error.field === "treatment warmth");
 });
 
+test("B2A retains bounded split-tone reference relationships without changing B1 recipes", () => {
+  assert.deepEqual(TONAL_COLOR_BIASES, ["neutral", "warm_yellow", "warm_orange", "cool_blue", "cool_cyan", "green_mint"]);
+  const base = {
+    safe: true,
+    reference: { context: "architecture", peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "mixed", shadowColorBias: "cool_blue", midtoneColorBias: "neutral", highlightColorBias: "warm_yellow", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "natural", colorSeparation: "editorial" },
+    target: { context: "landscape", coherent: true, peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", shadowColorBias: "neutral", midtoneColorBias: "neutral", highlightColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "natural", colorSeparation: "neutral", compatible: true }
+  };
+  const metrics = { lumaP05: 0.1, lumaP50: 0.48, lumaP95: 0.78, lumaP99: 0.84, nearBlackFraction: 0.01, nearWhiteFraction: 0, saturationIndex: 0.2 };
+  const normalized = validateReferenceStyleAnalysis(base);
+  assert.equal(normalized.reference.shadowColorBias, "cool_blue");
+  assert.equal(normalized.reference.highlightColorBias, "warm_yellow");
+  const treatment = deriveReferenceStyleTreatment({ analysis: normalized, metrics });
+  assert.equal(treatment.version, 2);
+  assert.ok(treatment.recipe.shadowTemperature < 0);
+  assert.ok(treatment.recipe.highlightTemperature > 0);
+  assert.equal(treatment.recipe.midtoneTemperature, 0);
+  const filters = buildReferenceStyleTreatmentFilters(treatment.recipe);
+  assert.match(filters.find((filter) => filter.startsWith("colorbalance=")), /rs=-.*rh=0\./, "split tone reaches independent shadow/highlight colorbalance channels");
+  assert.ok(filters.at(-1).startsWith("curves=master="), "B2 still protects highlights after color balance");
+  const human = deriveReferenceStyleTreatment({ analysis: { ...base, target: { ...base.target, peopleOrSkin: true } }, metrics });
+  assert.ok(Math.abs(human.recipe.shadowTemperature) <= 0.1 && Math.abs(human.recipe.highlightTemperature) <= 0.1, "skin caps band hue authority without erasing the relationship");
+  assert.equal(resolveCurrentStyleProfile("cinematic").recipe.shadowTemperature, undefined, "B1 profile recipes never acquire B2 band controls");
+});
+
+test("B2A reference authority suppresses accidental visual operations but retains ordinary edits", () => {
+  const accidental = reconcileReferenceStylePlan({ version: "1", operations: [
+    { type: "style_profile", profileId: "cinematic" },
+    { type: "color_grade", style: "warm" },
+    { type: "visual_adjustment", brightness: 0.2 },
+    { type: "title", text: "Kerala", start: 1, end: 3, position: "top-center", size: "medium", color: "white", weight: "regular", font: "inter" },
+    { type: "trim", start: 1, end: 5 }
+  ] }, { prompt: "Make my video look like this." });
+  assert.deepEqual(accidental.operations.map((operation) => operation.type), ["title", "trim"]);
+  assert.deepEqual(accidental.referenceStyleReconciliation.suppressedVisualOperationTypes, ["style_profile", "color_grade", "visual_adjustment"]);
+  assert.throws(
+    () => reconcileReferenceStylePlan({ version: "1", operations: [] }, { prompt: "Match this reference and also make it Dark Moody." }),
+    (error) => error instanceof UnsupportedEditRequestError && error.message === "Choose either the reference style or a named visual style."
+  );
+});
+
 test("B2A derives photographic direction from bounded signatures, not model treatment advice", () => {
   const metrics = { lumaP05: 0.12, lumaP50: 0.48, lumaP95: 0.78, lumaP99: 0.84, nearBlackFraction: 0.01, nearWhiteFraction: 0, saturationIndex: 0.24 };
   const analysis = ({ reference = {}, target = {}, advisory = {} } = {}) => ({
@@ -769,7 +810,7 @@ test("B2A derives photographic direction from bounded signatures, not model trea
   assert.ok(cool.temperature < 0 && warm.temperature > 0, "same target receives opposite reference-directed temperature intent");
   assert.notDeepEqual(cool, warm, "clearly distinct reference signatures cannot collapse to one recipe");
 
-  const diagnostic = createReferenceStyleDiagnostic({ jobId: "job-safe", analysis: analysis({ reference: { warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint" } }), metrics, treatment: { version: 1, recipe: cool } });
+  const diagnostic = createReferenceStyleDiagnostic({ jobId: "job-safe", analysis: analysis({ reference: { warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint" } }), metrics, treatment: { version: 2, recipe: cool } });
   assert.deepEqual(Object.keys(diagnostic).sort(), ["derivedDelta", "filters", "finalTreatmentIntent", "jobId", "metrics", "recipe", "referenceAnalysisVersion", "referenceSignature", "targetAnalysisVersion", "targetSignature"]);
   assert.equal(diagnostic.derivedDelta.warmth, "lower");
   assert.doesNotMatch(JSON.stringify(diagnostic), /uri|path|secret|token|https?:/i);
@@ -3764,9 +3805,11 @@ test("B2 Stage 0 black lift and midtone gamma render safely across the determini
   };
   const treatment = createCanonicalReferenceStyleTreatment({ recipe: {
     brightness: 0.025, contrast: 0.04, saturation: 0.02, temperature: 0.035, tint: -0.01,
-    shadows: 0.1, highlights: -0.16, vibrance: 0.12, blackLift: 0.6, midtoneGamma: 0.28
+    shadows: 0.1, highlights: -0.16, vibrance: 0.12, blackLift: 0.6, midtoneGamma: 0.28,
+    shadowTemperature: -0.12, midtoneTemperature: 0, highlightTemperature: 0.1
   } });
   const filters = buildReferenceStyleTreatmentFilters(treatment.recipe);
+  assert.match(filters.find((filter) => filter.startsWith("colorbalance=")), /rs=-.*rh=0\./, "real B2 fixture matrix uses independent cool-shadow/warm-highlight channels");
   const measured = {};
   try {
     for (const [name, filter] of Object.entries(fixtureFilters)) {

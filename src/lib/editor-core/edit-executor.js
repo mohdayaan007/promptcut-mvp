@@ -265,6 +265,32 @@ function buildColorBalanceFilter(operation, { preserveLightness = true } = {}) {
   return `colorbalance=rs=${redShadowHighlight.toFixed(4)}:gs=${green.toFixed(4)}:bs=${blueShadowHighlight.toFixed(4)}:rm=${redMidtone.toFixed(4)}:gm=${green.toFixed(4)}:bm=${blueMidtone.toFixed(4)}:rh=${redShadowHighlight.toFixed(4)}:gh=${green.toFixed(4)}:bh=${blueShadowHighlight.toFixed(4)}:pl=${preserveLightness ? 1 : 0}`;
 }
 
+// B2 alone can express a bounded color relationship by tonal band. This is
+// intentionally not part of B1's shared profile compiler: reference matching
+// owns these server-derived controls and no model supplies renderer syntax.
+function buildReferenceColorBalanceFilter(operation) {
+  const hasBandTemperature = ["shadowTemperature", "midtoneTemperature", "highlightTemperature"]
+    .some((field) => (operation[field] ?? 0) !== 0);
+  // Keep historic B2 v1/v2-global recipes byte-for-byte equivalent. The
+  // separate path activates only when the new tonal relationship is present.
+  if (!hasBandTemperature) {
+    return (operation.temperature ?? 0) !== 0 || (operation.tint ?? 0) !== 0
+      ? buildColorBalanceFilter(operation, { preserveLightness: false })
+      : null;
+  }
+  if (!hasBandTemperature && (operation.temperature ?? 0) === 0 && (operation.tint ?? 0) === 0) return null;
+  const temperature = perceptualAdjustmentMagnitude(operation.temperature || 0) * TEMPERATURE_MAX;
+  const tint = perceptualAdjustmentMagnitude(operation.tint || 0) * TINT_MAX;
+  const band = (field, base, maximum) => boundedColorBalance(
+    base + (perceptualAdjustmentMagnitude(operation[field] || 0) * maximum)
+  );
+  const shadow = band("shadowTemperature", temperature * TEMPERATURE_SHADOW_HIGHLIGHT_WEIGHT, 0.16);
+  const midtone = band("midtoneTemperature", temperature, 0.18);
+  const highlight = band("highlightTemperature", temperature * TEMPERATURE_SHADOW_HIGHLIGHT_WEIGHT, 0.16);
+  const green = boundedColorBalance(-tint);
+  return `colorbalance=rs=${shadow.toFixed(4)}:gs=${green.toFixed(4)}:bs=${(-shadow).toFixed(4)}:rm=${midtone.toFixed(4)}:gm=${green.toFixed(4)}:bm=${(-midtone).toFixed(4)}:rh=${highlight.toFixed(4)}:gh=${green.toFixed(4)}:bh=${(-highlight).toFixed(4)}:pl=0`;
+}
+
 // Converts bounded server-facing controls to perceptible, still bounded FFmpeg
 // filters. No duration-changing filters are used here, and normalized values
 // never reach FFmpeg directly as user-controlled filter syntax.
@@ -342,13 +368,11 @@ export function buildReferenceToneCurveFilter(recipe = {}, { protectColorbalance
  * `pl=1` path through buildStyleRecipeFilters().
  */
 export function buildReferenceStyleTreatmentFilters(recipe = {}) {
-  const canonical = createCanonicalVisualRecipe(recipe);
+  const canonical = createCanonicalReferenceStyleTreatment({ version: 2, recipe }).recipe;
   const filters = [];
   const eq = buildEqFilter(canonical, { includeMidtoneGamma: canonical.midtoneGamma !== 0 });
   const vibrance = buildVibranceFilter(canonical);
-  const colorbalance = (canonical.temperature !== 0 || canonical.tint !== 0)
-    ? buildColorBalanceFilter(canonical, { preserveLightness: false })
-    : null;
+  const colorbalance = buildReferenceColorBalanceFilter(canonical);
   // A reference treatment with no B2 primitive and no color balance is
   // mathematically identical to the established B1 recipe path.
   if (!colorbalance && canonical.blackLift === 0 && canonical.midtoneGamma === 0) {

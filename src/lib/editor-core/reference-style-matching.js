@@ -23,9 +23,10 @@ const HIGHLIGHT_CHARACTERS = Object.freeze(["natural", "soft", "flash"]);
 const BLACK_CHARACTERS = Object.freeze(["lifted", "neutral", "deep"]);
 const SATURATION_CHARACTERS = Object.freeze(["muted", "natural", "rich"]);
 const COLOR_SEPARATIONS = Object.freeze(["neutral", "rich_controlled", "editorial"]);
+export const TONAL_COLOR_BIASES = Object.freeze(["neutral", "warm_yellow", "warm_orange", "cool_blue", "cool_cyan", "green_mint"]);
 const OBSERVED_CONTEXTS = Object.freeze(["portrait", "lifestyle", "landscape", "architecture", "food", "product", "night", "mixed"]);
-const REFERENCE_ANALYSIS_VERSION = 1;
-const TARGET_ANALYSIS_VERSION = 1;
+const REFERENCE_ANALYSIS_VERSION = 2;
+const TARGET_ANALYSIS_VERSION = 2;
 
 function object(value) { return value && typeof value === "object" && !Array.isArray(value); }
 function invalidModelField(field) { throw new ReferenceStyleError("REFERENCE_INVALID_MODEL_RESPONSE", `Invalid ${field}`, field); }
@@ -39,7 +40,7 @@ function exactObject(value, fields, field) {
 }
 
 function signature(value, field, { target = false } = {}) {
-  const fields = ["context", ...(target ? ["coherent"] : []), "peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation", ...(target ? ["compatible"] : [])];
+  const fields = ["context", ...(target ? ["coherent"] : []), "peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "shadowColorBias", "midtoneColorBias", "highlightColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation", ...(target ? ["compatible"] : [])];
   const observed = exactObject(value, fields, field);
   const warmth = enumValue(observed.warmth, ["cool", "neutral", "warm"], `${field} warmth`);
   const saturation = enumValue(observed.saturation, LEVELS, `${field} saturation`);
@@ -73,6 +74,11 @@ function signature(value, field, { target = false } = {}) {
     warmth,
     ambientColorCharacter,
     dominantColorBias,
+    // Absent only for backwards-compatible historic observations. New model
+    // schemas require these fields so split-tone references remain explicit.
+    shadowColorBias: optionalEnumValue(observed.shadowColorBias, "neutral", TONAL_COLOR_BIASES, `${field} shadow color bias`),
+    midtoneColorBias: optionalEnumValue(observed.midtoneColorBias, "neutral", TONAL_COLOR_BIASES, `${field} midtone color bias`),
+    highlightColorBias: optionalEnumValue(observed.highlightColorBias, "neutral", TONAL_COLOR_BIASES, `${field} highlight color bias`),
     highlightCharacter: optionalEnumValue(observed.highlightCharacter, "natural", HIGHLIGHT_CHARACTERS, `${field} highlight character`),
     blackCharacter: optionalEnumValue(observed.blackCharacter, "neutral", BLACK_CHARACTERS, `${field} black character`),
     saturationCharacter,
@@ -127,6 +133,8 @@ const bounded = (value, min = -1, max = 1) => Math.max(min, Math.min(max, value)
 const rankedDifference = (reference, target, values) => values.indexOf(reference) - values.indexOf(target);
 const directionFromDifference = (difference) => difference > 0 ? "raise" : difference < 0 ? "lower" : "preserve";
 const directionalAmount = (difference, values) => intensity(Math.abs(difference) >= 2 ? "strong" : Math.abs(difference) === 1 ? "standard" : "subtle", values);
+const tonalBiasValue = Object.freeze({ neutral: 0, warm_yellow: 0.65, warm_orange: 1, cool_blue: -1, cool_cyan: -0.7, green_mint: -0.45 });
+const tonalDifference = (reference, target) => tonalBiasValue[reference] - tonalBiasValue[target];
 
 /**
  * Computes the bounded photographic intent from observed reference/target
@@ -145,6 +153,9 @@ export function deriveReferenceStyleDelta(analysis) {
   const highlightDifference = rankedDifference(reference.highlightCharacter, target.highlightCharacter, ["soft", "natural", "flash"]);
   const separationDifference = rankedDifference(reference.colorSeparation, target.colorSeparation, ["neutral", "rich_controlled", "editorial"]);
   const exposureDifference = rankedDifference(reference.exposure, target.exposure, LEVELS);
+  const shadowTemperatureDifference = tonalDifference(reference.shadowColorBias, target.shadowColorBias);
+  const midtoneTemperatureDifference = tonalDifference(reference.midtoneColorBias, target.midtoneColorBias);
+  const highlightTemperatureDifference = tonalDifference(reference.highlightColorBias, target.highlightColorBias);
   return Object.freeze({
     exposure: directionFromDifference(exposureDifference),
     exposureDifference,
@@ -157,6 +168,12 @@ export function deriveReferenceStyleDelta(analysis) {
     ambientColorCharacter: reference.ambientColorCharacter,
     dominantColorBias: reference.dominantColorBias,
     tint: directionFromDifference(dominantDifference),
+    shadowColorBias: reference.shadowColorBias,
+    midtoneColorBias: reference.midtoneColorBias,
+    highlightColorBias: reference.highlightColorBias,
+    shadowTemperatureDifference,
+    midtoneTemperatureDifference,
+    highlightTemperatureDifference,
     colorSeparation: reference.colorSeparation,
     colorDifference,
     blackDifference,
@@ -196,6 +213,8 @@ export function deriveReferenceStyleTreatment({ analysis, metrics }) {
   // so a human target can still inherit a reference's photographic character.
   const skinHueCap = skin ? 0.12 : 0.2;
   const skinTintCap = skin ? 0.055 : 0.1;
+  const tonalTemperatureCap = skin ? 0.1 : 0.18;
+  const tonalTemperature = (difference) => bounded(difference * 0.11, -tonalTemperatureCap, tonalTemperatureCap);
   const highlightSafeContrast = highToneRisk ? Math.min(contrastAmount, 0.1) : contrastAmount;
   const recipe = {
     brightness: direction(delta.exposure, brightHeadroom ? exposureAmount : Math.min(exposureAmount, 0.07)),
@@ -207,9 +226,12 @@ export function deriveReferenceStyleTreatment({ analysis, metrics }) {
     highlights: delta.highlights === "raise" && !limitedHighlights ? directionalAmount(delta.highlightDifference, [0.08, 0.15, 0.22]) : delta.highlights === "lower" ? -directionalAmount(delta.highlightDifference, [0.08, 0.15, 0.23]) : 0,
     vibrance: delta.color === "raise" ? (saturated ? Math.min(colorAuthority, 0.09) : colorAuthority + (editorial ? 0.1 : richColor ? 0.05 : 0)) : delta.color === "lower" ? -0.08 : editorial ? 0.08 : 0,
     blackLift: delta.blacks === "raise" ? directionalAmount(delta.blackDifference, [0.1, 0.18, 0.28]) : delta.blacks === "lower" && shadowHeadroom ? -directionalAmount(delta.blackDifference, [0.08, 0.14, 0.22]) : 0,
-    midtoneGamma: delta.exposure === "raise" && brightHeadroom ? directionalAmount(delta.exposureDifference, [0.06, 0.11, 0.16]) : delta.exposure === "lower" && shadowHeadroom ? -0.08 : delta.highlights === "raise" && brightHeadroom ? 0.07 : 0
+    midtoneGamma: delta.exposure === "raise" && brightHeadroom ? directionalAmount(delta.exposureDifference, [0.06, 0.11, 0.16]) : delta.exposure === "lower" && shadowHeadroom ? -0.08 : delta.highlights === "raise" && brightHeadroom ? 0.07 : 0,
+    shadowTemperature: tonalTemperature(delta.shadowTemperatureDifference),
+    midtoneTemperature: tonalTemperature(delta.midtoneTemperatureDifference),
+    highlightTemperature: tonalTemperature(delta.highlightTemperatureDifference)
   };
-  return createCanonicalReferenceStyleTreatment({ version: 1, recipe });
+  return createCanonicalReferenceStyleTreatment({ version: 2, recipe });
 }
 
 /** Log only bounded categories, server metrics, recipes and compiled filters. */
@@ -239,8 +261,8 @@ export function referenceStyleAnalysisSchema() {
   const level = { type: "string", enum: LEVELS };
   return { type: "object", properties: {
     safe: { type: "boolean" },
-    reference: { type: "object", properties: { context: { type: "string", enum: OBSERVED_CONTEXTS }, peopleOrSkin: { type: "boolean" }, exposure: level, saturation: level, warmth: { type: "string", enum: ["cool", "neutral", "warm"] }, ambientColorCharacter: { type: "string", enum: AMBIENT_COLOR_CHARACTERS }, dominantColorBias: { type: "string", enum: DOMINANT_COLOR_BIASES }, highlightCharacter: { type: "string", enum: HIGHLIGHT_CHARACTERS }, blackCharacter: { type: "string", enum: BLACK_CHARACTERS }, saturationCharacter: { type: "string", enum: SATURATION_CHARACTERS }, colorSeparation: { type: "string", enum: COLOR_SEPARATIONS } }, required: ["peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation"], additionalProperties: false },
-    target: { type: "object", properties: { context: { type: "string", enum: OBSERVED_CONTEXTS }, coherent: { type: "boolean" }, peopleOrSkin: { type: "boolean" }, exposure: level, saturation: level, warmth: { type: "string", enum: ["cool", "neutral", "warm"] }, ambientColorCharacter: { type: "string", enum: AMBIENT_COLOR_CHARACTERS }, dominantColorBias: { type: "string", enum: DOMINANT_COLOR_BIASES }, highlightCharacter: { type: "string", enum: HIGHLIGHT_CHARACTERS }, blackCharacter: { type: "string", enum: BLACK_CHARACTERS }, saturationCharacter: { type: "string", enum: SATURATION_CHARACTERS }, colorSeparation: { type: "string", enum: COLOR_SEPARATIONS }, compatible: { type: "boolean" } }, required: ["coherent", "peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation", "compatible"], additionalProperties: false }
+    reference: referenceSignatureSchema(),
+    target: referenceStyleTargetAnalysisSchema()
   }, required: ["safe", "reference", "target"], additionalProperties: false };
 }
 
@@ -249,9 +271,9 @@ function referenceSignatureSchema() {
   return { type: "object", properties: {
     context: { type: "string", enum: OBSERVED_CONTEXTS }, peopleOrSkin: { type: "boolean" }, exposure: level, saturation: level,
     warmth: { type: "string", enum: ["cool", "neutral", "warm"] }, ambientColorCharacter: { type: "string", enum: AMBIENT_COLOR_CHARACTERS },
-    dominantColorBias: { type: "string", enum: DOMINANT_COLOR_BIASES }, highlightCharacter: { type: "string", enum: HIGHLIGHT_CHARACTERS },
+    dominantColorBias: { type: "string", enum: DOMINANT_COLOR_BIASES }, shadowColorBias: { type: "string", enum: TONAL_COLOR_BIASES }, midtoneColorBias: { type: "string", enum: TONAL_COLOR_BIASES }, highlightColorBias: { type: "string", enum: TONAL_COLOR_BIASES }, highlightCharacter: { type: "string", enum: HIGHLIGHT_CHARACTERS },
     blackCharacter: { type: "string", enum: BLACK_CHARACTERS }, saturationCharacter: { type: "string", enum: SATURATION_CHARACTERS }, colorSeparation: { type: "string", enum: COLOR_SEPARATIONS }
-  }, required: ["peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation"], additionalProperties: false };
+  }, required: ["peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "shadowColorBias", "midtoneColorBias", "highlightColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation"], additionalProperties: false };
 }
 
 export function referenceStyleReferenceAnalysisSchema() {
@@ -262,7 +284,7 @@ export function referenceStyleTargetAnalysisSchema() {
   return { ...referenceSignatureSchema(), properties: {
     ...referenceSignatureSchema().properties,
     coherent: { type: "boolean" }, compatible: { type: "boolean" }
-  }, required: ["coherent", "peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation", "compatible"] };
+  }, required: ["coherent", "peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "shadowColorBias", "midtoneColorBias", "highlightColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation", "compatible"] };
 }
 
 export function referenceSafetySchema() {
@@ -272,7 +294,7 @@ export function referenceSafetySchema() {
 export function buildReferenceStyleReferenceAnalysisPrompt() {
   return [
     "Classify only the supplied reference image's bounded photographic signature. Do not create an edit plan or return numeric controls, filters, LUTs, paths, treatment advice, or prose.",
-    "Return only the schema: peopleOrSkin; exposure and saturation as low, medium, or high; warmth as cool, neutral, or warm; ambientColorCharacter (neutral, warm_golden, cool_mint, cool_clean); dominantColorBias (neutral, yellow_orange, green_mint, cyan_blue, mixed); highlightCharacter (natural, soft, flash); blackCharacter (lifted, neutral, deep); saturationCharacter (muted, natural, rich); and colorSeparation (neutral, rich_controlled, editorial).",
+    "Return only the schema: peopleOrSkin; exposure and saturation as low, medium, or high; warmth as cool, neutral, or warm; ambientColorCharacter (neutral, warm_golden, cool_mint, cool_clean); dominantColorBias (neutral, yellow_orange, green_mint, cyan_blue, mixed); shadowColorBias, midtoneColorBias, and highlightColorBias (neutral, warm_yellow, warm_orange, cool_blue, cool_cyan, green_mint); highlightCharacter (natural, soft, flash); blackCharacter (lifted, neutral, deep); saturationCharacter (muted, natural, rich); and colorSeparation (neutral, rich_controlled, editorial).",
     "This reference signature must describe the reference image alone. You receive no target and must not infer or recommend any transfer treatment."
   ].join("\n\n");
 }
@@ -280,7 +302,7 @@ export function buildReferenceStyleReferenceAnalysisPrompt() {
 export function buildReferenceStyleTargetAnalysisPrompt({ metrics }) {
   return [
     "Classify only the supplied target video frames' bounded photographic signature. Do not create an edit plan or return numeric controls, filters, LUTs, paths, treatment advice, or prose.",
-    "Return only the schema: coherent and compatible booleans; peopleOrSkin; exposure and saturation as low, medium, or high; warmth as cool, neutral, or warm; ambientColorCharacter (neutral, warm_golden, cool_mint, cool_clean); dominantColorBias (neutral, yellow_orange, green_mint, cyan_blue, mixed); highlightCharacter (natural, soft, flash); blackCharacter (lifted, neutral, deep); saturationCharacter (muted, natural, rich); and colorSeparation (neutral, rich_controlled, editorial).",
+    "Return only the schema: coherent and compatible booleans; peopleOrSkin; exposure and saturation as low, medium, or high; warmth as cool, neutral, or warm; ambientColorCharacter (neutral, warm_golden, cool_mint, cool_clean); dominantColorBias (neutral, yellow_orange, green_mint, cyan_blue, mixed); shadowColorBias, midtoneColorBias, and highlightColorBias (neutral, warm_yellow, warm_orange, cool_blue, cool_cyan, green_mint); highlightCharacter (natural, soft, flash); blackCharacter (lifted, neutral, deep); saturationCharacter (muted, natural, rich); and colorSeparation (neutral, rich_controlled, editorial).",
     "Describe only the target frames. You receive no reference and must not infer or recommend any transfer treatment. Compatibility is diagnostic-only and must not reject a target merely because another image might show a different subject class.",
     `Server-measured target metrics: ${JSON.stringify(metrics)}`
   ].join("\n\n");

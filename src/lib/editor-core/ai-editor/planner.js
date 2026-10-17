@@ -8,7 +8,7 @@ import { EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 import { reconcileCaptionOperation } from "@/lib/editor-core/caption-engine";
 import { reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { findVisualAdjustmentClause, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
-import { DelegatedStyleDecisionValidationError, hasInvalidExplicitStyleSource, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, mayRequestTextStyleInterpretation, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, reconcileStyleProfile, requiresDelegatedStyleJudgment, resolveStyleSourceScope, StyleIntentValidationError } from "@/lib/editor-core/style-intent";
+import { DelegatedStyleDecisionValidationError, extractStyleProfileIntent, hasInvalidExplicitStyleSource, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, mayRequestTextStyleInterpretation, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, reconcileStyleProfile, requiresDelegatedStyleJudgment, resolveStyleSourceScope, StyleIntentValidationError } from "@/lib/editor-core/style-intent";
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
 const FILE_PROCESSING_TIMEOUT_MS = 60_000;
@@ -18,6 +18,27 @@ const RETRY_BASE_DELAY_MS = 300;
 
 export class UnsupportedEditRequestError extends Error {}
 export class GeminiSourceUploadError extends UnsupportedEditRequestError {}
+
+function hasExplicitReferenceStyleConflict(prompt, sourceCatalog) {
+  return Boolean(
+    extractStyleProfileIntent(prompt, { sourceCatalog }) ||
+    /\b(?:black\s*(?:and|&)\s*white|grayscale|monochrome|dark\s+(?:and\s+)?moody)\b|\b(?:apply|use)\s+(?:the\s+)?(?:warm|cool)\s+(?:filter|look)\b/i.test(prompt)
+  );
+}
+
+/** B2 owns photographic styling; planner output may retain only non-style edits. */
+export function reconcileReferenceStylePlan(plan, { prompt = "", sourceCatalog = [] } = {}) {
+  if (hasExplicitReferenceStyleConflict(prompt, sourceCatalog)) {
+    throw new UnsupportedEditRequestError("Choose either the reference style or a named visual style.");
+  }
+  const competing = (plan?.operations || []).filter((operation) => ["style_profile", "color_grade", "visual_adjustment"].includes(operation?.type));
+  const operations = (plan?.operations || []).filter((operation) => !["style_profile", "color_grade", "visual_adjustment"].includes(operation?.type));
+  return {
+    ...plan,
+    operations,
+    referenceStyleReconciliation: Object.freeze({ suppressedVisualOperationTypes: Object.freeze([...new Set(competing.map((operation) => operation.type))]) })
+  };
+}
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
@@ -760,7 +781,7 @@ async function waitForActiveFile(ai, uploadedFile) {
   return file;
 }
 
-async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions, textStyleIntent = null }) {
+async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions, textStyleIntent = null, referenceStyleActive = false }) {
   const ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const uploadedFiles = [];
   const composition = extractMomentCompositionRequests(prompt, sourceCatalog);
@@ -893,7 +914,8 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
       model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
       contents: buildMultiSourceContents(activeSources, buildAiEditorPrompt({
         prompt, hasMultipleVideos, sourceCatalog, resolvedSemanticSources,
-        authoritativeMomentSequence: localizedMoments.length ? localizedMoments.map(({ sourceId, start, end }) => ({ sourceId, start, end })) : null
+        authoritativeMomentSequence: localizedMoments.length ? localizedMoments.map(({ sourceId, start, end }) => ({ sourceId, start, end })) : null,
+        referenceStyleActive
       })),
       config: {
         responseMimeType: "application/json",
@@ -920,6 +942,7 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
     plan = reconcileSemanticVisualAdjustmentSequence(plan, prompt, sourceCatalog, resolvedSemanticSources, {
       hasAuthoritativeMomentSequence: localizedMoments.length > 0
     });
+    if (referenceStyleActive) plan = reconcileReferenceStylePlan(plan, { prompt, sourceCatalog });
     if (!plan.operations.length) {
       if (requiresVisualUnderstanding) logSemanticFinalPlanMismatch(plan);
       throw new UnsupportedEditRequestError("This edit is not supported yet");
@@ -948,12 +971,15 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
   }
 }
 
-export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs, prompt, hasMultipleVideos = false, sourceCatalog = [], aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions }) {
+export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs, prompt, hasMultipleVideos = false, sourceCatalog = [], aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions, referenceStyleActive = false }) {
   const planningSources = sourceInputs?.length
     ? sourceInputs
     : inputPath ? [{ inputPath, inputMimeType, source: sourceCatalog[0] }] : [];
   const requiresVisualUnderstanding = requiresVisualSourceUnderstanding(prompt, sourceCatalog) || requiresMomentCompositionUnderstanding(prompt, sourceCatalog) || requiresVisualMomentUnderstanding(prompt, sourceCatalog) || requiresSpokenMomentUnderstanding(prompt, sourceCatalog);
-  const deterministicStyleRequest = isDeterministicallySafeStyleRequest(prompt, { sourceCatalog });
+  const deterministicStyleRequest = !referenceStyleActive && isDeterministicallySafeStyleRequest(prompt, { sourceCatalog });
+  if (referenceStyleActive && hasExplicitReferenceStyleConflict(prompt, sourceCatalog)) {
+    throw new UnsupportedEditRequestError("Choose either the reference style or a named visual style.");
+  }
   // Retain an explicitly named but absent source for the normal validator. Do
   // not hand it to Gemini, where an invalid deterministic reference could be
   // reinterpreted as an unrelated global style request.
@@ -987,7 +1013,7 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
   try {
     let textStyleIntent = null;
     let ai = aiClient;
-    if (mayRequestTextStyleInterpretation(prompt)) {
+    if (!referenceStyleActive && mayRequestTextStyleInterpretation(prompt)) {
       ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       textStyleIntent = await interpretTextStyle({ ai, prompt, retryOptions });
       if (textStyleIntent.mode === "semantic_style" && isServerSafeTextStyleOnlyRequest(prompt, textStyleIntent, { sourceCatalog }) && !requiresVisualUnderstanding) {
@@ -1004,7 +1030,7 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
       }
     }
     return {
-      ...(await createGeminiPlan({ sourceInputs: planningSources, prompt, hasMultipleVideos, sourceCatalog, aiClient: ai, retryOptions, scratchDirectory, executionController, transcriptionOptions, textStyleIntent })),
+      ...(await createGeminiPlan({ sourceInputs: planningSources, prompt, hasMultipleVideos, sourceCatalog, aiClient: ai, retryOptions, scratchDirectory, executionController, transcriptionOptions, textStyleIntent, referenceStyleActive })),
       source: "gemini"
     };
   } catch (error) {
