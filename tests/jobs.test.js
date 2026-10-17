@@ -32,7 +32,7 @@ import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL
 import { createCanonicalReferenceStyleTreatment, REFERENCE_STYLE_TREATMENT_VERSION } from "@/lib/editor-core/reference-style-treatment";
 import { measureReferenceRgbFrame, REFERENCE_FRAME_METRICS_VERSION, summarizeReferenceFrameMetrics } from "@/lib/editor-core/reference-style-metrics";
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
-import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, requestsReferenceStyleMatch, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
+import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, referenceStyleReferenceAnalysisSchema, referenceStyleTargetAnalysisSchema, requestsReferenceStyleMatch, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
 
 function canonicalStyleRecipe(recipe) {
   return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
@@ -626,6 +626,7 @@ test("B2A reference analysis contract defaults enrichment but fails closed on sa
   let generated = 0;
   const productionObservationResponse = structuredClone(complete);
   delete productionObservationResponse.treatment;
+  const modelRequests = [];
   const aiClient = {
     files: {
       upload: async () => {
@@ -636,7 +637,11 @@ test("B2A reference analysis contract defaults enrichment but fails closed on sa
       delete: async () => {}
     },
     models: {
-      generateContent: async () => ({ text: JSON.stringify(generated++ === 0 ? { safe: true } : productionObservationResponse) })
+      generateContent: async (request) => {
+        modelRequests.push(request);
+        const response = generated++ === 0 ? { safe: true } : generated === 2 ? productionObservationResponse.reference : productionObservationResponse.target;
+        return { text: JSON.stringify(response) };
+      }
     }
   };
   const result = await analyzeReferenceStyle({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", targetFrames: [{ imagePath: "/private/frame.jpg" }], metrics, aiClient });
@@ -646,6 +651,9 @@ test("B2A reference analysis contract defaults enrichment but fails closed on sa
   assert.doesNotThrow(() => deriveReferenceStyleTreatment({ analysis: result.analysis, metrics }), "normalized production analysis reaches server delta and canonical treatment");
   assert.ok(result.treatment.recipe.contrast > 0, "mocked ordinary photo path reaches canonical treatment");
   assert.equal(uploaded.length, 2, "reference and target frame are reused only as Gemini scratch files");
+  assert.equal(modelRequests.length, 3, "safety, reference, and target classification are distinct calls");
+  assert.ok(modelRequests[1].contents.includes("REFERENCE IMAGE") && !modelRequests[1].contents.some((part) => typeof part === "string" && part.startsWith("TARGET FRAME")), "reference classification cannot receive target frames");
+  assert.ok(modelRequests[2].contents.some((part) => typeof part === "string" && part.startsWith("TARGET FRAME")) && !modelRequests[2].contents.includes("REFERENCE IMAGE"), "target classification cannot receive the reference");
 
   const failureDiagnostic = createReferenceStyleFailureDiagnostic({
     jobId: "job-safe",
@@ -658,6 +666,46 @@ test("B2A reference analysis contract defaults enrichment but fails closed on sa
     analyzeReferenceStyle({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", targetFrames: [], metrics, aiClient: failedAiClient }),
     (error) => error instanceof ReferenceStyleError && error.reason === "REFERENCE_MODEL_REQUEST_FAILED"
   );
+});
+
+test("B2A reference classification is structurally invariant across target contexts", async () => {
+  const warmReference = { context: "architecture", peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: "warm", ambientColorCharacter: "warm_golden", dominantColorBias: "yellow_orange", highlightCharacter: "soft", blackCharacter: "deep", saturationCharacter: "rich", colorSeparation: "editorial" };
+  const coolReference = { ...warmReference, warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint" };
+  const baseTarget = { coherent: true, peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "natural", colorSeparation: "neutral", compatible: true };
+  const metrics = { lumaP05: 0.1, lumaP50: 0.48, lumaP95: 0.78, lumaP99: 0.84, nearBlackFraction: 0.01, nearWhiteFraction: 0, saturationIndex: 0.2 };
+  const run = async ({ reference, target }) => {
+    let call = 0;
+    const requests = [];
+    const aiClient = {
+      files: { upload: async (_, index = 0) => ({ name: `file-${Math.random()}`, uri: `gemini://private-${index}`, mimeType: "image/jpeg" }), delete: async () => {} },
+      models: { generateContent: async (request) => {
+        requests.push(request);
+        call += 1;
+        return { text: JSON.stringify(call === 1 ? { safe: true } : call === 2 ? reference : target) };
+      } }
+    };
+    const result = await analyzeReferenceStyle({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", targetFrames: [{ imagePath: "/private/frame.jpg" }], metrics, aiClient });
+    return { result, requests };
+  };
+  const human = await run({ reference: warmReference, target: { ...baseTarget, context: "portrait", peopleOrSkin: true } });
+  const landscape = await run({ reference: warmReference, target: { ...baseTarget, context: "landscape" } });
+  const food = await run({ reference: warmReference, target: { ...baseTarget, context: "food" } });
+  assert.deepEqual(human.result.analysis.reference, landscape.result.analysis.reference);
+  assert.deepEqual(human.result.analysis.reference, food.result.analysis.reference);
+  assert.notDeepEqual(human.result.analysis.target, landscape.result.analysis.target, "human and landscape retain independently observed target signatures");
+  assert.ok(human.result.treatment.recipe.temperature > 0 && landscape.result.treatment.recipe.temperature > 0, "same warm signature remains warm for human and landscape targets");
+  const coolHuman = await run({ reference: coolReference, target: { ...baseTarget, context: "portrait", peopleOrSkin: true } });
+  const coolLandscape = await run({ reference: coolReference, target: { ...baseTarget, context: "landscape" } });
+  assert.deepEqual(coolHuman.result.analysis.reference, coolLandscape.result.analysis.reference);
+  assert.ok(coolHuman.result.treatment.recipe.temperature < 0 && coolLandscape.result.treatment.recipe.temperature < 0, "same cool/mint signature remains cool for human and landscape targets");
+  for (const { requests } of [human, landscape, food, coolHuman, coolLandscape]) {
+    assert.equal(requests[1].config.temperature, 0, "reference classification uses deterministic structured generation");
+    assert.equal(requests[2].config.temperature, 0, "target classification uses deterministic structured generation");
+    assert.ok(!requests[1].contents.some((part) => typeof part === "string" && part.startsWith("TARGET FRAME")), "reference request has no target input");
+    assert.ok(!requests[2].contents.includes("REFERENCE IMAGE"), "target request has no reference input");
+  }
+  assert.equal(referenceStyleReferenceAnalysisSchema().required.includes("ambientColorCharacter"), true);
+  assert.equal(referenceStyleTargetAnalysisSchema().required.includes("coherent"), true);
 });
 
 test("B2A normalized analysis omits absent legacy treatment and remains validator-idempotent", () => {
@@ -722,7 +770,7 @@ test("B2A derives photographic direction from bounded signatures, not model trea
   assert.notDeepEqual(cool, warm, "clearly distinct reference signatures cannot collapse to one recipe");
 
   const diagnostic = createReferenceStyleDiagnostic({ jobId: "job-safe", analysis: analysis({ reference: { warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint" } }), metrics, treatment: { version: 1, recipe: cool } });
-  assert.deepEqual(Object.keys(diagnostic).sort(), ["derivedDelta", "filters", "finalTreatmentIntent", "jobId", "metrics", "recipe", "referenceSignature", "targetSignature"]);
+  assert.deepEqual(Object.keys(diagnostic).sort(), ["derivedDelta", "filters", "finalTreatmentIntent", "jobId", "metrics", "recipe", "referenceAnalysisVersion", "referenceSignature", "targetAnalysisVersion", "targetSignature"]);
   assert.equal(diagnostic.derivedDelta.warmth, "lower");
   assert.doesNotMatch(JSON.stringify(diagnostic), /uri|path|secret|token|https?:/i);
 });

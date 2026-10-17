@@ -24,6 +24,8 @@ const BLACK_CHARACTERS = Object.freeze(["lifted", "neutral", "deep"]);
 const SATURATION_CHARACTERS = Object.freeze(["muted", "natural", "rich"]);
 const COLOR_SEPARATIONS = Object.freeze(["neutral", "rich_controlled", "editorial"]);
 const OBSERVED_CONTEXTS = Object.freeze(["portrait", "lifestyle", "landscape", "architecture", "food", "product", "night", "mixed"]);
+const REFERENCE_ANALYSIS_VERSION = 1;
+const TARGET_ANALYSIS_VERSION = 1;
 
 function object(value) { return value && typeof value === "object" && !Array.isArray(value); }
 function invalidModelField(field) { throw new ReferenceStyleError("REFERENCE_INVALID_MODEL_RESPONSE", `Invalid ${field}`, field); }
@@ -81,13 +83,21 @@ function signature(value, field, { target = false } = {}) {
   });
 }
 
+export function validateReferenceStyleReferenceSignature(value) {
+  return signature(value, "reference");
+}
+
+export function validateReferenceStyleTargetSignature(value) {
+  return signature(value, "target", { target: true });
+}
+
 /** Strictly validates bounded categorical facts; model prose never reaches FFmpeg. */
 export function validateReferenceStyleAnalysis(value) {
   exactObject(value, ["safe", "reference", "target", "treatment"], "analysis");
   if (typeof value.safe !== "boolean") invalidModelField("safe");
   if (!value.safe) throw new ReferenceStyleError("REFERENCE_SAFETY_REJECTED", REFERENCE_STYLE_SAFE_ERROR);
-  const reference = signature(value.reference, "reference");
-  const target = signature(value.target, "target", { target: true });
+  const reference = validateReferenceStyleReferenceSignature(value.reference);
+  const target = validateReferenceStyleTargetSignature(value.target);
   // `treatment` is accepted only for compatibility with previously mocked
   // responses. It is never model authority; production schema requests omit it.
   const treatment = value.treatment === undefined ? undefined : exactObject(value.treatment, ["exposure", "exposureIntensity", "contrast", "contrastIntensity", "blacks", "blackIntensity", "highlights", "highlightIntensity", "color", "colorIntensity", "warmth", "warmthIntensity", "ambientColorCharacter", "highlightCharacter", "colorSeparation", "mood"], "treatment");
@@ -207,7 +217,7 @@ export function createReferenceStyleDiagnostic({ jobId, analysis, metrics, treat
   const safe = validateReferenceStyleAnalysis(analysis);
   const canonical = createCanonicalReferenceStyleTreatment(treatment);
   const derivedDelta = deriveReferenceStyleDelta(safe);
-  return Object.freeze({ jobId, referenceSignature: safe.reference, targetSignature: safe.target, derivedDelta, finalTreatmentIntent: derivedDelta, metrics, recipe: canonical.recipe, filters: buildReferenceStyleTreatmentFilters(canonical.recipe) });
+  return Object.freeze({ jobId, referenceAnalysisVersion: REFERENCE_ANALYSIS_VERSION, targetAnalysisVersion: TARGET_ANALYSIS_VERSION, referenceSignature: safe.reference, targetSignature: safe.target, derivedDelta, finalTreatmentIntent: derivedDelta, metrics, recipe: canonical.recipe, filters: buildReferenceStyleTreatmentFilters(canonical.recipe) });
 }
 
 /** Safe worker diagnostic: it intentionally drops model text and media metadata. */
@@ -234,16 +244,44 @@ export function referenceStyleAnalysisSchema() {
   }, required: ["safe", "reference", "target"], additionalProperties: false };
 }
 
+function referenceSignatureSchema() {
+  const level = { type: "string", enum: LEVELS };
+  return { type: "object", properties: {
+    context: { type: "string", enum: OBSERVED_CONTEXTS }, peopleOrSkin: { type: "boolean" }, exposure: level, saturation: level,
+    warmth: { type: "string", enum: ["cool", "neutral", "warm"] }, ambientColorCharacter: { type: "string", enum: AMBIENT_COLOR_CHARACTERS },
+    dominantColorBias: { type: "string", enum: DOMINANT_COLOR_BIASES }, highlightCharacter: { type: "string", enum: HIGHLIGHT_CHARACTERS },
+    blackCharacter: { type: "string", enum: BLACK_CHARACTERS }, saturationCharacter: { type: "string", enum: SATURATION_CHARACTERS }, colorSeparation: { type: "string", enum: COLOR_SEPARATIONS }
+  }, required: ["peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation"], additionalProperties: false };
+}
+
+export function referenceStyleReferenceAnalysisSchema() {
+  return referenceSignatureSchema();
+}
+
+export function referenceStyleTargetAnalysisSchema() {
+  return { ...referenceSignatureSchema(), properties: {
+    ...referenceSignatureSchema().properties,
+    coherent: { type: "boolean" }, compatible: { type: "boolean" }
+  }, required: ["coherent", "peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation", "compatible"] };
+}
+
 export function referenceSafetySchema() {
   return { type: "object", properties: { safe: { type: "boolean" } }, required: ["safe"], additionalProperties: false };
 }
 
-export function buildReferenceStyleAnalysisPrompt({ metrics }) {
+export function buildReferenceStyleReferenceAnalysisPrompt() {
   return [
-    "You assess whether a supplied reference image can safely guide photographic color treatment for supplied target video frames. Do not create an edit plan or return numeric controls, filters, LUTs, paths, or prose.",
-    "Reject only clearly high-risk explicit sexual content, sexual content involving minors, sexual violence, or extreme graphic gore. Ordinary portraits, fashion, swimwear, kissing, and lifestyle scenes are safe.",
-    "Return only the schema. Required reference and target facts: peopleOrSkin; exposure and saturation as low, medium, or high; warmth as cool, neutral, or warm; ambientColorCharacter (neutral, warm_golden, cool_mint, cool_clean); dominantColorBias (neutral, yellow_orange, green_mint, cyan_blue, mixed); highlightCharacter (natural, soft, flash); blackCharacter (lifted, neutral, deep); saturationCharacter (muted, natural, rich); and colorSeparation (neutral, rich_controlled, editorial). Target coherent and compatible are required diagnostic booleans. Do not return treatment recommendations: the server derives all final treatment direction from the reference-versus-target facts.",
-    "Describe photographic facts, not subject similarity. A portrait, architecture, landscape, food, or product reference can safely guide tone and color for another subject class. Do not reject solely because reference and target contents differ. Never copy reference objects into the target. Do not return numeric controls, filters, or prose.",
+    "Classify only the supplied reference image's bounded photographic signature. Do not create an edit plan or return numeric controls, filters, LUTs, paths, treatment advice, or prose.",
+    "Return only the schema: peopleOrSkin; exposure and saturation as low, medium, or high; warmth as cool, neutral, or warm; ambientColorCharacter (neutral, warm_golden, cool_mint, cool_clean); dominantColorBias (neutral, yellow_orange, green_mint, cyan_blue, mixed); highlightCharacter (natural, soft, flash); blackCharacter (lifted, neutral, deep); saturationCharacter (muted, natural, rich); and colorSeparation (neutral, rich_controlled, editorial).",
+    "This reference signature must describe the reference image alone. You receive no target and must not infer or recommend any transfer treatment."
+  ].join("\n\n");
+}
+
+export function buildReferenceStyleTargetAnalysisPrompt({ metrics }) {
+  return [
+    "Classify only the supplied target video frames' bounded photographic signature. Do not create an edit plan or return numeric controls, filters, LUTs, paths, treatment advice, or prose.",
+    "Return only the schema: coherent and compatible booleans; peopleOrSkin; exposure and saturation as low, medium, or high; warmth as cool, neutral, or warm; ambientColorCharacter (neutral, warm_golden, cool_mint, cool_clean); dominantColorBias (neutral, yellow_orange, green_mint, cyan_blue, mixed); highlightCharacter (natural, soft, flash); blackCharacter (lifted, neutral, deep); saturationCharacter (muted, natural, rich); and colorSeparation (neutral, rich_controlled, editorial).",
+    "Describe only the target frames. You receive no reference and must not infer or recommend any transfer treatment. Compatibility is diagnostic-only and must not reject a target merely because another image might show a different subject class.",
     `Server-measured target metrics: ${JSON.stringify(metrics)}`
   ].join("\n\n");
 }
@@ -279,17 +317,25 @@ export async function analyzeReferenceStyle({ referencePath, referenceMimeType, 
       throw new ReferenceStyleError("REFERENCE_INVALID_MODEL_RESPONSE", "Invalid reference safety response", "safety");
     }
     if (!safety.safe) throw new ReferenceStyleError("REFERENCE_SAFETY_REJECTED", REFERENCE_STYLE_SAFE_ERROR);
+    let referenceResponse;
+    try {
+      referenceResponse = await generate(ai, { model: process.env.GEMINI_MODEL || "gemini-3.6-flash", contents: ["REFERENCE IMAGE", createPartFromUri(reference.uri, reference.mimeType || referenceMimeType), buildReferenceStyleReferenceAnalysisPrompt()], config: { temperature: 0, responseMimeType: "application/json", responseJsonSchema: referenceStyleReferenceAnalysisSchema() } });
+    } catch { throw new ReferenceStyleError("REFERENCE_MODEL_REQUEST_FAILED"); }
     const targets = [];
     for (const frame of targetFrames) {
       const uploadedFrame = await ai.files.upload({ file: frame.imagePath, config: { mimeType: "image/jpeg" } });
       uploaded.push(uploadedFrame); targets.push(uploadedFrame);
     }
-    let response;
+    let targetResponse;
     try {
-      response = await generate(ai, { model: process.env.GEMINI_MODEL || "gemini-3.6-flash", contents: ["REFERENCE IMAGE", createPartFromUri(reference.uri, reference.mimeType || referenceMimeType), ...targets.flatMap((file, index) => [`TARGET FRAME ${index + 1}`, createPartFromUri(file.uri, file.mimeType || "image/jpeg")]), buildReferenceStyleAnalysisPrompt({ metrics })], config: { responseMimeType: "application/json", responseJsonSchema: referenceStyleAnalysisSchema() } });
+      targetResponse = await generate(ai, { model: process.env.GEMINI_MODEL || "gemini-3.6-flash", contents: [...targets.flatMap((file, index) => [`TARGET FRAME ${index + 1}`, createPartFromUri(file.uri, file.mimeType || "image/jpeg")]), buildReferenceStyleTargetAnalysisPrompt({ metrics })], config: { temperature: 0, responseMimeType: "application/json", responseJsonSchema: referenceStyleTargetAnalysisSchema() } });
     } catch { throw new ReferenceStyleError("REFERENCE_MODEL_REQUEST_FAILED"); }
     try {
-      const analysis = validateReferenceStyleAnalysis(JSON.parse(response.text || ""));
+      const analysis = validateReferenceStyleAnalysis({
+        safe: true,
+        reference: validateReferenceStyleReferenceSignature(JSON.parse(referenceResponse.text || "")),
+        target: validateReferenceStyleTargetSignature(JSON.parse(targetResponse.text || ""))
+      });
       return { analysis, treatment: deriveReferenceStyleTreatment({ analysis, metrics }) };
     }
     catch (error) { if (error instanceof ReferenceStyleError) throw error; throw new ReferenceStyleError("REFERENCE_INVALID_MODEL_RESPONSE"); }
