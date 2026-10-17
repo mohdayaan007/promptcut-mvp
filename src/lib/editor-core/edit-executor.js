@@ -247,7 +247,7 @@ function buildEqFilter(operation, { includeMidtoneGamma = false } = {}) {
   return eq.length ? `eq=${eq.join(":")}` : null;
 }
 
-function buildColorBalanceFilter(operation) {
+function buildColorBalanceFilter(operation, { preserveLightness = true } = {}) {
   if (operation.temperature === undefined && operation.tint === undefined) return null;
   const brightnessAndPositiveContrast = operation.brightness > 0 && operation.contrast > 0;
   const temperatureHeadroom = brightnessAndPositiveContrast && operation.temperature !== undefined
@@ -262,7 +262,7 @@ function buildColorBalanceFilter(operation) {
   const green = boundedColorBalance(-tint);
   const blueShadowHighlight = boundedColorBalance(-temperature * TEMPERATURE_SHADOW_HIGHLIGHT_WEIGHT);
   const blueMidtone = boundedColorBalance(-temperature);
-  return `colorbalance=rs=${redShadowHighlight.toFixed(4)}:gs=${green.toFixed(4)}:bs=${blueShadowHighlight.toFixed(4)}:rm=${redMidtone.toFixed(4)}:gm=${green.toFixed(4)}:bm=${blueMidtone.toFixed(4)}:rh=${redShadowHighlight.toFixed(4)}:gh=${green.toFixed(4)}:bh=${blueShadowHighlight.toFixed(4)}:pl=1`;
+  return `colorbalance=rs=${redShadowHighlight.toFixed(4)}:gs=${green.toFixed(4)}:bs=${blueShadowHighlight.toFixed(4)}:rm=${redMidtone.toFixed(4)}:gm=${green.toFixed(4)}:bm=${blueMidtone.toFixed(4)}:rh=${redShadowHighlight.toFixed(4)}:gh=${green.toFixed(4)}:bh=${blueShadowHighlight.toFixed(4)}:pl=${preserveLightness ? 1 : 0}`;
 }
 
 // Converts bounded server-facing controls to perceptible, still bounded FFmpeg
@@ -315,38 +315,50 @@ export function buildReferenceToneCurvePoints(recipe = {}) {
   return Object.freeze({ blackPoint, shadowPoint, highlightPoint });
 }
 
-export function buildReferenceToneCurveFilter(recipe = {}) {
+export function buildReferenceToneCurveFilter(recipe = {}, { protectColorbalanceHighlights = false } = {}) {
   const blackLift = boundedStylePrimitive(recipe.blackLift, "blackLift");
-  if (blackLift === 0) return buildToneCurveFilter(recipe);
-  const { blackPoint, shadowPoint, highlightPoint } = buildReferenceToneCurvePoints(recipe);
-  return `curves=master='0/${blackPoint.toFixed(4)} 0.25/${shadowPoint.toFixed(4)} 0.75/${highlightPoint.toFixed(4)} 1/1'`;
+  if (blackLift === 0 && !protectColorbalanceHighlights) return buildToneCurveFilter(recipe);
+  const { blackPoint, shadowPoint, highlightPoint } = blackLift === 0
+    ? { blackPoint: 0, ...buildToneCurvePoints(recipe) }
+    : buildReferenceToneCurvePoints(recipe);
+  // Apply a small endpoint roll-off only after B2's non-lightness-preserving
+  // color balance. It protects bright practicals and facial highlights from
+  // the color transform without reducing the treatment's midtone authority.
+  const endpoint = protectColorbalanceHighlights ? 0.98 : 1;
+  return `curves=master='0/${blackPoint.toFixed(4)} 0.25/${shadowPoint.toFixed(4)} 0.75/${highlightPoint.toFixed(4)} 1/${endpoint.toFixed(4)}'`;
 }
 
 /**
  * B2 custom treatments intentionally use their own stable compiler order.
- * EQ (including gamma) shapes the broad exposure/midtone response first;
- * the monotonic curve then protects black/highlight anchors before selective
- * color and color balance. Existing B1 profile compilation is not reordered.
+ * EQ (including gamma) shapes the broad exposure/midtone response first.
+ * Selective color and color balance follow, then the monotonic curve is last
+ * so its black/highlight anchors protect the final chroma-adjusted image.
+ * Existing B1 profile compilation is not reordered.
+ *
+ * `colorbalance`'s preserve-lightness mode can collapse high-chroma skin into
+ * grey after this particular EQ → curve → vibrance sequence. Reference
+ * treatment therefore keeps the full bounded color authority but disables
+ * that nonlinear lightness-preservation branch. B1 remains on its historical
+ * `pl=1` path through buildStyleRecipeFilters().
  */
 export function buildReferenceStyleTreatmentFilters(recipe = {}) {
   const canonical = createCanonicalVisualRecipe(recipe);
-  // Preserve exact historical B1 filter order and strings for any recipe that
-  // does not activate either new B2 primitive. This also makes neutral B2
-  // treatments a true no-regression bridge during the staged rollout.
-  if (canonical.blackLift === 0 && canonical.midtoneGamma === 0) {
-    return buildStyleRecipeFilters(canonical);
-  }
   const filters = [];
-  const eq = buildEqFilter(canonical, { includeMidtoneGamma: true });
-  const toneCurve = buildReferenceToneCurveFilter(canonical);
+  const eq = buildEqFilter(canonical, { includeMidtoneGamma: canonical.midtoneGamma !== 0 });
   const vibrance = buildVibranceFilter(canonical);
   const colorbalance = (canonical.temperature !== 0 || canonical.tint !== 0)
-    ? buildColorBalanceFilter(canonical)
+    ? buildColorBalanceFilter(canonical, { preserveLightness: false })
     : null;
+  // A reference treatment with no B2 primitive and no color balance is
+  // mathematically identical to the established B1 recipe path.
+  if (!colorbalance && canonical.blackLift === 0 && canonical.midtoneGamma === 0) {
+    return buildStyleRecipeFilters(canonical);
+  }
+  const toneCurve = buildReferenceToneCurveFilter(canonical, { protectColorbalanceHighlights: Boolean(colorbalance) });
   if (eq) filters.push(eq);
-  if (toneCurve) filters.push(toneCurve);
   if (vibrance) filters.push(vibrance);
   if (colorbalance) filters.push(colorbalance);
+  if (toneCurve) filters.push(toneCurve);
   return filters;
 }
 

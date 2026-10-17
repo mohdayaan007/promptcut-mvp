@@ -463,9 +463,9 @@ test("B2 Stage 0 canonical reference treatments add bounded black and midtone co
   });
   assert.deepEqual(buildReferenceStyleTreatmentFilters(treatment.recipe), [
     "eq=brightness=0.0866:contrast=1.1775:saturation=1.1466:gamma=1.1142",
-    "curves=master='0/0.0349 0.25/0.2861 0.75/0.7211 1/1'",
     "vibrance=intensity=0.1803:rbal=1:gbal=1:bbal=1:alternate=0",
-    "colorbalance=rs=0.0390:gs=0.0309:bs=-0.0390:rm=0.0520:gm=0.0309:bm=-0.0520:rh=0.0390:gh=0.0309:bh=-0.0390:pl=1"
+    "colorbalance=rs=0.0390:gs=0.0309:bs=-0.0390:rm=0.0520:gm=0.0309:bm=-0.0520:rh=0.0390:gh=0.0309:bh=-0.0390:pl=0",
+    "curves=master='0/0.0349 0.25/0.2861 0.75/0.7211 1/0.9800'"
   ]);
   assert.deepEqual(buildReferenceToneCurvePoints({ blackLift: 1 }), { blackPoint: 0.055, shadowPoint: 0.25, highlightPoint: 0.75 });
   assert.deepEqual(buildReferenceToneCurvePoints({ blackLift: -1 }), { blackPoint: 0, shadowPoint: 0.21, highlightPoint: 0.75 });
@@ -476,7 +476,19 @@ test("B2 Stage 0 canonical reference treatments add bounded black and midtone co
     const recipe = compileStyleProfile({ profileId, strength: "standard" }).recipe;
     assert.equal(recipe.blackLift, 0, `${profileId} leaves blackLift neutral`);
     assert.equal(recipe.midtoneGamma, 0, `${profileId} leaves midtoneGamma neutral`);
-    assert.deepEqual(buildReferenceStyleTreatmentFilters(recipe), buildStyleRecipeFilters(recipe), `${profileId} neutral B2 fields retain its legacy chain`);
+    const b1Filters = buildStyleRecipeFilters(recipe);
+    const b2Filters = buildReferenceStyleTreatmentFilters(recipe);
+    const hasReferenceColorBalance = recipe.temperature !== 0 || recipe.tint !== 0;
+    assert.deepEqual(
+      b2Filters,
+      hasReferenceColorBalance
+        ? [
+          ...b1Filters.filter((filter) => !filter.startsWith("curves=")).map((filter) => filter.startsWith("colorbalance=") ? filter.replace(":pl=1", ":pl=0") : filter),
+          buildReferenceToneCurveFilter(recipe, { protectColorbalanceHighlights: true })
+        ]
+        : b1Filters,
+      `${profileId} keeps B1's ordering and bounded values while B2 disables colorbalance's unsafe lightness-preservation branch`
+    );
   }
 });
 
@@ -3727,6 +3739,48 @@ test("B2A strong cool-mint editorial treatment remains photographic on skin high
     assert.ok(
       longestRepeatedRun(midtoneOutput) <= longestRepeatedRun(midtoneSource) + 5,
       "strong B2A processing does not materially posterize smooth-gradient midtones"
+    );
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test("B2A reference color balance avoids preserve-lightness chroma collapse on a textured face region", { timeout: 60_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-b2a-face-ablation-"));
+  const productionRecipe = {
+    brightness: 0.07, contrast: 0.10, saturation: 0.16, temperature: 0.12, tint: 0,
+    shadows: -0.05, highlights: 0, vibrance: 0.26, blackLift: -0.08, midtoneGamma: 0
+  };
+  try {
+    const source = path.join(tempDirectory, "textured-face-source.mp4");
+    const unsafeOutput = path.join(tempDirectory, "textured-face-unsafe.mp4");
+    const safeOutput = path.join(tempDirectory, "textured-face-safe.mp4");
+    await makeStyleFixture(
+      source,
+      "color=c=0x667175:size=320x180:rate=30,drawbox=x=95:y=22:w=130:h=138:color=0xc88761:t=fill,drawbox=x=112:y=47:w=38:h=40:color=0xe1aa82:t=fill,drawbox=x=163:y=47:w=40:h=40:color=0xe0a77e:t=fill,drawbox=x=123:y=80:w=28:h=28:color=0xf1c5a2:t=fill,drawbox=x=168:y=80:w=28:h=28:color=0xd69a70:t=fill,drawbox=x=140:y=113:w=38:h=25:color=0xaf7151:t=fill,drawgrid=width=5:height=5:thickness=1:color=0xc08060@0.08"
+    );
+    const safeFilters = buildReferenceStyleTreatmentFilters(productionRecipe);
+    const unsafeFilters = safeFilters.map((filter) => filter.startsWith("colorbalance=") ? filter.replace(":pl=0", ":pl=1") : filter);
+    assert.ok(safeFilters.find((filter) => filter.startsWith("colorbalance="))?.endsWith(":pl=0"), "B2 retains its full color-balance authority without preserve-lightness");
+    assert.ok(unsafeFilters.find((filter) => filter.startsWith("colorbalance="))?.endsWith(":pl=1"), "the ablation isolates only the former preserve-lightness branch");
+    await Promise.all([
+      renderStyleFixture(source, unsafeOutput, unsafeFilters),
+      renderStyleFixture(source, safeOutput, safeFilters)
+    ]);
+    const [before, unsafe, safe, safeProbe] = await Promise.all([
+      readRgbFrame(source), readRgbFrame(unsafeOutput), readRgbFrame(safeOutput), probeStyleFixture(safeOutput)
+    ]);
+    const cheek = { width: 320, height: 180, x: 122, y: 80, regionWidth: 28, regionHeight: 28 };
+    const beforeCheek = rgbRegionStats(before, cheek);
+    const unsafeCheek = rgbRegionStats(unsafe, cheek);
+    const safeCheek = rgbRegionStats(safe, cheek);
+    assert.ok(unsafeCheek.meanChroma < beforeCheek.meanChroma * 0.15, "the former pl=1 chain reproduces the localized grey/chroma-dead cheek failure");
+    assert.ok(safeCheek.meanChroma >= beforeCheek.meanChroma * 0.7, "the B2 chain retains local facial chroma rather than producing a grey patch");
+    assert.ok(safeCheek.meanLuma < 248, "the protected cheek retains usable highlight headroom");
+    assert.deepEqual(
+      { width: safeProbe.video.width, height: safeProbe.video.height, pixFmt: safeProbe.video.pix_fmt, hasAudio: safeProbe.hasAudio },
+      { width: 320, height: 180, pixFmt: "yuv420p", hasAudio: false },
+      "the B2 fix keeps the production-compatible delivery format"
     );
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });
