@@ -18,7 +18,10 @@ const DIRECTIONS = Object.freeze(["lower", "preserve", "raise"]);
 const LEVELS = Object.freeze(["low", "medium", "high"]);
 const INTENSITIES = Object.freeze(["subtle", "standard", "strong"]);
 const AMBIENT_COLOR_CHARACTERS = Object.freeze(["neutral", "warm_golden", "cool_mint", "cool_clean"]);
+const DOMINANT_COLOR_BIASES = Object.freeze(["neutral", "yellow_orange", "green_mint", "cyan_blue", "mixed"]);
 const HIGHLIGHT_CHARACTERS = Object.freeze(["natural", "soft", "flash"]);
+const BLACK_CHARACTERS = Object.freeze(["lifted", "neutral", "deep"]);
+const SATURATION_CHARACTERS = Object.freeze(["muted", "natural", "rich"]);
 const COLOR_SEPARATIONS = Object.freeze(["neutral", "rich_controlled", "editorial"]);
 const OBSERVED_CONTEXTS = Object.freeze(["portrait", "lifestyle", "landscape", "architecture", "food", "product", "night", "mixed"]);
 
@@ -33,21 +36,66 @@ function exactObject(value, fields, field) {
   return value;
 }
 
+function signature(value, field, { target = false } = {}) {
+  const fields = ["context", ...(target ? ["coherent"] : []), "peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation", ...(target ? ["compatible"] : [])];
+  const observed = exactObject(value, fields, field);
+  const warmth = enumValue(observed.warmth, ["cool", "neutral", "warm"], `${field} warmth`);
+  const saturation = enumValue(observed.saturation, LEVELS, `${field} saturation`);
+  // The signature fields below are deliberately optional for compatibility with
+  // already-issued model responses. Their conservative defaults never invent a
+  // treatment direction; future B2 signatures should provide them explicitly.
+  const ambientColorCharacter = optionalEnumValue(
+    observed.ambientColorCharacter,
+    warmth === "warm" ? "warm_golden" : warmth === "cool" ? "cool_clean" : "neutral",
+    AMBIENT_COLOR_CHARACTERS,
+    `${field} ambient color character`
+  );
+  const dominantColorBias = optionalEnumValue(
+    observed.dominantColorBias,
+    warmth === "warm" ? "yellow_orange" : warmth === "cool" ? "cyan_blue" : "neutral",
+    DOMINANT_COLOR_BIASES,
+    `${field} dominant color bias`
+  );
+  const saturationCharacter = optionalEnumValue(
+    observed.saturationCharacter,
+    saturation === "low" ? "muted" : saturation === "high" ? "rich" : "natural",
+    SATURATION_CHARACTERS,
+    `${field} saturation character`
+  );
+  return Object.freeze({
+    context: optionalEnumValue(observed.context, "mixed", OBSERVED_CONTEXTS, `${field} context`),
+    ...(target ? { coherent: booleanValue(observed.coherent, `${field} coherent`) } : {}),
+    peopleOrSkin: booleanValue(observed.peopleOrSkin, `${field} peopleOrSkin`),
+    exposure: enumValue(observed.exposure, LEVELS, `${field} exposure`),
+    saturation,
+    warmth,
+    ambientColorCharacter,
+    dominantColorBias,
+    highlightCharacter: optionalEnumValue(observed.highlightCharacter, "natural", HIGHLIGHT_CHARACTERS, `${field} highlight character`),
+    blackCharacter: optionalEnumValue(observed.blackCharacter, "neutral", BLACK_CHARACTERS, `${field} black character`),
+    saturationCharacter,
+    colorSeparation: optionalEnumValue(observed.colorSeparation, "neutral", COLOR_SEPARATIONS, `${field} color separation`),
+    // Content compatibility is diagnostic-only. A portrait reference can safely
+    // guide tone and color for architecture or landscape footage.
+    ...(target ? { compatible: booleanValue(observed.compatible, `${field} compatible`) } : {})
+  });
+}
+
 /** Strictly validates bounded categorical facts; model prose never reaches FFmpeg. */
 export function validateReferenceStyleAnalysis(value) {
   exactObject(value, ["safe", "reference", "target", "treatment"], "analysis");
   if (typeof value.safe !== "boolean") invalidModelField("safe");
   if (!value.safe) throw new ReferenceStyleError("REFERENCE_SAFETY_REJECTED", REFERENCE_STYLE_SAFE_ERROR);
-  const reference = exactObject(value.reference, ["context", "peopleOrSkin", "exposure", "saturation", "warmth"], "reference");
-  const target = exactObject(value.target, ["context", "coherent", "peopleOrSkin", "exposure", "saturation", "warmth", "compatible"], "target");
-  const treatment = exactObject(value.treatment, ["exposure", "exposureIntensity", "contrast", "contrastIntensity", "blacks", "blackIntensity", "highlights", "highlightIntensity", "color", "colorIntensity", "warmth", "warmthIntensity", "ambientColorCharacter", "highlightCharacter", "colorSeparation", "mood"], "treatment");
+  const reference = signature(value.reference, "reference");
+  const target = signature(value.target, "target", { target: true });
+  // `treatment` is accepted only for compatibility with previously mocked
+  // responses. It is never model authority; production schema requests omit it.
+  const treatment = value.treatment === undefined ? null : exactObject(value.treatment, ["exposure", "exposureIntensity", "contrast", "contrastIntensity", "blacks", "blackIntensity", "highlights", "highlightIntensity", "color", "colorIntensity", "warmth", "warmthIntensity", "ambientColorCharacter", "highlightCharacter", "colorSeparation", "mood"], "treatment");
   return Object.freeze({
     safe: true,
-    // Context is diagnostic-only. Its omission must not reject an otherwise
-    // safe treatment, so it resolves to the conservative "mixed" category.
-    reference: Object.freeze({ context: optionalEnumValue(reference.context, "mixed", OBSERVED_CONTEXTS, "reference context"), peopleOrSkin: booleanValue(reference.peopleOrSkin, "reference peopleOrSkin"), exposure: enumValue(reference.exposure, LEVELS, "reference exposure"), saturation: enumValue(reference.saturation, LEVELS, "reference saturation"), warmth: enumValue(reference.warmth, ["cool", "neutral", "warm"], "reference warmth") }),
-    target: Object.freeze({ context: optionalEnumValue(target.context, "mixed", OBSERVED_CONTEXTS, "target context"), coherent: booleanValue(target.coherent, "target coherent"), peopleOrSkin: booleanValue(target.peopleOrSkin, "target peopleOrSkin"), exposure: enumValue(target.exposure, LEVELS, "target exposure"), saturation: enumValue(target.saturation, LEVELS, "target saturation"), warmth: enumValue(target.warmth, ["cool", "neutral", "warm"], "target warmth"), compatible: booleanValue(target.compatible, "target compatible") }),
-    treatment: Object.freeze({
+    reference,
+    target,
+    treatment: treatment && Object.freeze({
       exposure: enumValue(treatment.exposure, DIRECTIONS, "treatment exposure"), exposureIntensity: optionalEnumValue(treatment.exposureIntensity, "standard", INTENSITIES, "treatment exposure intensity"),
       contrast: enumValue(treatment.contrast, DIRECTIONS, "treatment contrast"), contrastIntensity: optionalEnumValue(treatment.contrastIntensity, "standard", INTENSITIES, "treatment contrast intensity"),
       blacks: enumValue(treatment.blacks, DIRECTIONS, "treatment blacks"), blackIntensity: optionalEnumValue(treatment.blackIntensity, "standard", INTENSITIES, "treatment black intensity"),
@@ -66,12 +114,53 @@ const direction = (value, amount) => value === "raise" ? amount : value === "low
 const intensity = (value, values) => values[INTENSITIES.indexOf(value)] ?? values[1];
 const bounded = (value, min = -1, max = 1) => Math.max(min, Math.min(max, value));
 
+const rankedDifference = (reference, target, values) => values.indexOf(reference) - values.indexOf(target);
+const directionFromDifference = (difference) => difference > 0 ? "raise" : difference < 0 ? "lower" : "preserve";
+const directionalAmount = (difference, values) => intensity(Math.abs(difference) >= 2 ? "strong" : Math.abs(difference) === 1 ? "standard" : "subtle", values);
+
+/**
+ * Computes the bounded photographic intent from observed reference/target
+ * signatures. Model treatment language remains diagnostic-only and can never
+ * reverse a cool reference into a warm grade (or vice versa).
+ */
+export function deriveReferenceStyleDelta(analysis) {
+  const safe = validateReferenceStyleAnalysis(analysis);
+  const reference = safe.reference;
+  const target = safe.target;
+  const ambientDifference = rankedDifference(reference.ambientColorCharacter, target.ambientColorCharacter, ["cool_mint", "cool_clean", "neutral", "warm_golden"]);
+  const warmthDifference = ambientDifference || rankedDifference(reference.warmth, target.warmth, ["cool", "neutral", "warm"]);
+  const dominantDifference = rankedDifference(reference.dominantColorBias, target.dominantColorBias, ["cyan_blue", "green_mint", "neutral", "mixed", "yellow_orange"]);
+  const colorDifference = rankedDifference(reference.saturationCharacter, target.saturationCharacter, ["muted", "natural", "rich"]);
+  const blackDifference = rankedDifference(reference.blackCharacter, target.blackCharacter, ["deep", "neutral", "lifted"]);
+  const highlightDifference = rankedDifference(reference.highlightCharacter, target.highlightCharacter, ["soft", "natural", "flash"]);
+  const separationDifference = rankedDifference(reference.colorSeparation, target.colorSeparation, ["neutral", "rich_controlled", "editorial"]);
+  const exposureDifference = rankedDifference(reference.exposure, target.exposure, LEVELS);
+  return Object.freeze({
+    exposure: directionFromDifference(exposureDifference),
+    exposureDifference,
+    contrast: directionFromDifference(highlightDifference || separationDifference),
+    blacks: directionFromDifference(blackDifference),
+    highlights: directionFromDifference(highlightDifference),
+    color: directionFromDifference(colorDifference),
+    warmth: directionFromDifference(warmthDifference),
+    warmthDifference,
+    ambientColorCharacter: reference.ambientColorCharacter,
+    dominantColorBias: reference.dominantColorBias,
+    tint: directionFromDifference(dominantDifference),
+    colorSeparation: reference.colorSeparation,
+    colorDifference,
+    blackDifference,
+    highlightDifference,
+    separationDifference
+  });
+}
+
 /** Server-owned conservative mapping, with deterministic target headroom protection. */
 export function deriveReferenceStyleTreatment({ analysis, metrics }) {
   const safe = validateReferenceStyleAnalysis(analysis);
   if (!safe.target.coherent) throw new ReferenceStyleError("REFERENCE_TARGET_HETEROGENEOUS", REFERENCE_STYLE_COHERENCE_ERROR);
-  if (!safe.target.compatible) throw new ReferenceStyleError("REFERENCE_COMPATIBILITY_WEAK", "This reference is not a safe match for this video.");
   if (!object(metrics)) throw new ReferenceStyleError("REFERENCE_TREATMENT_DERIVATION_FAILED");
+  const delta = deriveReferenceStyleDelta(safe);
   // A strong combined exposure/contrast move can clip a warm skin highlight
   // well before code-white. p95 catches a broadly bright frame and p99 catches
   // small bright face/practical-light areas. This constrains only the
@@ -81,34 +170,34 @@ export function deriveReferenceStyleTreatment({ analysis, metrics }) {
   const brightHeadroom = metrics.lumaP95 < 0.91 && metrics.nearWhiteFraction < 0.03 && !highToneRisk;
   const limitedHighlights = metrics.lumaP95 >= 0.91 || metrics.nearWhiteFraction >= 0.03 || highToneRisk;
   const shadowHeadroom = metrics.lumaP05 > 0.035 && metrics.nearBlackFraction < 0.08;
-  const saturated = metrics.saturationIndex > 0.62 || safe.target.saturation === "high";
+  const saturated = metrics.saturationIndex > 0.62 || safe.target.saturationCharacter === "rich";
   const skin = safe.target.peopleOrSkin || safe.reference.peopleOrSkin;
-  const editorial = safe.treatment.colorSeparation === "editorial";
-  const richColor = safe.treatment.colorSeparation === "rich_controlled";
-  const exposureAmount = intensity(safe.treatment.exposureIntensity, [0.09, 0.17, 0.25]);
-  const contrastAmount = intensity(safe.treatment.contrastIntensity, [0.1, 0.19, 0.29]);
-  const colorAmount = intensity(safe.treatment.colorIntensity, [0.08, 0.16, 0.26]);
-  const colorAuthority = saturated ? Math.min(colorAmount, 0.11) : colorAmount;
-  const warmthAmount = intensity(safe.treatment.warmthIntensity, [0.07, 0.13, 0.2]);
-  const ambient = safe.treatment.ambientColorCharacter;
-  const ambientTemperature = ambient === "warm_golden" ? warmthAmount : ambient === "cool_mint" ? -warmthAmount : ambient === "cool_clean" ? -warmthAmount * 0.8 : safe.treatment.warmth === "warm" ? warmthAmount : safe.treatment.warmth === "cool" ? -warmthAmount : 0;
-  const ambientTint = ambient === "cool_mint" ? -intensity(safe.treatment.colorIntensity, [0.035, 0.065, 0.1]) : 0;
+  const editorial = delta.colorSeparation === "editorial";
+  const richColor = delta.colorSeparation === "rich_controlled";
+  const exposureAmount = directionalAmount(delta.exposureDifference, [0.08, 0.14, 0.2]);
+  const contrastAmount = directionalAmount(delta.highlightDifference || delta.separationDifference, [0.08, 0.14, 0.22]);
+  const colorAmount = directionalAmount(delta.colorDifference, [0.08, 0.14, 0.22]);
+  const colorAuthority = saturated && delta.color === "raise" ? Math.min(colorAmount, 0.11) : colorAmount;
+  const warmthAmount = directionalAmount(delta.warmthDifference, [0.07, 0.13, 0.18]);
+  const ambientTemperature = direction(delta.warmth, warmthAmount);
+  const tintAmount = delta.dominantColorBias === "green_mint" ? 0.065 : delta.dominantColorBias === "cyan_blue" || delta.dominantColorBias === "yellow_orange" ? 0.035 : 0;
+  const ambientTint = delta.dominantColorBias === "green_mint" || delta.dominantColorBias === "cyan_blue" ? -tintAmount : delta.dominantColorBias === "yellow_orange" ? tintAmount : 0;
   // Skin constrains only hue/chroma authority. Tonal structure remains available
   // so a human target can still inherit a reference's photographic character.
   const skinHueCap = skin ? 0.12 : 0.2;
   const skinTintCap = skin ? 0.055 : 0.1;
   const highlightSafeContrast = highToneRisk ? Math.min(contrastAmount, 0.1) : contrastAmount;
   const recipe = {
-    brightness: direction(safe.treatment.exposure, brightHeadroom ? exposureAmount : Math.min(exposureAmount, 0.07)),
-    contrast: direction(safe.treatment.contrast, highlightSafeContrast),
-    saturation: direction(safe.treatment.color, colorAuthority),
+    brightness: direction(delta.exposure, brightHeadroom ? exposureAmount : Math.min(exposureAmount, 0.07)),
+    contrast: direction(delta.contrast, highlightSafeContrast),
+    saturation: direction(delta.color, colorAuthority),
     temperature: bounded(ambientTemperature, -skinHueCap, skinHueCap),
     tint: bounded(ambientTint, -skinTintCap, skinTintCap),
-    shadows: safe.treatment.blacks === "raise" ? intensity(safe.treatment.blackIntensity, [0.07, 0.13, 0.2]) : safe.treatment.blacks === "lower" && shadowHeadroom ? -intensity(safe.treatment.blackIntensity, [0.05, 0.1, 0.16]) : 0,
-    highlights: safe.treatment.highlightCharacter === "flash" && !limitedHighlights ? intensity(safe.treatment.highlightIntensity, [0.08, 0.15, 0.22]) : safe.treatment.highlights === "lower" ? -intensity(safe.treatment.highlightIntensity, [0.08, 0.15, 0.23]) : safe.treatment.highlights === "raise" && brightHeadroom ? intensity(safe.treatment.highlightIntensity, [0.06, 0.11, 0.18]) : 0,
-    vibrance: safe.treatment.color === "raise" ? (saturated ? Math.min(colorAuthority, 0.09) : colorAuthority + (editorial ? 0.1 : richColor ? 0.05 : 0)) : safe.treatment.color === "lower" ? -0.08 : editorial ? 0.08 : 0,
-    blackLift: safe.treatment.blacks === "raise" ? intensity(safe.treatment.blackIntensity, [0.1, 0.18, 0.28]) : safe.treatment.blacks === "lower" && shadowHeadroom ? -intensity(safe.treatment.blackIntensity, [0.08, 0.14, 0.22]) : 0,
-    midtoneGamma: safe.treatment.exposure === "raise" && brightHeadroom ? intensity(safe.treatment.exposureIntensity, [0.06, 0.11, 0.16]) : safe.treatment.exposure === "lower" && shadowHeadroom ? -0.08 : safe.treatment.highlightCharacter === "flash" && brightHeadroom ? 0.07 : 0
+    shadows: delta.blacks === "raise" ? directionalAmount(delta.blackDifference, [0.07, 0.13, 0.2]) : delta.blacks === "lower" && shadowHeadroom ? -directionalAmount(delta.blackDifference, [0.05, 0.1, 0.16]) : 0,
+    highlights: delta.highlights === "raise" && !limitedHighlights ? directionalAmount(delta.highlightDifference, [0.08, 0.15, 0.22]) : delta.highlights === "lower" ? -directionalAmount(delta.highlightDifference, [0.08, 0.15, 0.23]) : 0,
+    vibrance: delta.color === "raise" ? (saturated ? Math.min(colorAuthority, 0.09) : colorAuthority + (editorial ? 0.1 : richColor ? 0.05 : 0)) : delta.color === "lower" ? -0.08 : editorial ? 0.08 : 0,
+    blackLift: delta.blacks === "raise" ? directionalAmount(delta.blackDifference, [0.1, 0.18, 0.28]) : delta.blacks === "lower" && shadowHeadroom ? -directionalAmount(delta.blackDifference, [0.08, 0.14, 0.22]) : 0,
+    midtoneGamma: delta.exposure === "raise" && brightHeadroom ? directionalAmount(delta.exposureDifference, [0.06, 0.11, 0.16]) : delta.exposure === "lower" && shadowHeadroom ? -0.08 : delta.highlights === "raise" && brightHeadroom ? 0.07 : 0
   };
   return createCanonicalReferenceStyleTreatment({ version: 1, recipe });
 }
@@ -117,7 +206,8 @@ export function deriveReferenceStyleTreatment({ analysis, metrics }) {
 export function createReferenceStyleDiagnostic({ jobId, analysis, metrics, treatment }) {
   const safe = validateReferenceStyleAnalysis(analysis);
   const canonical = createCanonicalReferenceStyleTreatment(treatment);
-  return Object.freeze({ jobId, reference: safe.reference, target: safe.target, treatmentIntent: safe.treatment, metrics, recipe: canonical.recipe, filters: buildReferenceStyleTreatmentFilters(canonical.recipe) });
+  const derivedDelta = deriveReferenceStyleDelta(safe);
+  return Object.freeze({ jobId, referenceSignature: safe.reference, targetSignature: safe.target, derivedDelta, finalTreatmentIntent: derivedDelta, metrics, recipe: canonical.recipe, filters: buildReferenceStyleTreatmentFilters(canonical.recipe) });
 }
 
 /** Safe worker diagnostic: it intentionally drops model text and media metadata. */
@@ -137,13 +227,11 @@ export function requestsReferenceStyleMatch(prompt = "", hasReference = false) {
 
 export function referenceStyleAnalysisSchema() {
   const level = { type: "string", enum: LEVELS };
-  const directionSchema = { type: "string", enum: DIRECTIONS };
   return { type: "object", properties: {
     safe: { type: "boolean" },
-    reference: { type: "object", properties: { context: { type: "string", enum: OBSERVED_CONTEXTS }, peopleOrSkin: { type: "boolean" }, exposure: level, saturation: level, warmth: { type: "string", enum: ["cool", "neutral", "warm"] } }, required: ["peopleOrSkin", "exposure", "saturation", "warmth"], additionalProperties: false },
-    target: { type: "object", properties: { context: { type: "string", enum: OBSERVED_CONTEXTS }, coherent: { type: "boolean" }, peopleOrSkin: { type: "boolean" }, exposure: level, saturation: level, warmth: { type: "string", enum: ["cool", "neutral", "warm"] }, compatible: { type: "boolean" } }, required: ["coherent", "peopleOrSkin", "exposure", "saturation", "warmth", "compatible"], additionalProperties: false },
-    treatment: { type: "object", properties: { exposure: directionSchema, exposureIntensity: { type: "string", enum: INTENSITIES }, contrast: directionSchema, contrastIntensity: { type: "string", enum: INTENSITIES }, blacks: directionSchema, blackIntensity: { type: "string", enum: INTENSITIES }, highlights: directionSchema, highlightIntensity: { type: "string", enum: INTENSITIES }, color: directionSchema, colorIntensity: { type: "string", enum: INTENSITIES }, warmth: { type: "string", enum: ["cool", "neutral", "warm"] }, warmthIntensity: { type: "string", enum: INTENSITIES }, ambientColorCharacter: { type: "string", enum: AMBIENT_COLOR_CHARACTERS }, highlightCharacter: { type: "string", enum: HIGHLIGHT_CHARACTERS }, colorSeparation: { type: "string", enum: COLOR_SEPARATIONS }, mood: { type: "string", enum: ["natural", "soft", "rich", "moody", "luminous"] } }, required: ["exposure", "contrast", "blacks", "highlights", "color", "warmth"], additionalProperties: false }
-  }, required: ["safe", "reference", "target", "treatment"], additionalProperties: false };
+    reference: { type: "object", properties: { context: { type: "string", enum: OBSERVED_CONTEXTS }, peopleOrSkin: { type: "boolean" }, exposure: level, saturation: level, warmth: { type: "string", enum: ["cool", "neutral", "warm"] }, ambientColorCharacter: { type: "string", enum: AMBIENT_COLOR_CHARACTERS }, dominantColorBias: { type: "string", enum: DOMINANT_COLOR_BIASES }, highlightCharacter: { type: "string", enum: HIGHLIGHT_CHARACTERS }, blackCharacter: { type: "string", enum: BLACK_CHARACTERS }, saturationCharacter: { type: "string", enum: SATURATION_CHARACTERS }, colorSeparation: { type: "string", enum: COLOR_SEPARATIONS } }, required: ["peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation"], additionalProperties: false },
+    target: { type: "object", properties: { context: { type: "string", enum: OBSERVED_CONTEXTS }, coherent: { type: "boolean" }, peopleOrSkin: { type: "boolean" }, exposure: level, saturation: level, warmth: { type: "string", enum: ["cool", "neutral", "warm"] }, ambientColorCharacter: { type: "string", enum: AMBIENT_COLOR_CHARACTERS }, dominantColorBias: { type: "string", enum: DOMINANT_COLOR_BIASES }, highlightCharacter: { type: "string", enum: HIGHLIGHT_CHARACTERS }, blackCharacter: { type: "string", enum: BLACK_CHARACTERS }, saturationCharacter: { type: "string", enum: SATURATION_CHARACTERS }, colorSeparation: { type: "string", enum: COLOR_SEPARATIONS }, compatible: { type: "boolean" } }, required: ["coherent", "peopleOrSkin", "exposure", "saturation", "warmth", "ambientColorCharacter", "dominantColorBias", "highlightCharacter", "blackCharacter", "saturationCharacter", "colorSeparation", "compatible"], additionalProperties: false }
+  }, required: ["safe", "reference", "target"], additionalProperties: false };
 }
 
 export function referenceSafetySchema() {
@@ -154,8 +242,8 @@ export function buildReferenceStyleAnalysisPrompt({ metrics }) {
   return [
     "You assess whether a supplied reference image can safely guide photographic color treatment for supplied target video frames. Do not create an edit plan or return numeric controls, filters, LUTs, paths, or prose.",
     "Reject only clearly high-risk explicit sexual content, sexual content involving minors, sexual violence, or extreme graphic gore. Ordinary portraits, fashion, swimwear, kissing, and lifestyle scenes are safe.",
-    "Return only the schema. Required facts: reference/target peopleOrSkin booleans; exposure and saturation as low, medium, or high; warmth as cool, neutral, or warm; target coherent and compatible booleans; treatment exposure, contrast, blacks, highlights, and color as lower, preserve, or raise; treatment warmth as cool, neutral, or warm. Optional enrichment may be omitted when uncertain: context (portrait, lifestyle, landscape, architecture, food, product, night, or mixed), each intensity (subtle, standard, strong), ambientColorCharacter (neutral, warm_golden, cool_mint, cool_clean), highlightCharacter (natural, soft, flash), colorSeparation (neutral, rich_controlled, editorial), and mood (natural, soft, rich, moody, luminous).",
-    "Separate scene facts from treatment. Never copy reference objects into the target, but preserve broad photographic relationships through ambient color character, highlight character, and color separation. Use strong only for genuinely clear editorial/flash/color direction. Do not return numeric controls, filters, or prose.",
+    "Return only the schema. Required reference and target facts: peopleOrSkin; exposure and saturation as low, medium, or high; warmth as cool, neutral, or warm; ambientColorCharacter (neutral, warm_golden, cool_mint, cool_clean); dominantColorBias (neutral, yellow_orange, green_mint, cyan_blue, mixed); highlightCharacter (natural, soft, flash); blackCharacter (lifted, neutral, deep); saturationCharacter (muted, natural, rich); and colorSeparation (neutral, rich_controlled, editorial). Target coherent and compatible are required diagnostic booleans. Do not return treatment recommendations: the server derives all final treatment direction from the reference-versus-target facts.",
+    "Describe photographic facts, not subject similarity. A portrait, architecture, landscape, food, or product reference can safely guide tone and color for another subject class. Do not reject solely because reference and target contents differ. Never copy reference objects into the target. Do not return numeric controls, filters, or prose.",
     `Server-measured target metrics: ${JSON.stringify(metrics)}`
   ].join("\n\n");
 }

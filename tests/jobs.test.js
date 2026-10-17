@@ -536,14 +536,14 @@ test("B2A reference style contracts keep private image metadata separate and der
   assert.equal(requestsReferenceStyleMatch("Make my video look like this.", false), false);
   const analysis = {
     safe: true,
-    reference: { context: "lifestyle", peopleOrSkin: true, exposure: "medium", saturation: "medium", warmth: "warm" },
-    target: { context: "portrait", coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "high", warmth: "neutral", compatible: true },
+    reference: { context: "lifestyle", peopleOrSkin: true, exposure: "high", saturation: "high", warmth: "warm", ambientColorCharacter: "warm_golden", dominantColorBias: "yellow_orange", highlightCharacter: "flash", blackCharacter: "deep", saturationCharacter: "rich", colorSeparation: "editorial" },
+    target: { context: "portrait", coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "medium", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "muted", colorSeparation: "neutral", compatible: true },
     treatment: { exposure: "raise", exposureIntensity: "strong", contrast: "raise", contrastIntensity: "strong", blacks: "lower", blackIntensity: "strong", highlights: "lower", highlightIntensity: "strong", color: "raise", colorIntensity: "strong", warmth: "warm", warmthIntensity: "strong", ambientColorCharacter: "warm_golden", highlightCharacter: "flash", colorSeparation: "editorial", mood: "luminous" }
   };
   assert.equal(referenceStyleAnalysisSchema().additionalProperties, false);
   const treatment = deriveReferenceStyleTreatment({ analysis, metrics: { lumaP05: 0.02, lumaP50: 0.45, lumaP95: 0.96, nearBlackFraction: 0.1, nearWhiteFraction: 0.05, saturationIndex: 0.8 } });
   assert.equal(treatment.version, 1);
-  assert.equal(treatment.recipe.brightness, 0.07, "near-clipped targets cap exposure lift");
+  assert.equal(treatment.recipe.brightness, 0.07, "near-clipped targets cap reference-directed exposure lift");
   assert.equal(treatment.recipe.saturation, 0.11, "already-saturated targets cap color lift without neutralizing it");
   assert.equal(treatment.recipe.temperature, 0.12, "skin caps hue authority without weakening tonal treatment");
   assert.equal(treatment.recipe.shadows, 0, "underexposed targets do not deepen blacks");
@@ -554,24 +554,25 @@ test("B2A reference style contracts keep private image metadata separate and der
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "reference_style_treatment", sourceId: "source-1", treatment }] }), /sourceId is supported only/);
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "reference_style_treatment", treatment }, { type: "style_profile", profileId: "cinematic" }] }), /conflicts with named visual styles/);
   const diagnostic = createReferenceStyleDiagnostic({ jobId: "job-safe", analysis, metrics: { lumaP05: 0.02, lumaP50: 0.45, lumaP95: 0.96, nearBlackFraction: 0.1, nearWhiteFraction: 0.05, saturationIndex: 0.8 }, treatment });
-  assert.equal(diagnostic.reference.context, "lifestyle");
-  assert.equal(diagnostic.target.context, "portrait");
+  assert.equal(diagnostic.referenceSignature.context, "lifestyle");
+  assert.equal(diagnostic.targetSignature.context, "portrait");
+  assert.equal(diagnostic.derivedDelta.warmth, "raise");
   assert.deepEqual(diagnostic.recipe, treatment.recipe);
   assert.ok(diagnostic.filters.every((filter) => typeof filter === "string"));
   assert.doesNotMatch(JSON.stringify(diagnostic), /uri|path|secret|token|https?:/i);
 });
 
-test("B2A strong editorial intent has visible bounded authority while skin protects only hue axes", () => {
+test("B2A reference-directed signatures retain strong bounded authority while skin protects only hue axes", () => {
   const analysis = {
     safe: true,
-    reference: { context: "lifestyle", peopleOrSkin: true, exposure: "high", saturation: "high", warmth: "cool" },
-    target: { context: "portrait", coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "low", warmth: "neutral", compatible: true },
+    reference: { context: "lifestyle", peopleOrSkin: true, exposure: "high", saturation: "high", warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint", highlightCharacter: "flash", blackCharacter: "deep", saturationCharacter: "rich", colorSeparation: "editorial" },
+    target: { context: "portrait", coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "low", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "muted", colorSeparation: "neutral", compatible: true },
     treatment: { exposure: "raise", exposureIntensity: "strong", contrast: "raise", contrastIntensity: "strong", blacks: "lower", blackIntensity: "standard", highlights: "raise", highlightIntensity: "strong", color: "raise", colorIntensity: "strong", warmth: "cool", warmthIntensity: "strong", ambientColorCharacter: "cool_mint", highlightCharacter: "flash", colorSeparation: "editorial", mood: "rich" }
   };
   const treatment = deriveReferenceStyleTreatment({ analysis, metrics: { lumaP05: 0.18, lumaP50: 0.71, lumaP95: 0.8, lumaP99: 0.82, nearBlackFraction: 0, nearWhiteFraction: 0, saturationIndex: 0.105 } });
   assert.deepEqual(treatment.recipe, {
-    brightness: 0.25, contrast: 0.29, saturation: 0.26, temperature: -0.12, tint: -0.055,
-    shadows: -0.1, highlights: 0.22, vibrance: 0.36, blackLift: -0.14, midtoneGamma: 0.16
+    brightness: 0.14, contrast: 0.14, saturation: 0.22, temperature: -0.12, tint: -0.055,
+    shadows: -0.1, highlights: 0.15, vibrance: 0.32, blackLift: -0.14, midtoneGamma: 0.11
   });
   assert.ok(buildReferenceStyleTreatmentFilters(treatment.recipe).length >= 4);
 });
@@ -579,8 +580,8 @@ test("B2A strong editorial intent has visible bounded authority while skin prote
 test("B2A reference analysis contract defaults enrichment but fails closed on safety facts", async () => {
   const complete = {
     safe: true,
-    reference: { context: "lifestyle", peopleOrSkin: true, exposure: "high", saturation: "high", warmth: "cool" },
-    target: { context: "portrait", coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "low", warmth: "neutral", compatible: true },
+    reference: { context: "lifestyle", peopleOrSkin: true, exposure: "high", saturation: "high", warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint", highlightCharacter: "flash", blackCharacter: "deep", saturationCharacter: "rich", colorSeparation: "editorial" },
+    target: { context: "portrait", coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "low", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "muted", colorSeparation: "neutral", compatible: true },
     treatment: { exposure: "raise", exposureIntensity: "strong", contrast: "raise", contrastIntensity: "strong", blacks: "lower", blackIntensity: "standard", highlights: "raise", highlightIntensity: "strong", color: "raise", colorIntensity: "strong", warmth: "cool", warmthIntensity: "strong", ambientColorCharacter: "cool_mint", highlightCharacter: "flash", colorSeparation: "editorial", mood: "rich" }
   };
   const metrics = { lumaP05: 0.18, lumaP50: 0.6, lumaP95: 0.8, lumaP99: 0.82, nearBlackFraction: 0, nearWhiteFraction: 0, saturationIndex: 0.1 };
@@ -598,9 +599,10 @@ test("B2A reference analysis contract defaults enrichment but fails closed on sa
     color: "raise", colorIntensity: "standard", warmth: "cool", warmthIntensity: "standard",
     ambientColorCharacter: "neutral", highlightCharacter: "natural", colorSeparation: "neutral", mood: "natural"
   });
-  assert.ok(deriveReferenceStyleTreatment({ analysis: normalized, metrics }).recipe.contrast > 0, "ordinary coherent reference/target pairs reach server derivation");
+  assert.ok(deriveReferenceStyleTreatment({ analysis: normalized, metrics }).recipe.brightness > 0, "ordinary coherent reference/target pairs reach server derivation");
   assert.equal(referenceStyleAnalysisSchema().properties.reference.required.includes("context"), false);
-  assert.equal(referenceStyleAnalysisSchema().properties.treatment.required.includes("exposureIntensity"), false);
+  assert.equal(referenceStyleAnalysisSchema().properties.reference.required.includes("ambientColorCharacter"), true);
+  assert.equal(referenceStyleAnalysisSchema().properties.treatment, undefined, "production analysis schema excludes model treatment recommendations");
 
   const missingCritical = structuredClone(complete);
   delete missingCritical.target.compatible;
@@ -617,11 +619,13 @@ test("B2A reference analysis contract defaults enrichment but fails closed on sa
   assert.throws(() => validateReferenceStyleAnalysis(null), (error) => error instanceof ReferenceStyleError && error.reason === "REFERENCE_INVALID_MODEL_RESPONSE");
   const incompatible = structuredClone(complete);
   incompatible.target.compatible = false;
-  assert.throws(() => deriveReferenceStyleTreatment({ analysis: incompatible, metrics }), (error) => error instanceof ReferenceStyleError && error.reason === "REFERENCE_COMPATIBILITY_WEAK");
+  assert.doesNotThrow(() => deriveReferenceStyleTreatment({ analysis: incompatible, metrics }), "content-class mismatch is diagnostic-only for photographic treatment");
   assert.throws(() => validateReferenceStyleAnalysis({ ...complete, safe: false }), (error) => error instanceof ReferenceStyleError && error.reason === "REFERENCE_SAFETY_REJECTED");
 
   const uploaded = [];
   let generated = 0;
+  const productionObservationResponse = structuredClone(complete);
+  delete productionObservationResponse.treatment;
   const aiClient = {
     files: {
       upload: async () => {
@@ -632,11 +636,12 @@ test("B2A reference analysis contract defaults enrichment but fails closed on sa
       delete: async () => {}
     },
     models: {
-      generateContent: async () => ({ text: JSON.stringify(generated++ === 0 ? { safe: true } : omittedEnrichment) })
+      generateContent: async () => ({ text: JSON.stringify(generated++ === 0 ? { safe: true } : productionObservationResponse) })
     }
   };
   const result = await analyzeReferenceStyle({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", targetFrames: [{ imagePath: "/private/frame.jpg" }], metrics, aiClient });
-  assert.equal(result.analysis.reference.context, "mixed");
+  assert.equal(result.analysis.reference.context, "lifestyle");
+  assert.equal(result.analysis.treatment, null, "production model response contains observations, not model treatment authority");
   assert.ok(result.treatment.recipe.contrast > 0, "mocked ordinary photo path reaches canonical treatment");
   assert.equal(uploaded.length, 2, "reference and target frame are reused only as Gemini scratch files");
 
@@ -651,6 +656,50 @@ test("B2A reference analysis contract defaults enrichment but fails closed on sa
     analyzeReferenceStyle({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", targetFrames: [], metrics, aiClient: failedAiClient }),
     (error) => error instanceof ReferenceStyleError && error.reason === "REFERENCE_MODEL_REQUEST_FAILED"
   );
+});
+
+test("B2A derives photographic direction from bounded signatures, not model treatment advice", () => {
+  const metrics = { lumaP05: 0.12, lumaP50: 0.48, lumaP95: 0.78, lumaP99: 0.84, nearBlackFraction: 0.01, nearWhiteFraction: 0, saturationIndex: 0.24 };
+  const analysis = ({ reference = {}, target = {}, advisory = {} } = {}) => ({
+    safe: true,
+    reference: { context: "portrait", peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "natural", colorSeparation: "neutral", ...reference },
+    target: { context: "landscape", coherent: true, peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "natural", colorSeparation: "neutral", compatible: true, ...target },
+    // This deliberately contradictory advisory mirrors the production failure:
+    // server derivation must ignore it in favor of observed signatures.
+    treatment: { exposure: "lower", contrast: "lower", blacks: "raise", highlights: "lower", color: "lower", warmth: "warm", ambientColorCharacter: "warm_golden", highlightCharacter: "soft", colorSeparation: "neutral", mood: "natural", ...advisory }
+  });
+  const recipeFor = (value) => deriveReferenceStyleTreatment({ analysis: value, metrics }).recipe;
+
+  const coolHuman = recipeFor(analysis({ reference: { peopleOrSkin: true, warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint", colorSeparation: "editorial" }, target: { peopleOrSkin: true } }));
+  assert.ok(coolHuman.temperature < 0 && coolHuman.tint < 0, "cool/mint reference never becomes a warm human grade");
+
+  const warmLandscape = recipeFor(analysis({ reference: { context: "architecture", warmth: "warm", ambientColorCharacter: "warm_golden", dominantColorBias: "yellow_orange" } }));
+  assert.ok(warmLandscape.temperature > 0 && warmLandscape.tint > 0, "warm/golden reference never becomes a cool landscape grade");
+
+  const warmSkinCoolAmbient = recipeFor(analysis({ reference: { peopleOrSkin: true, warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint" }, target: { peopleOrSkin: true } }));
+  assert.ok(warmSkinCoolAmbient.temperature < 0 && Math.abs(warmSkinCoolAmbient.temperature) <= 0.12, "skin caps cool ambient magnitude without reversing it");
+  assert.ok(recipeFor(analysis({ reference: { warmth: "cool", ambientColorCharacter: "cool_clean", dominantColorBias: "cyan_blue" }, target: { warmth: "warm", ambientColorCharacter: "warm_golden", dominantColorBias: "yellow_orange" } })).temperature < 0, "cool-clean reference pulls a warm target toward cool");
+
+  assert.ok(recipeFor(analysis({ reference: { saturationCharacter: "rich", colorSeparation: "rich_controlled" }, target: { saturationCharacter: "muted" } })).saturation > 0, "rich reference raises restrained target color");
+  assert.ok(recipeFor(analysis({ reference: { saturationCharacter: "muted" }, target: { saturationCharacter: "rich" } })).saturation < 0, "muted reference reduces an over-rich target");
+  const deepBlacks = recipeFor(analysis({ reference: { blackCharacter: "deep" } }));
+  assert.ok(deepBlacks.shadows < 0 && deepBlacks.blackLift < 0, "deep-black reference lowers neutral blacks only with shadow headroom");
+  const liftedBlacks = recipeFor(analysis({ reference: { blackCharacter: "lifted" }, target: { blackCharacter: "deep" } }));
+  assert.ok(liftedBlacks.shadows > 0 && liftedBlacks.blackLift > 0, "lifted-black reference opens a dark target");
+
+  assert.doesNotThrow(() => recipeFor(analysis({ reference: { context: "portrait" }, target: { context: "landscape", compatible: false } })), "portrait-to-landscape color treatment is not rejected as content-incompatible");
+  assert.doesNotThrow(() => recipeFor(analysis({ reference: { context: "architecture" }, target: { context: "portrait", peopleOrSkin: true, compatible: false } })), "architecture-to-human color treatment is not rejected as content-incompatible");
+
+  const sameTarget = { peopleOrSkin: false, warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral" };
+  const cool = recipeFor(analysis({ reference: { warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint" }, target: sameTarget }));
+  const warm = recipeFor(analysis({ reference: { warmth: "warm", ambientColorCharacter: "warm_golden", dominantColorBias: "yellow_orange" }, target: sameTarget }));
+  assert.ok(cool.temperature < 0 && warm.temperature > 0, "same target receives opposite reference-directed temperature intent");
+  assert.notDeepEqual(cool, warm, "clearly distinct reference signatures cannot collapse to one recipe");
+
+  const diagnostic = createReferenceStyleDiagnostic({ jobId: "job-safe", analysis: analysis({ reference: { warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint" } }), metrics, treatment: { version: 1, recipe: cool } });
+  assert.deepEqual(Object.keys(diagnostic).sort(), ["derivedDelta", "filters", "finalTreatmentIntent", "jobId", "metrics", "recipe", "referenceSignature", "targetSignature"]);
+  assert.equal(diagnostic.derivedDelta.warmth, "lower");
+  assert.doesNotMatch(JSON.stringify(diagnostic), /uri|path|secret|token|https?:/i);
 });
 
 test("B1 style diagnostics contain only validated server-owned planning and execution facts", () => {
