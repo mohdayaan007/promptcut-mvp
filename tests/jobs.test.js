@@ -32,7 +32,7 @@ import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL
 import { createCanonicalReferenceStyleTreatment, REFERENCE_STYLE_TREATMENT_VERSION } from "@/lib/editor-core/reference-style-treatment";
 import { measureReferenceRgbFrame, REFERENCE_FRAME_METRICS_VERSION, summarizeReferenceFrameMetrics } from "@/lib/editor-core/reference-style-metrics";
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
-import { createReferenceStyleDiagnostic, deriveReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, requestsReferenceStyleMatch, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
+import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, requestsReferenceStyleMatch, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
 
 function canonicalStyleRecipe(recipe) {
   return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
@@ -562,6 +562,83 @@ test("B2A strong editorial intent has visible bounded authority while skin prote
     shadows: -0.1, highlights: 0.22, vibrance: 0.36, blackLift: -0.14, midtoneGamma: 0.16
   });
   assert.ok(buildReferenceStyleTreatmentFilters(treatment.recipe).length >= 4);
+});
+
+test("B2A reference analysis contract defaults enrichment but fails closed on safety facts", async () => {
+  const complete = {
+    safe: true,
+    reference: { context: "lifestyle", peopleOrSkin: true, exposure: "high", saturation: "high", warmth: "cool" },
+    target: { context: "portrait", coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "low", warmth: "neutral", compatible: true },
+    treatment: { exposure: "raise", exposureIntensity: "strong", contrast: "raise", contrastIntensity: "strong", blacks: "lower", blackIntensity: "standard", highlights: "raise", highlightIntensity: "strong", color: "raise", colorIntensity: "strong", warmth: "cool", warmthIntensity: "strong", ambientColorCharacter: "cool_mint", highlightCharacter: "flash", colorSeparation: "editorial", mood: "rich" }
+  };
+  const metrics = { lumaP05: 0.18, lumaP50: 0.6, lumaP95: 0.8, lumaP99: 0.82, nearBlackFraction: 0, nearWhiteFraction: 0, saturationIndex: 0.1 };
+  assert.equal(validateReferenceStyleAnalysis(complete).reference.context, "lifestyle");
+  const omittedEnrichment = structuredClone(complete);
+  delete omittedEnrichment.reference.context;
+  delete omittedEnrichment.target.context;
+  for (const field of ["exposureIntensity", "contrastIntensity", "blackIntensity", "highlightIntensity", "colorIntensity", "warmthIntensity", "ambientColorCharacter", "highlightCharacter", "colorSeparation", "mood"]) delete omittedEnrichment.treatment[field];
+  const normalized = validateReferenceStyleAnalysis(omittedEnrichment);
+  assert.deepEqual(normalized.reference.context, "mixed");
+  assert.deepEqual(normalized.target.context, "mixed");
+  assert.deepEqual(normalized.treatment, {
+    exposure: "raise", exposureIntensity: "standard", contrast: "raise", contrastIntensity: "standard",
+    blacks: "lower", blackIntensity: "standard", highlights: "raise", highlightIntensity: "standard",
+    color: "raise", colorIntensity: "standard", warmth: "cool", warmthIntensity: "standard",
+    ambientColorCharacter: "neutral", highlightCharacter: "natural", colorSeparation: "neutral", mood: "natural"
+  });
+  assert.ok(deriveReferenceStyleTreatment({ analysis: normalized, metrics }).recipe.contrast > 0, "ordinary coherent reference/target pairs reach server derivation");
+  assert.equal(referenceStyleAnalysisSchema().properties.reference.required.includes("context"), false);
+  assert.equal(referenceStyleAnalysisSchema().properties.treatment.required.includes("exposureIntensity"), false);
+
+  const missingCritical = structuredClone(complete);
+  delete missingCritical.target.compatible;
+  assert.throws(() => validateReferenceStyleAnalysis(missingCritical), (error) => error instanceof ReferenceStyleError && error.reason === "REFERENCE_INVALID_MODEL_RESPONSE" && error.field === "target compatible");
+  const invalidEnum = structuredClone(complete);
+  invalidEnum.treatment.colorSeparation = "neon";
+  assert.throws(() => validateReferenceStyleAnalysis(invalidEnum), (error) => error instanceof ReferenceStyleError && error.field === "color separation");
+  const nullField = structuredClone(complete);
+  nullField.target.peopleOrSkin = null;
+  assert.throws(() => validateReferenceStyleAnalysis(nullField), (error) => error instanceof ReferenceStyleError && error.field === "target peopleOrSkin");
+  const extraProperty = structuredClone(complete);
+  extraProperty.treatment.rawFfmpeg = "eq=brightness=1";
+  assert.throws(() => validateReferenceStyleAnalysis(extraProperty), (error) => error instanceof ReferenceStyleError && error.field === "treatment.rawFfmpeg");
+  assert.throws(() => validateReferenceStyleAnalysis(null), (error) => error instanceof ReferenceStyleError && error.reason === "REFERENCE_INVALID_MODEL_RESPONSE");
+  const incompatible = structuredClone(complete);
+  incompatible.target.compatible = false;
+  assert.throws(() => deriveReferenceStyleTreatment({ analysis: incompatible, metrics }), (error) => error instanceof ReferenceStyleError && error.reason === "REFERENCE_COMPATIBILITY_WEAK");
+  assert.throws(() => validateReferenceStyleAnalysis({ ...complete, safe: false }), (error) => error instanceof ReferenceStyleError && error.reason === "REFERENCE_SAFETY_REJECTED");
+
+  const uploaded = [];
+  let generated = 0;
+  const aiClient = {
+    files: {
+      upload: async () => {
+        const file = { name: `uploaded-${uploaded.length}`, uri: `gemini://private-${uploaded.length}`, mimeType: "image/jpeg" };
+        uploaded.push(file);
+        return file;
+      },
+      delete: async () => {}
+    },
+    models: {
+      generateContent: async () => ({ text: JSON.stringify(generated++ === 0 ? { safe: true } : omittedEnrichment) })
+    }
+  };
+  const result = await analyzeReferenceStyle({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", targetFrames: [{ imagePath: "/private/frame.jpg" }], metrics, aiClient });
+  assert.equal(result.analysis.reference.context, "mixed");
+  assert.ok(result.treatment.recipe.contrast > 0, "mocked ordinary photo path reaches canonical treatment");
+  assert.equal(uploaded.length, 2, "reference and target frame are reused only as Gemini scratch files");
+
+  const failureDiagnostic = createReferenceStyleFailureDiagnostic({
+    jobId: "job-safe",
+    error: new ReferenceStyleError("REFERENCE_INVALID_MODEL_RESPONSE", "raw response gemini://private signed-url token", "reference context")
+  });
+  assert.deepEqual(failureDiagnostic, { jobId: "job-safe", stage: "reference_style_analysis", reason: "REFERENCE_INVALID_MODEL_RESPONSE", field: "reference context" });
+  assert.doesNotMatch(JSON.stringify(failureDiagnostic), /private|uri|url|token|secret|path/i);
+  const failedAiClient = { files: aiClient.files, models: { generateContent: async () => { throw new Error("model request failed with gemini://private-response"); } } };
+  await assert.rejects(
+    analyzeReferenceStyle({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", targetFrames: [], metrics, aiClient: failedAiClient }),
+    (error) => error instanceof ReferenceStyleError && error.reason === "REFERENCE_MODEL_REQUEST_FAILED"
+  );
 });
 
 test("B1 style diagnostics contain only validated server-owned planning and execution facts", () => {

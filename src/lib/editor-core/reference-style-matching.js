@@ -6,7 +6,12 @@ export const REFERENCE_STYLE_SAFE_ERROR = "This reference can’t be used for st
 export const REFERENCE_STYLE_COHERENCE_ERROR = "This first version works best with visually coherent footage. Please choose another video.";
 
 export class ReferenceStyleError extends Error {
-  constructor(reason, message = "This reference style could not be applied safely.") { super(message); this.name = "ReferenceStyleError"; this.reason = reason; }
+  constructor(reason, message = "This reference style could not be applied safely.", field = null) {
+    super(message);
+    this.name = "ReferenceStyleError";
+    this.reason = reason;
+    this.field = field;
+  }
 }
 
 const DIRECTIONS = Object.freeze(["lower", "preserve", "raise"]);
@@ -18,28 +23,41 @@ const COLOR_SEPARATIONS = Object.freeze(["neutral", "rich_controlled", "editoria
 const OBSERVED_CONTEXTS = Object.freeze(["portrait", "lifestyle", "landscape", "architecture", "food", "product", "night", "mixed"]);
 
 function object(value) { return value && typeof value === "object" && !Array.isArray(value); }
-function enumValue(value, values, field) { if (!values.includes(value)) throw new ReferenceStyleError("REFERENCE_INVALID_MODEL_RESPONSE", `Invalid ${field}`); return value; }
+function invalidModelField(field) { throw new ReferenceStyleError("REFERENCE_INVALID_MODEL_RESPONSE", `Invalid ${field}`, field); }
+function enumValue(value, values, field) { if (!values.includes(value)) invalidModelField(field); return value; }
+function optionalEnumValue(value, fallback, values, field) { return value === undefined ? fallback : enumValue(value, values, field); }
+function booleanValue(value, field) { if (typeof value !== "boolean") invalidModelField(field); return value; }
+function exactObject(value, fields, field) {
+  if (!object(value)) invalidModelField(field);
+  for (const key of Object.keys(value)) if (!fields.includes(key)) invalidModelField(`${field}.${key}`);
+  return value;
+}
 
 /** Strictly validates bounded categorical facts; model prose never reaches FFmpeg. */
 export function validateReferenceStyleAnalysis(value) {
-  if (!object(value) || typeof value.safe !== "boolean") throw new ReferenceStyleError("REFERENCE_INVALID_MODEL_RESPONSE");
+  exactObject(value, ["safe", "reference", "target", "treatment"], "analysis");
+  if (typeof value.safe !== "boolean") invalidModelField("safe");
   if (!value.safe) throw new ReferenceStyleError("REFERENCE_SAFETY_REJECTED", REFERENCE_STYLE_SAFE_ERROR);
-  if (!object(value.reference) || !object(value.target) || !object(value.treatment)) throw new ReferenceStyleError("REFERENCE_INVALID_MODEL_RESPONSE");
-  const treatment = value.treatment;
+  const reference = exactObject(value.reference, ["context", "peopleOrSkin", "exposure", "saturation", "warmth"], "reference");
+  const target = exactObject(value.target, ["context", "coherent", "peopleOrSkin", "exposure", "saturation", "warmth", "compatible"], "target");
+  const treatment = exactObject(value.treatment, ["exposure", "exposureIntensity", "contrast", "contrastIntensity", "blacks", "blackIntensity", "highlights", "highlightIntensity", "color", "colorIntensity", "warmth", "warmthIntensity", "ambientColorCharacter", "highlightCharacter", "colorSeparation", "mood"], "treatment");
   return Object.freeze({
-    reference: Object.freeze({ context: enumValue(value.reference.context, OBSERVED_CONTEXTS, "reference context"), peopleOrSkin: Boolean(value.reference.peopleOrSkin), exposure: enumValue(value.reference.exposure, LEVELS, "reference exposure"), saturation: enumValue(value.reference.saturation, LEVELS, "reference saturation"), warmth: enumValue(value.reference.warmth, ["cool", "neutral", "warm"], "reference warmth") }),
-    target: Object.freeze({ context: enumValue(value.target.context, OBSERVED_CONTEXTS, "target context"), coherent: Boolean(value.target.coherent), peopleOrSkin: Boolean(value.target.peopleOrSkin), exposure: enumValue(value.target.exposure, LEVELS, "target exposure"), saturation: enumValue(value.target.saturation, LEVELS, "target saturation"), warmth: enumValue(value.target.warmth, ["cool", "neutral", "warm"], "target warmth"), compatible: Boolean(value.target.compatible) }),
+    safe: true,
+    // Context is diagnostic-only. Its omission must not reject an otherwise
+    // safe treatment, so it resolves to the conservative "mixed" category.
+    reference: Object.freeze({ context: optionalEnumValue(reference.context, "mixed", OBSERVED_CONTEXTS, "reference context"), peopleOrSkin: booleanValue(reference.peopleOrSkin, "reference peopleOrSkin"), exposure: enumValue(reference.exposure, LEVELS, "reference exposure"), saturation: enumValue(reference.saturation, LEVELS, "reference saturation"), warmth: enumValue(reference.warmth, ["cool", "neutral", "warm"], "reference warmth") }),
+    target: Object.freeze({ context: optionalEnumValue(target.context, "mixed", OBSERVED_CONTEXTS, "target context"), coherent: booleanValue(target.coherent, "target coherent"), peopleOrSkin: booleanValue(target.peopleOrSkin, "target peopleOrSkin"), exposure: enumValue(target.exposure, LEVELS, "target exposure"), saturation: enumValue(target.saturation, LEVELS, "target saturation"), warmth: enumValue(target.warmth, ["cool", "neutral", "warm"], "target warmth"), compatible: booleanValue(target.compatible, "target compatible") }),
     treatment: Object.freeze({
-      exposure: enumValue(treatment.exposure, DIRECTIONS, "treatment exposure"), exposureIntensity: enumValue(treatment.exposureIntensity || "standard", INTENSITIES, "treatment exposure intensity"),
-      contrast: enumValue(treatment.contrast, DIRECTIONS, "treatment contrast"), contrastIntensity: enumValue(treatment.contrastIntensity || "standard", INTENSITIES, "treatment contrast intensity"),
-      blacks: enumValue(treatment.blacks, DIRECTIONS, "treatment blacks"), blackIntensity: enumValue(treatment.blackIntensity || "standard", INTENSITIES, "treatment black intensity"),
-      highlights: enumValue(treatment.highlights, DIRECTIONS, "treatment highlights"), highlightIntensity: enumValue(treatment.highlightIntensity || "standard", INTENSITIES, "treatment highlight intensity"),
-      color: enumValue(treatment.color, DIRECTIONS, "treatment color"), colorIntensity: enumValue(treatment.colorIntensity || "standard", INTENSITIES, "treatment color intensity"),
-      warmth: enumValue(treatment.warmth, ["cool", "neutral", "warm"], "treatment warmth"), warmthIntensity: enumValue(treatment.warmthIntensity || "standard", INTENSITIES, "treatment warmth intensity"),
-      ambientColorCharacter: enumValue(treatment.ambientColorCharacter || "neutral", AMBIENT_COLOR_CHARACTERS, "ambient color character"),
-      highlightCharacter: enumValue(treatment.highlightCharacter || "natural", HIGHLIGHT_CHARACTERS, "highlight character"),
-      colorSeparation: enumValue(treatment.colorSeparation || "neutral", COLOR_SEPARATIONS, "color separation"),
-      mood: enumValue(treatment.mood, ["natural", "soft", "rich", "moody", "luminous"], "treatment mood")
+      exposure: enumValue(treatment.exposure, DIRECTIONS, "treatment exposure"), exposureIntensity: optionalEnumValue(treatment.exposureIntensity, "standard", INTENSITIES, "treatment exposure intensity"),
+      contrast: enumValue(treatment.contrast, DIRECTIONS, "treatment contrast"), contrastIntensity: optionalEnumValue(treatment.contrastIntensity, "standard", INTENSITIES, "treatment contrast intensity"),
+      blacks: enumValue(treatment.blacks, DIRECTIONS, "treatment blacks"), blackIntensity: optionalEnumValue(treatment.blackIntensity, "standard", INTENSITIES, "treatment black intensity"),
+      highlights: enumValue(treatment.highlights, DIRECTIONS, "treatment highlights"), highlightIntensity: optionalEnumValue(treatment.highlightIntensity, "standard", INTENSITIES, "treatment highlight intensity"),
+      color: enumValue(treatment.color, DIRECTIONS, "treatment color"), colorIntensity: optionalEnumValue(treatment.colorIntensity, "standard", INTENSITIES, "treatment color intensity"),
+      warmth: enumValue(treatment.warmth, ["cool", "neutral", "warm"], "treatment warmth"), warmthIntensity: optionalEnumValue(treatment.warmthIntensity, "standard", INTENSITIES, "treatment warmth intensity"),
+      ambientColorCharacter: optionalEnumValue(treatment.ambientColorCharacter, "neutral", AMBIENT_COLOR_CHARACTERS, "ambient color character"),
+      highlightCharacter: optionalEnumValue(treatment.highlightCharacter, "natural", HIGHLIGHT_CHARACTERS, "highlight character"),
+      colorSeparation: optionalEnumValue(treatment.colorSeparation, "neutral", COLOR_SEPARATIONS, "color separation"),
+      mood: optionalEnumValue(treatment.mood, "natural", ["natural", "soft", "rich", "moody", "luminous"], "treatment mood")
     })
   });
 }
@@ -102,6 +120,17 @@ export function createReferenceStyleDiagnostic({ jobId, analysis, metrics, treat
   return Object.freeze({ jobId, reference: safe.reference, target: safe.target, treatmentIntent: safe.treatment, metrics, recipe: canonical.recipe, filters: buildReferenceStyleTreatmentFilters(canonical.recipe) });
 }
 
+/** Safe worker diagnostic: it intentionally drops model text and media metadata. */
+export function createReferenceStyleFailureDiagnostic({ jobId, error }) {
+  if (!(error instanceof ReferenceStyleError)) return Object.freeze({ jobId, stage: "reference_style_analysis", reason: "REFERENCE_ANALYSIS_FAILED" });
+  return Object.freeze({
+    jobId,
+    stage: "reference_style_analysis",
+    reason: error.reason,
+    ...(error.field ? { field: error.field } : {})
+  });
+}
+
 export function requestsReferenceStyleMatch(prompt = "", hasReference = false) {
   return Boolean(hasReference && /\b(?:make|match|use|give)\b[\s\S]{0,80}\b(?:look like this|this style|reference (?:style|look)|style reference|same look)\b/i.test(prompt));
 }
@@ -111,9 +140,9 @@ export function referenceStyleAnalysisSchema() {
   const directionSchema = { type: "string", enum: DIRECTIONS };
   return { type: "object", properties: {
     safe: { type: "boolean" },
-    reference: { type: "object", properties: { context: { type: "string", enum: OBSERVED_CONTEXTS }, peopleOrSkin: { type: "boolean" }, exposure: level, saturation: level, warmth: { type: "string", enum: ["cool", "neutral", "warm"] } }, required: ["context", "peopleOrSkin", "exposure", "saturation", "warmth"], additionalProperties: false },
-    target: { type: "object", properties: { context: { type: "string", enum: OBSERVED_CONTEXTS }, coherent: { type: "boolean" }, peopleOrSkin: { type: "boolean" }, exposure: level, saturation: level, warmth: { type: "string", enum: ["cool", "neutral", "warm"] }, compatible: { type: "boolean" } }, required: ["context", "coherent", "peopleOrSkin", "exposure", "saturation", "warmth", "compatible"], additionalProperties: false },
-    treatment: { type: "object", properties: { exposure: directionSchema, exposureIntensity: { type: "string", enum: INTENSITIES }, contrast: directionSchema, contrastIntensity: { type: "string", enum: INTENSITIES }, blacks: directionSchema, blackIntensity: { type: "string", enum: INTENSITIES }, highlights: directionSchema, highlightIntensity: { type: "string", enum: INTENSITIES }, color: directionSchema, colorIntensity: { type: "string", enum: INTENSITIES }, warmth: { type: "string", enum: ["cool", "neutral", "warm"] }, warmthIntensity: { type: "string", enum: INTENSITIES }, ambientColorCharacter: { type: "string", enum: AMBIENT_COLOR_CHARACTERS }, highlightCharacter: { type: "string", enum: HIGHLIGHT_CHARACTERS }, colorSeparation: { type: "string", enum: COLOR_SEPARATIONS }, mood: { type: "string", enum: ["natural", "soft", "rich", "moody", "luminous"] } }, required: ["exposure", "exposureIntensity", "contrast", "contrastIntensity", "blacks", "blackIntensity", "highlights", "highlightIntensity", "color", "colorIntensity", "warmth", "warmthIntensity", "ambientColorCharacter", "highlightCharacter", "colorSeparation", "mood"], additionalProperties: false }
+    reference: { type: "object", properties: { context: { type: "string", enum: OBSERVED_CONTEXTS }, peopleOrSkin: { type: "boolean" }, exposure: level, saturation: level, warmth: { type: "string", enum: ["cool", "neutral", "warm"] } }, required: ["peopleOrSkin", "exposure", "saturation", "warmth"], additionalProperties: false },
+    target: { type: "object", properties: { context: { type: "string", enum: OBSERVED_CONTEXTS }, coherent: { type: "boolean" }, peopleOrSkin: { type: "boolean" }, exposure: level, saturation: level, warmth: { type: "string", enum: ["cool", "neutral", "warm"] }, compatible: { type: "boolean" } }, required: ["coherent", "peopleOrSkin", "exposure", "saturation", "warmth", "compatible"], additionalProperties: false },
+    treatment: { type: "object", properties: { exposure: directionSchema, exposureIntensity: { type: "string", enum: INTENSITIES }, contrast: directionSchema, contrastIntensity: { type: "string", enum: INTENSITIES }, blacks: directionSchema, blackIntensity: { type: "string", enum: INTENSITIES }, highlights: directionSchema, highlightIntensity: { type: "string", enum: INTENSITIES }, color: directionSchema, colorIntensity: { type: "string", enum: INTENSITIES }, warmth: { type: "string", enum: ["cool", "neutral", "warm"] }, warmthIntensity: { type: "string", enum: INTENSITIES }, ambientColorCharacter: { type: "string", enum: AMBIENT_COLOR_CHARACTERS }, highlightCharacter: { type: "string", enum: HIGHLIGHT_CHARACTERS }, colorSeparation: { type: "string", enum: COLOR_SEPARATIONS }, mood: { type: "string", enum: ["natural", "soft", "rich", "moody", "luminous"] } }, required: ["exposure", "contrast", "blacks", "highlights", "color", "warmth"], additionalProperties: false }
   }, required: ["safe", "reference", "target", "treatment"], additionalProperties: false };
 }
 
@@ -125,7 +154,8 @@ export function buildReferenceStyleAnalysisPrompt({ metrics }) {
   return [
     "You assess whether a supplied reference image can safely guide photographic color treatment for supplied target video frames. Do not create an edit plan or return numeric controls, filters, LUTs, paths, or prose.",
     "Reject only clearly high-risk explicit sexual content, sexual content involving minors, sexual violence, or extreme graphic gore. Ordinary portraits, fashion, swimwear, kissing, and lifestyle scenes are safe.",
-    "Separate scene facts from treatment. Never copy reference objects into the target, but preserve broad photographic relationships through ambient color character, highlight character, and color separation. Use strong only for genuinely clear editorial/flash/color direction. Return the bounded categorical schema only.",
+    "Return only the schema. Required facts: reference/target peopleOrSkin booleans; exposure and saturation as low, medium, or high; warmth as cool, neutral, or warm; target coherent and compatible booleans; treatment exposure, contrast, blacks, highlights, and color as lower, preserve, or raise; treatment warmth as cool, neutral, or warm. Optional enrichment may be omitted when uncertain: context (portrait, lifestyle, landscape, architecture, food, product, night, or mixed), each intensity (subtle, standard, strong), ambientColorCharacter (neutral, warm_golden, cool_mint, cool_clean), highlightCharacter (natural, soft, flash), colorSeparation (neutral, rich_controlled, editorial), and mood (natural, soft, rich, moody, luminous).",
+    "Separate scene facts from treatment. Never copy reference objects into the target, but preserve broad photographic relationships through ambient color character, highlight character, and color separation. Use strong only for genuinely clear editorial/flash/color direction. Do not return numeric controls, filters, or prose.",
     `Server-measured target metrics: ${JSON.stringify(metrics)}`
   ].join("\n\n");
 }
@@ -155,9 +185,12 @@ export async function analyzeReferenceStyle({ referencePath, referenceMimeType, 
       safety = JSON.parse(response.text || "");
     } catch (error) {
       if (error instanceof SyntaxError) throw new ReferenceStyleError("REFERENCE_INVALID_MODEL_RESPONSE");
-      throw new ReferenceStyleError("REFERENCE_ANALYSIS_FAILED");
+      throw new ReferenceStyleError("REFERENCE_MODEL_REQUEST_FAILED");
     }
-    if (safety?.safe !== true) throw new ReferenceStyleError("REFERENCE_SAFETY_REJECTED", REFERENCE_STYLE_SAFE_ERROR);
+    if (!object(safety) || typeof safety.safe !== "boolean" || Object.keys(safety).some((field) => field !== "safe")) {
+      throw new ReferenceStyleError("REFERENCE_INVALID_MODEL_RESPONSE", "Invalid reference safety response", "safety");
+    }
+    if (!safety.safe) throw new ReferenceStyleError("REFERENCE_SAFETY_REJECTED", REFERENCE_STYLE_SAFE_ERROR);
     const targets = [];
     for (const frame of targetFrames) {
       const uploadedFrame = await ai.files.upload({ file: frame.imagePath, config: { mimeType: "image/jpeg" } });
@@ -166,8 +199,11 @@ export async function analyzeReferenceStyle({ referencePath, referenceMimeType, 
     let response;
     try {
       response = await generate(ai, { model: process.env.GEMINI_MODEL || "gemini-3.6-flash", contents: ["REFERENCE IMAGE", createPartFromUri(reference.uri, reference.mimeType || referenceMimeType), ...targets.flatMap((file, index) => [`TARGET FRAME ${index + 1}`, createPartFromUri(file.uri, file.mimeType || "image/jpeg")]), buildReferenceStyleAnalysisPrompt({ metrics })], config: { responseMimeType: "application/json", responseJsonSchema: referenceStyleAnalysisSchema() } });
-    } catch { throw new ReferenceStyleError("REFERENCE_ANALYSIS_FAILED"); }
-    try { return { analysis: validateReferenceStyleAnalysis(JSON.parse(response.text || "")), treatment: deriveReferenceStyleTreatment({ analysis: JSON.parse(response.text || ""), metrics }) }; }
+    } catch { throw new ReferenceStyleError("REFERENCE_MODEL_REQUEST_FAILED"); }
+    try {
+      const analysis = validateReferenceStyleAnalysis(JSON.parse(response.text || ""));
+      return { analysis, treatment: deriveReferenceStyleTreatment({ analysis, metrics }) };
+    }
     catch (error) { if (error instanceof ReferenceStyleError) throw error; throw new ReferenceStyleError("REFERENCE_INVALID_MODEL_RESPONSE"); }
   } finally {
     await Promise.all(uploaded.map((file) => file?.name ? ai.files.delete({ name: file.name }).catch(() => {}) : null));

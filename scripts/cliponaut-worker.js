@@ -9,7 +9,7 @@ import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { CaptionError, createCaptionCues, extractCaptionCorrection, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
-import { analyzeReferenceStyle, createReferenceStyleDiagnostic, ReferenceStyleError, requestsReferenceStyleMatch } from "@/lib/editor-core/reference-style-matching";
+import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, ReferenceStyleError, requestsReferenceStyleMatch } from "@/lib/editor-core/reference-style-matching";
 import { extractTargetReferenceFrames, validateReferenceImageFile } from "@/lib/editor-core/reference-style-media";
 import { is4kCapableMedia } from "@/lib/media/media-config";
 import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
@@ -166,7 +166,11 @@ async function processJob(job) {
       if (outputKey) await deleteObjects([outputKey]).catch(() => {});
       return;
     }
-    console.error(`Job ${job.id} failed:`, error.message);
+    if (error instanceof ReferenceStyleError) {
+      console.error("Reference style analysis failed:", createReferenceStyleFailureDiagnostic({ jobId: job.id, error }));
+    } else {
+      console.error(`Job ${job.id} failed:`, error.message);
+    }
     await failJob(job.id, workerId, safeError(error)).catch(() => {});
   } finally {
     if (heartbeat) clearInterval(heartbeat);
