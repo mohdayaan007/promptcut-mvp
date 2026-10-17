@@ -756,6 +756,30 @@ test("B2A retains bounded split-tone reference relationships without changing B1
   assert.equal(resolveCurrentStyleProfile("cinematic").recipe.shadowTemperature, undefined, "B1 profile recipes never acquire B2 band controls");
 });
 
+test("B2A tonal bands follow reference direction and complementary palettes suppress global temperature", () => {
+  const metrics = { lumaP05: 0.1, lumaP50: 0.48, lumaP95: 0.78, lumaP99: 0.84, nearBlackFraction: 0.01, nearWhiteFraction: 0, saturationIndex: 0.2 };
+  const target = { context: "landscape", coherent: true, peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", shadowColorBias: "neutral", midtoneColorBias: "neutral", highlightColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "natural", colorSeparation: "neutral", compatible: true };
+  const recipeFor = (reference, targetOverride = {}) => deriveReferenceStyleTreatment({ analysis: { safe: true, reference: { context: "architecture", peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", shadowColorBias: "neutral", midtoneColorBias: "neutral", highlightColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "natural", colorSeparation: "neutral", ...reference }, target: { ...target, ...targetOverride } }, metrics }).recipe;
+  assert.equal(recipeFor({ highlightColorBias: "neutral" }, { highlightColorBias: "warm_yellow" }).highlightTemperature, 0, "neutral reference highlights do not cool a warm target");
+  assert.equal(recipeFor({ highlightColorBias: "neutral" }, { highlightColorBias: "cool_blue" }).highlightTemperature, 0, "neutral reference highlights do not warm a cool target");
+  assert.ok(recipeFor({ midtoneColorBias: "warm_yellow" }).midtoneTemperature > 0);
+  assert.ok(recipeFor({ midtoneColorBias: "warm_yellow" }, { midtoneColorBias: "warm_yellow" }).midtoneTemperature >= 0);
+  assert.ok(recipeFor({ shadowColorBias: "cool_blue" }).shadowTemperature < 0);
+  assert.ok(recipeFor({ shadowColorBias: "cool_blue" }, { shadowColorBias: "cool_blue" }).shadowTemperature <= 0);
+
+  const complementary = recipeFor({ dominantColorBias: "mixed", shadowColorBias: "cool_blue", midtoneColorBias: "warm_yellow", highlightColorBias: "neutral" });
+  assert.equal(complementary.temperature, 0, "mixed complementary palette does not receive a global white-balance shift");
+  assert.ok(complementary.shadowTemperature < 0);
+  assert.ok(complementary.midtoneTemperature > 0);
+  assert.equal(complementary.highlightTemperature, 0);
+  const complementaryFilters = buildReferenceStyleTreatmentFilters(complementary);
+  assert.match(complementaryFilters.find((filter) => filter.startsWith("colorbalance=")), /rs=-.*rm=0\..*:rh=0\.0000.*pl=0/);
+  assert.ok(complementaryFilters.at(-1).startsWith("curves=master="));
+
+  assert.ok(recipeFor({ warmth: "warm", ambientColorCharacter: "warm_golden", dominantColorBias: "yellow_orange" }).temperature > 0, "globally warm reference preserves global warmth");
+  assert.ok(recipeFor({ warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint" }).temperature < 0, "globally cool reference preserves global coolness");
+});
+
 test("B2A reference authority suppresses accidental visual operations but retains ordinary edits", () => {
   const accidental = reconcileReferenceStylePlan({ version: "1", operations: [
     { type: "style_profile", profileId: "cinematic" },

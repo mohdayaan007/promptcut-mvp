@@ -134,7 +134,16 @@ const rankedDifference = (reference, target, values) => values.indexOf(reference
 const directionFromDifference = (difference) => difference > 0 ? "raise" : difference < 0 ? "lower" : "preserve";
 const directionalAmount = (difference, values) => intensity(Math.abs(difference) >= 2 ? "strong" : Math.abs(difference) === 1 ? "standard" : "subtle", values);
 const tonalBiasValue = Object.freeze({ neutral: 0, warm_yellow: 0.65, warm_orange: 1, cool_blue: -1, cool_cyan: -0.7, green_mint: -0.45 });
-const tonalDifference = (reference, target) => tonalBiasValue[reference] - tonalBiasValue[target];
+// Reference direction is authoritative. Target resemblance can attenuate an
+// already-matching band, but it must never turn a neutral reference into a
+// correction or reverse a warm/cool reference direction.
+function tonalDifference(reference, target) {
+  const referenceValue = tonalBiasValue[reference];
+  const targetValue = tonalBiasValue[target];
+  if (referenceValue === 0) return 0;
+  const sameDirection = Math.sign(referenceValue) === Math.sign(targetValue);
+  return Math.sign(referenceValue) * Math.max(0, Math.abs(referenceValue) - (sameDirection ? Math.abs(targetValue) : 0));
+}
 
 /**
  * Computes the bounded photographic intent from observed reference/target
@@ -156,6 +165,9 @@ export function deriveReferenceStyleDelta(analysis) {
   const shadowTemperatureDifference = tonalDifference(reference.shadowColorBias, target.shadowColorBias);
   const midtoneTemperatureDifference = tonalDifference(reference.midtoneColorBias, target.midtoneColorBias);
   const highlightTemperatureDifference = tonalDifference(reference.highlightColorBias, target.highlightColorBias);
+  const tonalDirections = [reference.shadowColorBias, reference.midtoneColorBias, reference.highlightColorBias]
+    .map((bias) => Math.sign(tonalBiasValue[bias]));
+  const complementaryTonalPalette = tonalDirections.includes(-1) && tonalDirections.includes(1);
   return Object.freeze({
     exposure: directionFromDifference(exposureDifference),
     exposureDifference,
@@ -174,6 +186,7 @@ export function deriveReferenceStyleDelta(analysis) {
     shadowTemperatureDifference,
     midtoneTemperatureDifference,
     highlightTemperatureDifference,
+    complementaryTonalPalette,
     colorSeparation: reference.colorSeparation,
     colorDifference,
     blackDifference,
@@ -206,7 +219,13 @@ export function deriveReferenceStyleTreatment({ analysis, metrics }) {
   const colorAmount = directionalAmount(delta.colorDifference, [0.08, 0.14, 0.22]);
   const colorAuthority = saturated && delta.color === "raise" ? Math.min(colorAmount, 0.11) : colorAmount;
   const warmthAmount = directionalAmount(delta.warmthDifference, [0.07, 0.13, 0.18]);
-  const ambientTemperature = direction(delta.warmth, warmthAmount);
+  // Complementary palettes use band controls rather than a global white-balance
+  // shift. A mixed reference with opposing bands is fully neutral globally;
+  // an unusual non-mixed split tone retains only a small ambient trace.
+  const complementaryGlobalTemperatureFactor = delta.complementaryTonalPalette
+    ? (delta.dominantColorBias === "mixed" ? 0 : 0.25)
+    : 1;
+  const ambientTemperature = direction(delta.warmth, warmthAmount) * complementaryGlobalTemperatureFactor;
   const tintAmount = delta.dominantColorBias === "green_mint" ? 0.065 : delta.dominantColorBias === "cyan_blue" || delta.dominantColorBias === "yellow_orange" ? 0.035 : 0;
   const ambientTint = delta.dominantColorBias === "green_mint" || delta.dominantColorBias === "cyan_blue" ? -tintAmount : delta.dominantColorBias === "yellow_orange" ? tintAmount : 0;
   // Skin constrains only hue/chroma authority. Tonal structure remains available
@@ -295,6 +314,8 @@ export function buildReferenceStyleReferenceAnalysisPrompt() {
   return [
     "Classify only the supplied reference image's bounded photographic signature. Do not create an edit plan or return numeric controls, filters, LUTs, paths, treatment advice, or prose.",
     "Return only the schema: peopleOrSkin; exposure and saturation as low, medium, or high; warmth as cool, neutral, or warm; ambientColorCharacter (neutral, warm_golden, cool_mint, cool_clean); dominantColorBias (neutral, yellow_orange, green_mint, cyan_blue, mixed); shadowColorBias, midtoneColorBias, and highlightColorBias (neutral, warm_yellow, warm_orange, cool_blue, cool_cyan, green_mint); highlightCharacter (natural, soft, flash); blackCharacter (lifted, neutral, deep); saturationCharacter (muted, natural, rich); and colorSeparation (neutral, rich_controlled, editorial).",
+    "ambientColorCharacter is a broad scene-wide cast affecting a large portion of the image. Do not infer it merely from one blue gate, yellow wall, window, or other local object. A large yellow wall plus a blue gate and neutral whites may have neutral ambientColorCharacter and mixed dominantColorBias.",
+    "For each tonal color band, choose the visually dominant, area-dominant, or treatment-defining hue in that luminance band. Do not default a mixed band to neutral merely because another hue is present; use neutral only when it is genuinely achromatic or approximately balanced. Broad yellow/ochre midtone surfaces may therefore be warm_yellow while blue geometry remains cool_blue in shadows.",
     "This reference signature must describe the reference image alone. You receive no target and must not infer or recommend any transfer treatment."
   ].join("\n\n");
 }
