@@ -31,8 +31,9 @@ import { extractVisualAdjustmentIntent, reconcileVisualAdjustments } from "@/lib
 import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL_VISUAL_RECIPE, STYLE_PROFILE_CATALOG, STYLE_PROFILE_CONSTRAINTS, STYLE_PROFILE_IDS, STYLE_PROFILE_STRENGTHS, compileStyleProfile, createCanonicalVisualRecipe, interpolateCanonicalVisualRecipe, resolveCurrentStyleProfile, resolveStyleProfile } from "@/lib/editor-core/style-profiles";
 import { createCanonicalReferenceStyleTreatment, REFERENCE_STYLE_TREATMENT_VERSION } from "@/lib/editor-core/reference-style-treatment";
 import { measureReferenceRgbFrame, REFERENCE_FRAME_METRICS_VERSION, summarizeReferenceFrameMetrics } from "@/lib/editor-core/reference-style-metrics";
+import { createReferenceStyleProxyFrames, extractTargetReferenceFrames } from "@/lib/editor-core/reference-style-media";
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
-import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, referenceStyleReferenceAnalysisSchema, referenceStyleTargetAnalysisSchema, requestsReferenceStyleMatch, TONAL_COLOR_BIASES, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
+import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, evaluateReferenceStyleProxy, refineReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, referenceStyleProxyEvaluationSchema, referenceStyleReferenceAnalysisSchema, referenceStyleTargetAnalysisSchema, requestsReferenceStyleMatch, TONAL_COLOR_BIASES, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
 
 function canonicalStyleRecipe(recipe) {
   return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
@@ -797,6 +798,52 @@ test("B2A tonal bands follow reference direction and complementary palettes supp
     { warmth: "cool", ambientColorCharacter: "cool_clean", dominantColorBias: "cyan_blue" }
   );
   assert.equal(coolOnCool.temperature, -0.07, "cool reference retains a conservative ambient floor on an already-cool target");
+});
+
+test("B2A one-pass proxy refinement is bounded, directional, and safe to skip", async () => {
+  const metrics = { lumaP05: 0.08, lumaP50: 0.45, lumaP95: 0.78, lumaP99: 0.84, nearBlackFraction: 0.01, nearWhiteFraction: 0, saturationIndex: 0.2 };
+  const signature = (overrides = {}) => ({ context: "lifestyle", peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", shadowColorBias: "neutral", midtoneColorBias: "neutral", highlightColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "natural", colorSeparation: "neutral", ...overrides });
+  const target = signature({ coherent: true, compatible: true });
+  const analysisFor = (reference, targetOverride = {}) => validateReferenceStyleAnalysis({ safe: true, reference: signature(reference), target: { ...target, ...targetOverride } });
+  const residual = (overrides = {}) => ({ available: true, evaluation: { confidence: "high", decision: "refine", residual: { exposure: "preserve", contrast: "preserve", saturation: "preserve", shadows: "preserve", highlights: "preserve", ambient: "matched", ...overrides } } });
+
+  const warmAnalysis = analysisFor({ warmth: "warm", ambientColorCharacter: "warm_golden", dominantColorBias: "yellow_orange" });
+  const warmInitial = deriveReferenceStyleTreatment({ analysis: warmAnalysis, metrics });
+  const unchanged = refineReferenceStyleTreatment({ initialTreatment: warmInitial, analysis: warmAnalysis, metrics, evaluation: { available: true, evaluation: { confidence: "low", decision: "matched", residual: residual().evaluation.residual } } });
+  assert.equal(unchanged.applied, false, "already-good or uncertain proxy keeps the approved initial recipe");
+  assert.deepEqual(unchanged.treatment, warmInitial);
+  const warmer = refineReferenceStyleTreatment({ initialTreatment: warmInitial, analysis: warmAnalysis, metrics, evaluation: residual({ ambient: "stronger" }) });
+  assert.equal(warmer.applied, true);
+  assert.ok(warmer.treatment.recipe.temperature > 0 && warmer.treatment.recipe.temperature <= 0.2, "warm refinement cannot reverse or exceed B2 ambient bounds");
+
+  const coolAnalysis = analysisFor({ warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint" });
+  const cool = refineReferenceStyleTreatment({ initialTreatment: deriveReferenceStyleTreatment({ analysis: coolAnalysis, metrics }), analysis: coolAnalysis, metrics, evaluation: residual({ ambient: "stronger" }) });
+  assert.ok(cool.treatment.recipe.temperature < 0, "cool refinement cannot reverse ambient direction");
+
+  const neutralAnalysis = analysisFor({ dominantColorBias: "mixed", shadowColorBias: "cool_blue", midtoneColorBias: "warm_yellow" });
+  const neutral = refineReferenceStyleTreatment({ initialTreatment: deriveReferenceStyleTreatment({ analysis: neutralAnalysis, metrics }), analysis: neutralAnalysis, metrics, evaluation: residual({ ambient: "stronger" }) });
+  assert.equal(neutral.treatment.recipe.temperature, 0, "neutral complementary architecture never receives a blanket cast");
+
+  const faceAnalysis = analysisFor({ peopleOrSkin: true, warmth: "warm", ambientColorCharacter: "warm_golden", dominantColorBias: "yellow_orange" }, { peopleOrSkin: true });
+  const face = refineReferenceStyleTreatment({ initialTreatment: deriveReferenceStyleTreatment({ analysis: faceAnalysis, metrics }), analysis: faceAnalysis, metrics, evaluation: residual({ ambient: "stronger" }) });
+  assert.ok(Math.abs(face.treatment.recipe.temperature) <= 0.12, "human proxy refinement keeps the skin hue cap");
+  const protectedHighlights = refineReferenceStyleTreatment({ initialTreatment: warmInitial, analysis: warmAnalysis, metrics: { ...metrics, lumaP99: 0.98 }, evaluation: residual({ exposure: "raise", highlights: "raise" }) });
+  assert.equal(protectedHighlights.treatment.recipe.highlights, warmInitial.recipe.highlights, "P99 risk blocks extra highlight lift");
+  assert.ok(protectedHighlights.treatment.recipe.brightness <= warmInitial.recipe.brightness, "P99 risk blocks extra brightness lift");
+  assert.throws(() => refineReferenceStyleTreatment({ initialTreatment: { version: 2, recipe: { unsupported: 1 } }, analysis: warmAnalysis, metrics, evaluation: residual() }), /unsupported recipe field/);
+
+  const calls = { generate: 0, deletes: 0 };
+  const fakeAi = {
+    files: { upload: async ({ file }) => ({ name: `file-${file}`, uri: `gemini://${file}`, mimeType: "image/jpeg" }), delete: async () => { calls.deletes += 1; } },
+    models: { generateContent: async () => { calls.generate += 1; return { text: JSON.stringify(residual({ contrast: "raise" }).evaluation) }; } }
+  };
+  const evaluated = await evaluateReferenceStyleProxy({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", proxyFrames: [{ imagePath: "/private/proxy.jpg" }], metrics, aiClient: fakeAi });
+  assert.equal(calls.generate, 1, "one optional structured comparison is the entire proxy evaluator budget");
+  assert.equal(calls.deletes, 2, "reference and scratch proxy Gemini files are cleaned");
+  assert.equal(evaluated.evaluation.residual.contrast, "raise");
+  assert.equal(referenceStyleProxyEvaluationSchema().additionalProperties, false);
+  const invalid = await evaluateReferenceStyleProxy({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", proxyFrames: [{ imagePath: "/private/proxy.jpg" }], metrics, aiClient: { ...fakeAi, models: { generateContent: async () => ({ text: "{}" }) } } });
+  assert.deepEqual(invalid, { available: false, reason: "proxy_evaluation_unavailable" }, "invalid evaluator output safely preserves the initial recipe");
 });
 
 test("B2A reference authority suppresses accidental visual operations but retains ordinary edits", () => {
@@ -3896,6 +3943,34 @@ test("B2 Stage 0 black lift and midtone gamma render safely across the determini
     assert.ok(
       longestRepeatedRun(gradientValues) <= longestRepeatedRun(sourceGradientValues) + 8,
       `black lift and gamma do not materially posterize the smooth gradient (source=${longestRepeatedRun(sourceGradientValues)}, rendered=${longestRepeatedRun(gradientValues)})`
+    );
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test("B2A scratch proxy frames use the production treatment chain without a second full render", { timeout: 60_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-b2a-proxy-"));
+  try {
+    const source = path.join(tempDirectory, "source.mp4");
+    await execFileAsync("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24", "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", source]);
+    const samples = await extractTargetReferenceFrames({ inputPath: source, duration: 3, scratchDirectory: tempDirectory, count: 3 });
+    const treatment = createCanonicalReferenceStyleTreatment({ version: 2, recipe: { brightness: 0.04, contrast: 0.1, saturation: 0.06, temperature: 0.07, tint: 0, shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, shadowTemperature: 0, midtoneTemperature: 0, highlightTemperature: 0 } });
+    const proxy = await createReferenceStyleProxyFrames({ targetFrames: samples.frames, treatment, scratchDirectory: tempDirectory, width: 256 });
+    assert.equal(proxy.frames.length, 3);
+    assert.deepEqual(proxy.frames.map((frame) => frame.timestamp), samples.frames.map((frame) => frame.timestamp), "proxy timestamps remain tied to the representative target samples");
+    assert.ok(proxy.filters.includes("scale=256:-2"));
+    for (const frame of proxy.frames) {
+      const probe = await probeStyleFixture(frame.imagePath);
+      assert.ok(probe.video.width <= 256 && probe.video.height <= 256, "proxy is bounded below final-video resolution");
+      await stat(frame.imagePath);
+    }
+    const cancelled = createExecutionController();
+    cancelled.cancel();
+    await assert.rejects(
+      createReferenceStyleProxyFrames({ targetFrames: samples.frames, treatment, scratchDirectory: tempDirectory, executionController: cancelled }),
+      EditExecutionCancelledError,
+      "proxy extraction observes the same exact-child cancellation controller"
     );
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });

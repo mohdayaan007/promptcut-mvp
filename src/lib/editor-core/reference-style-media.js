@@ -2,7 +2,7 @@ import { spawn as nodeSpawn } from "child_process";
 import { readFile } from "fs/promises";
 import path from "path";
 import { measureReferenceRgbFrame, summarizeReferenceFrameMetrics } from "@/lib/editor-core/reference-style-metrics";
-import { EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
+import { buildReferenceStyleTreatmentFilters, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 import { ReferenceStyleError } from "@/lib/editor-core/reference-style-matching";
 
 function run(cmd, args, { executionController, spawn = nodeSpawn, binary = false } = {}) {
@@ -50,4 +50,27 @@ export async function extractTargetReferenceFrames({ inputPath, duration, scratc
     frames.push({ timestamp, imagePath, metrics: measureReferenceRgbFrame(new Uint8Array(raw)) });
   }
   return Object.freeze({ frames: Object.freeze(frames), metrics: summarizeReferenceFrameMetrics(frames.map((frame) => frame.metrics)) });
+}
+
+/**
+ * Renders only the already-selected representative frames through the B2
+ * chain. This deliberately never creates a proxy video: it is a bounded,
+ * scratch-only check before the single production render.
+ */
+export async function createReferenceStyleProxyFrames({ targetFrames, treatment, scratchDirectory, executionController, width = 256 }) {
+  if (!Array.isArray(targetFrames) || !targetFrames.length) throw new Error("Reference proxy needs target frames");
+  if (!Number.isInteger(width) || width < 64 || width > 640) throw new Error("Reference proxy width is invalid");
+  const filters = [...buildReferenceStyleTreatmentFilters(treatment.recipe), `scale=${width}:-2`];
+  const frames = [];
+  for (const [index, frame] of targetFrames.entries()) {
+    const imagePath = path.join(scratchDirectory, `reference-proxy-${index}.jpg`);
+    await run("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", frame.imagePath, "-frames:v", "1", "-vf", filters.join(","), "-q:v", "3", imagePath], { executionController });
+    const raw = await run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", imagePath, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { executionController, binary: true });
+    frames.push(Object.freeze({ timestamp: frame.timestamp, imagePath, metrics: measureReferenceRgbFrame(new Uint8Array(raw)) }));
+  }
+  return Object.freeze({
+    frames: Object.freeze(frames),
+    metrics: summarizeReferenceFrameMetrics(frames.map((frame) => frame.metrics)),
+    filters: Object.freeze(filters)
+  });
 }

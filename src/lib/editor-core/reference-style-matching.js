@@ -1,6 +1,6 @@
 import { createCanonicalReferenceStyleTreatment } from "@/lib/editor-core/reference-style-treatment";
 import { GoogleGenAI, createPartFromUri } from "@google/genai";
-import { buildReferenceStyleTreatmentFilters } from "@/lib/editor-core/edit-executor";
+import { buildReferenceStyleTreatmentFilters, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 
 export const REFERENCE_STYLE_SAFE_ERROR = "This reference can’t be used for style matching. Please choose another image or video.";
 export const REFERENCE_STYLE_COHERENCE_ERROR = "This first version works best with visually coherent footage. Please choose another video.";
@@ -23,6 +23,9 @@ const HIGHLIGHT_CHARACTERS = Object.freeze(["natural", "soft", "flash"]);
 const BLACK_CHARACTERS = Object.freeze(["lifted", "neutral", "deep"]);
 const SATURATION_CHARACTERS = Object.freeze(["muted", "natural", "rich"]);
 const COLOR_SEPARATIONS = Object.freeze(["neutral", "rich_controlled", "editorial"]);
+const PROXY_CONFIDENCES = Object.freeze(["high", "low"]);
+const PROXY_DECISIONS = Object.freeze(["matched", "refine"]);
+const PROXY_AMBIENT_RESIDUALS = Object.freeze(["weaker", "matched", "stronger"]);
 export const TONAL_COLOR_BIASES = Object.freeze(["neutral", "warm_yellow", "warm_orange", "cool_blue", "cool_cyan", "green_mint"]);
 const OBSERVED_CONTEXTS = Object.freeze(["portrait", "lifestyle", "landscape", "architecture", "food", "product", "night", "mixed"]);
 const REFERENCE_ANALYSIS_VERSION = 2;
@@ -275,6 +278,127 @@ export function createReferenceStyleDiagnostic({ jobId, analysis, metrics, treat
   const canonical = createCanonicalReferenceStyleTreatment(treatment);
   const derivedDelta = deriveReferenceStyleDelta(safe);
   return Object.freeze({ jobId, referenceAnalysisVersion: REFERENCE_ANALYSIS_VERSION, targetAnalysisVersion: TARGET_ANALYSIS_VERSION, referenceSignature: safe.reference, targetSignature: safe.target, derivedDelta, finalTreatmentIntent: derivedDelta, metrics, recipe: canonical.recipe, filters: buildReferenceStyleTreatmentFilters(canonical.recipe) });
+}
+
+function proxyResidualEnum(value, field) { return enumValue(value, DIRECTIONS, `proxy residual ${field}`); }
+
+/** A deliberately small, categorical comparison contract: no prose or numeric controls cross this boundary. */
+export function referenceStyleProxyEvaluationSchema() {
+  const direction = { type: "string", enum: DIRECTIONS };
+  return {
+    type: "object",
+    properties: {
+      confidence: { type: "string", enum: PROXY_CONFIDENCES },
+      decision: { type: "string", enum: PROXY_DECISIONS },
+      residual: {
+        type: "object",
+        properties: {
+          exposure: direction, contrast: direction, saturation: direction,
+          shadows: direction, highlights: direction,
+          ambient: { type: "string", enum: PROXY_AMBIENT_RESIDUALS }
+        },
+        required: ["exposure", "contrast", "saturation", "shadows", "highlights", "ambient"],
+        additionalProperties: false
+      }
+    },
+    required: ["confidence", "decision", "residual"],
+    additionalProperties: false
+  };
+}
+
+export function validateReferenceStyleProxyEvaluation(value) {
+  const result = exactObject(value, ["confidence", "decision", "residual"], "proxy evaluation");
+  const residual = exactObject(result.residual, ["exposure", "contrast", "saturation", "shadows", "highlights", "ambient"], "proxy residual");
+  return Object.freeze({
+    confidence: enumValue(result.confidence, PROXY_CONFIDENCES, "proxy confidence"),
+    decision: enumValue(result.decision, PROXY_DECISIONS, "proxy decision"),
+    residual: Object.freeze({
+      exposure: proxyResidualEnum(residual.exposure, "exposure"),
+      contrast: proxyResidualEnum(residual.contrast, "contrast"),
+      saturation: proxyResidualEnum(residual.saturation, "saturation"),
+      shadows: proxyResidualEnum(residual.shadows, "shadows"),
+      highlights: proxyResidualEnum(residual.highlights, "highlights"),
+      ambient: enumValue(residual.ambient, PROXY_AMBIENT_RESIDUALS, "proxy residual ambient")
+    })
+  });
+}
+
+export function buildReferenceStyleProxyEvaluationPrompt({ metrics }) {
+  return [
+    "Compare the supplied reference image with the treated target proxy frames only for transferable photographic appearance. Do not compare subject matter or demand scene replication.",
+    "Return only the structured residual assessment. Use refine only for a clear, bounded photographic improvement. If uncertain, use low confidence and matched.",
+    "Never return numeric values, filters, LUTs, paths, edit plans, or prose. Preserve the reference ambient direction: ambient describes only whether the already-applied ambient treatment is weaker, matched, or stronger than needed.",
+    `Server-measured treated proxy metrics: ${JSON.stringify(metrics)}`
+  ].join("\n\n");
+}
+
+/**
+ * One optional comparison call after the authoritative initial derivation.
+ * Any API/schema failure is intentionally a safe no-refinement outcome.
+ */
+export async function evaluateReferenceStyleProxy({ referencePath, referenceMimeType, proxyFrames, metrics, aiClient, executionController }) {
+  const ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const uploaded = [];
+  try {
+    executionController?.throwIfCancelled();
+    const reference = await ai.files.upload({ file: referencePath, config: { mimeType: referenceMimeType } });
+    uploaded.push(reference);
+    const proxies = [];
+    for (const frame of proxyFrames) {
+      executionController?.throwIfCancelled();
+      const uploadedFrame = await ai.files.upload({ file: frame.imagePath, config: { mimeType: "image/jpeg" } });
+      uploaded.push(uploadedFrame); proxies.push(uploadedFrame);
+    }
+    // The proxy pass has a strict one-call budget. Unlike initial analysis it
+    // intentionally does not retry a transient evaluator request.
+    const response = await ai.models.generateContent({
+      model: process.env.GEMINI_MODEL || "gemini-3.6-flash",
+      contents: ["REFERENCE IMAGE", createPartFromUri(reference.uri, reference.mimeType || referenceMimeType), ...proxies.flatMap((file, index) => [`TREATED TARGET PROXY ${index + 1}`, createPartFromUri(file.uri, file.mimeType || "image/jpeg")]), buildReferenceStyleProxyEvaluationPrompt({ metrics })],
+      config: { temperature: 0, responseMimeType: "application/json", responseJsonSchema: referenceStyleProxyEvaluationSchema() }
+    });
+    executionController?.throwIfCancelled();
+    return Object.freeze({ available: true, evaluation: validateReferenceStyleProxyEvaluation(JSON.parse(response.text || "")) });
+  } catch (error) {
+    if (error instanceof EditExecutionCancelledError || (error instanceof ReferenceStyleError && error.reason === "REFERENCE_SAFETY_REJECTED")) throw error;
+    return Object.freeze({ available: false, reason: "proxy_evaluation_unavailable" });
+  } finally {
+    await Promise.all(uploaded.map((file) => file?.name ? ai.files.delete({ name: file.name }).catch(() => {}) : null));
+  }
+}
+
+function adjust(value, residual, amount, { canRaise = true } = {}) {
+  if (residual === "raise" && canRaise) return value + amount;
+  if (residual === "lower") return value - amount;
+  return value;
+}
+
+/** Server-owned one-pass correction. It never accepts model numbers or reverses ambient authority. */
+export function refineReferenceStyleTreatment({ initialTreatment, analysis, metrics, evaluation }) {
+  const initial = createCanonicalReferenceStyleTreatment(initialTreatment);
+  const safe = validateReferenceStyleAnalysis(analysis);
+  if (!evaluation?.available || !evaluation.evaluation || evaluation.evaluation.confidence !== "high" || evaluation.evaluation.decision !== "refine") {
+    return Object.freeze({ treatment: initial, applied: false, reason: evaluation?.available ? "proxy_already_matched_or_uncertain" : "proxy_evaluation_unavailable" });
+  }
+  const residual = evaluation.evaluation.residual;
+  const highToneRisk = metrics?.lumaP95 >= 0.85 || metrics?.lumaP99 >= 0.94;
+  const saturated = metrics?.saturationIndex > 0.62 || safe.target.saturationCharacter === "rich";
+  const recipe = { ...initial.recipe };
+  recipe.brightness = adjust(recipe.brightness, residual.exposure, 0.03, { canRaise: !highToneRisk });
+  recipe.contrast = adjust(recipe.contrast, residual.contrast, 0.04, { canRaise: !highToneRisk });
+  recipe.saturation = adjust(recipe.saturation, residual.saturation, 0.04, { canRaise: !saturated });
+  recipe.shadows = adjust(recipe.shadows, residual.shadows, 0.035);
+  recipe.highlights = adjust(recipe.highlights, residual.highlights, 0.035, { canRaise: !highToneRisk });
+  const ambient = ambientDirection[safe.reference.ambientColorCharacter];
+  if (ambient !== 0) {
+    const skinCap = safe.target.peopleOrSkin || safe.reference.peopleOrSkin ? 0.12 : 0.2;
+    if (residual.ambient === "stronger") recipe.temperature = bounded(recipe.temperature + (ambient * 0.025), -skinCap, skinCap);
+    if (residual.ambient === "weaker") recipe.temperature = ambient > 0 ? Math.max(0.05, recipe.temperature * 0.75) : Math.min(-0.05, recipe.temperature * 0.75);
+  }
+  // A genuinely neutral complementary reference must remain globally neutral.
+  if (safe.reference.ambientColorCharacter === "neutral" && safe.reference.warmth === "neutral" && safe.reference.dominantColorBias === "mixed") recipe.temperature = 0;
+  const treatment = createCanonicalReferenceStyleTreatment({ version: 2, recipe });
+  const applied = JSON.stringify(treatment.recipe) !== JSON.stringify(initial.recipe);
+  return Object.freeze({ treatment: applied ? treatment : initial, applied, reason: applied ? "bounded_proxy_residual" : "proxy_residual_has_no_safe_adjustment" });
 }
 
 /** Safe worker diagnostic: it intentionally drops model text and media metadata. */

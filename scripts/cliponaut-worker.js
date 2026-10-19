@@ -9,8 +9,8 @@ import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { CaptionError, createCaptionCues, extractCaptionCorrection, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
-import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, ReferenceStyleError, requestsReferenceStyleMatch } from "@/lib/editor-core/reference-style-matching";
-import { extractTargetReferenceFrames, validateReferenceImageFile } from "@/lib/editor-core/reference-style-media";
+import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, evaluateReferenceStyleProxy, refineReferenceStyleTreatment, ReferenceStyleError, requestsReferenceStyleMatch } from "@/lib/editor-core/reference-style-matching";
+import { createReferenceStyleProxyFrames, extractTargetReferenceFrames, validateReferenceImageFile } from "@/lib/editor-core/reference-style-media";
 import { is4kCapableMedia } from "@/lib/media/media-config";
 import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
 import { jobConfig } from "@/lib/jobs/job-config";
@@ -107,6 +107,22 @@ async function processJob(job) {
       const samples = await extractTargetReferenceFrames({ inputPath: inputPaths[0], duration: media[0].duration, scratchDirectory: scratch, executionController });
       const result = await analyzeReferenceStyle({ referencePath, referenceMimeType: job.reference.type, targetFrames: samples.frames, metrics: samples.metrics });
       referenceTreatment = result.treatment;
+      try {
+        executionController.throwIfCancelled();
+        const proxy = await createReferenceStyleProxyFrames({ targetFrames: samples.frames, treatment: referenceTreatment, scratchDirectory: scratch, executionController });
+        const evaluation = await evaluateReferenceStyleProxy({ referencePath, referenceMimeType: job.reference.type, proxyFrames: proxy.frames, metrics: proxy.metrics, executionController });
+        executionController.throwIfCancelled();
+        const refinement = refineReferenceStyleTreatment({ initialTreatment: referenceTreatment, analysis: result.analysis, metrics: proxy.metrics, evaluation });
+        referenceTreatment = refinement.treatment;
+        console.info("Reference style proxy refinement:", {
+          jobId: job.id, initialRecipe: result.treatment.recipe, proxyFrameCount: proxy.frames.length, proxyMetrics: proxy.metrics,
+          residual: evaluation.available ? evaluation.evaluation : null, refinementApplied: refinement.applied,
+          reason: refinement.reason, finalRecipe: referenceTreatment.recipe
+        });
+      } catch (error) {
+        if (error instanceof EditExecutionCancelledError) throw error;
+        console.info("Reference style proxy refinement skipped:", { jobId: job.id, reason: "proxy_generation_unavailable", finalRecipe: referenceTreatment.recipe });
+      }
       console.info("Reference style treatment prepared:", {
         frameCount: samples.frames.length,
         ...createReferenceStyleDiagnostic({ jobId: job.id, analysis: result.analysis, metrics: samples.metrics, treatment: referenceTreatment })
