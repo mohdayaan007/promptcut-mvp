@@ -219,12 +219,14 @@ export function deriveReferenceStyleTreatment({ analysis, metrics }) {
   const colorAmount = directionalAmount(delta.colorDifference, [0.08, 0.14, 0.22]);
   const colorAuthority = saturated && delta.color === "raise" ? Math.min(colorAmount, 0.11) : colorAmount;
   const warmthAmount = directionalAmount(delta.warmthDifference, [0.07, 0.13, 0.18]);
-  // Complementary palettes use band controls rather than a global white-balance
-  // shift. A mixed reference with opposing bands is fully neutral globally;
-  // an unusual non-mixed split tone retains only a small ambient trace.
-  const complementaryGlobalTemperatureFactor = delta.complementaryTonalPalette
-    ? (delta.dominantColorBias === "mixed" ? 0 : 0.25)
-    : 1;
+  // Only a genuinely neutral, mixed broad scene is a spatial-complementary
+  // palette. A cool/warm ambient cast remains globally authoritative even
+  // when local tonal accents point in the opposite direction.
+  const neutralSpatialComplementary = delta.complementaryTonalPalette &&
+    delta.ambientColorCharacter === "neutral" &&
+    safe.reference.warmth === "neutral" &&
+    delta.dominantColorBias === "mixed";
+  const complementaryGlobalTemperatureFactor = neutralSpatialComplementary ? 0 : 1;
   const ambientTemperature = direction(delta.warmth, warmthAmount) * complementaryGlobalTemperatureFactor;
   const tintAmount = delta.dominantColorBias === "green_mint" ? 0.065 : delta.dominantColorBias === "cyan_blue" || delta.dominantColorBias === "yellow_orange" ? 0.035 : 0;
   const ambientTint = delta.dominantColorBias === "green_mint" || delta.dominantColorBias === "cyan_blue" ? -tintAmount : delta.dominantColorBias === "yellow_orange" ? tintAmount : 0;

@@ -778,6 +778,14 @@ test("B2A tonal bands follow reference direction and complementary palettes supp
 
   assert.ok(recipeFor({ warmth: "warm", ambientColorCharacter: "warm_golden", dominantColorBias: "yellow_orange" }).temperature > 0, "globally warm reference preserves global warmth");
   assert.ok(recipeFor({ warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint" }).temperature < 0, "globally cool reference preserves global coolness");
+
+  const coolMintAccents = recipeFor({ warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "mixed", shadowColorBias: "green_mint", midtoneColorBias: "warm_yellow", highlightColorBias: "warm_yellow" });
+  assert.ok(coolMintAccents.temperature < 0, "cool/mint ambient remains globally cool despite warm accents");
+  assert.ok(coolMintAccents.shadowTemperature <= 0 && coolMintAccents.midtoneTemperature >= 0);
+  const coolCleanAccents = recipeFor({ warmth: "cool", ambientColorCharacter: "cool_clean", dominantColorBias: "mixed", shadowColorBias: "cool_blue", midtoneColorBias: "warm_yellow" });
+  assert.ok(coolCleanAccents.temperature < 0, "cool-clean ambient remains globally cool despite warm accents");
+  const warmGoldenAccents = recipeFor({ warmth: "warm", ambientColorCharacter: "warm_golden", dominantColorBias: "mixed", shadowColorBias: "cool_blue", midtoneColorBias: "warm_yellow" });
+  assert.ok(warmGoldenAccents.temperature > 0, "warm-golden ambient remains globally warm despite cool accents");
 });
 
 test("B2A reference authority suppresses accidental visual operations but retains ordinary edits", () => {
