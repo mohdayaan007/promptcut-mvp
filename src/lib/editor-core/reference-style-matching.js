@@ -220,12 +220,19 @@ export function deriveReferenceStyleTreatment({ analysis, metrics }) {
   const shadowHeadroom = metrics.lumaP05 > 0.035 && metrics.nearBlackFraction < 0.08;
   const saturated = metrics.saturationIndex > 0.62 || safe.target.saturationCharacter === "rich";
   const skin = safe.target.peopleOrSkin || safe.reference.peopleOrSkin;
+  // This is a conservative global treatment envelope for footage containing
+  // people, not selective skin masking. Strong warm references otherwise stack
+  // warm global/band balance, saturation, vibrance and dense shadows across
+  // the entire frame, which can turn skin and neutral backgrounds orange.
+  const warmHumanTarget = safe.target.peopleOrSkin && delta.ambientColorCharacter === "warm_golden";
   const editorial = delta.colorSeparation === "editorial";
   const richColor = delta.colorSeparation === "rich_controlled";
   const exposureAmount = directionalAmount(delta.exposureDifference, [0.08, 0.14, 0.2]);
   const contrastAmount = directionalAmount(delta.highlightDifference || delta.separationDifference, [0.08, 0.14, 0.22]);
   const colorAmount = directionalAmount(delta.colorDifference, [0.08, 0.14, 0.22]);
-  const colorAuthority = saturated && delta.color === "raise" ? Math.min(colorAmount, 0.11) : colorAmount;
+  const colorAuthority = delta.color === "raise"
+    ? Math.min(colorAmount, warmHumanTarget ? 0.08 : saturated ? 0.11 : colorAmount)
+    : colorAmount;
   const warmthAmount = directionalAmount(delta.warmthDifference, [0.07, 0.13, 0.18]);
   // Only a genuinely neutral, mixed broad scene is a spatial-complementary
   // palette. A cool/warm ambient cast remains globally authoritative even
@@ -249,22 +256,25 @@ export function deriveReferenceStyleTreatment({ analysis, metrics }) {
   const ambientTint = delta.dominantColorBias === "green_mint" || delta.dominantColorBias === "cyan_blue" ? -tintAmount : delta.dominantColorBias === "yellow_orange" ? tintAmount : 0;
   // Skin constrains only hue/chroma authority. Tonal structure remains available
   // so a human target can still inherit a reference's photographic character.
-  const skinHueCap = skin ? 0.12 : 0.2;
-  const skinTintCap = skin ? 0.055 : 0.1;
-  const tonalTemperatureCap = skin ? 0.1 : 0.18;
+  const skinHueCap = warmHumanTarget ? 0.075 : skin ? 0.12 : 0.2;
+  const skinTintCap = warmHumanTarget ? 0.025 : skin ? 0.055 : 0.1;
+  const tonalTemperatureCap = warmHumanTarget ? 0.055 : skin ? 0.1 : 0.18;
   const tonalTemperature = (difference) => bounded(difference * 0.11, -tonalTemperatureCap, tonalTemperatureCap);
-  const highlightSafeContrast = highToneRisk ? Math.min(contrastAmount, 0.1) : contrastAmount;
+  const highlightSafeContrast = warmHumanTarget ? Math.min(contrastAmount, 0.1) : highToneRisk ? Math.min(contrastAmount, 0.1) : contrastAmount;
+  const requestedShadows = delta.blacks === "raise" ? directionalAmount(delta.blackDifference, [0.07, 0.13, 0.2]) : delta.blacks === "lower" && shadowHeadroom ? -directionalAmount(delta.blackDifference, [0.05, 0.1, 0.16]) : 0;
+  const requestedBlackLift = delta.blacks === "raise" ? directionalAmount(delta.blackDifference, [0.1, 0.18, 0.28]) : delta.blacks === "lower" && shadowHeadroom ? -directionalAmount(delta.blackDifference, [0.08, 0.14, 0.22]) : 0;
+  const requestedVibrance = delta.color === "raise" ? (saturated ? Math.min(colorAuthority, 0.09) : colorAuthority + (editorial ? 0.1 : richColor ? 0.05 : 0)) : delta.color === "lower" ? -0.08 : editorial ? 0.08 : 0;
   const recipe = {
     brightness: direction(delta.exposure, brightHeadroom ? exposureAmount : Math.min(exposureAmount, 0.07)),
     contrast: direction(delta.contrast, highlightSafeContrast),
     saturation: direction(delta.color, colorAuthority),
     temperature: bounded(ambientTemperature, -skinHueCap, skinHueCap),
     tint: bounded(ambientTint, -skinTintCap, skinTintCap),
-    shadows: delta.blacks === "raise" ? directionalAmount(delta.blackDifference, [0.07, 0.13, 0.2]) : delta.blacks === "lower" && shadowHeadroom ? -directionalAmount(delta.blackDifference, [0.05, 0.1, 0.16]) : 0,
+    shadows: warmHumanTarget ? Math.max(-0.04, requestedShadows) : requestedShadows,
     highlights: delta.highlights === "raise" && !limitedHighlights ? directionalAmount(delta.highlightDifference, [0.08, 0.15, 0.22]) : delta.highlights === "lower" ? -directionalAmount(delta.highlightDifference, [0.08, 0.15, 0.23]) : 0,
-    vibrance: delta.color === "raise" ? (saturated ? Math.min(colorAuthority, 0.09) : colorAuthority + (editorial ? 0.1 : richColor ? 0.05 : 0)) : delta.color === "lower" ? -0.08 : editorial ? 0.08 : 0,
-    blackLift: delta.blacks === "raise" ? directionalAmount(delta.blackDifference, [0.1, 0.18, 0.28]) : delta.blacks === "lower" && shadowHeadroom ? -directionalAmount(delta.blackDifference, [0.08, 0.14, 0.22]) : 0,
-    midtoneGamma: delta.exposure === "raise" && brightHeadroom ? directionalAmount(delta.exposureDifference, [0.06, 0.11, 0.16]) : delta.exposure === "lower" && shadowHeadroom ? -0.08 : delta.highlights === "raise" && brightHeadroom ? 0.07 : 0,
+    vibrance: warmHumanTarget ? Math.min(requestedVibrance, 0.12) : requestedVibrance,
+    blackLift: warmHumanTarget ? Math.max(-0.06, requestedBlackLift) : requestedBlackLift,
+    midtoneGamma: delta.exposure === "raise" && brightHeadroom ? directionalAmount(delta.exposureDifference, [0.06, 0.11, 0.16]) : delta.exposure === "lower" && shadowHeadroom ? (warmHumanTarget ? -0.04 : -0.08) : delta.highlights === "raise" && brightHeadroom ? 0.07 : 0,
     shadowTemperature: tonalTemperature(delta.shadowTemperatureDifference),
     midtoneTemperature: tonalTemperature(delta.midtoneTemperatureDifference),
     highlightTemperature: tonalTemperature(delta.highlightTemperatureDifference)

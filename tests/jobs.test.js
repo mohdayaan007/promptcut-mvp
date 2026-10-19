@@ -545,13 +545,13 @@ test("B2A reference style contracts keep private image metadata separate and der
   const treatment = deriveReferenceStyleTreatment({ analysis, metrics: { lumaP05: 0.02, lumaP50: 0.45, lumaP95: 0.96, nearBlackFraction: 0.1, nearWhiteFraction: 0.05, saturationIndex: 0.8 } });
   assert.equal(treatment.version, 2);
   assert.equal(treatment.recipe.brightness, 0.07, "near-clipped targets cap reference-directed exposure lift");
-  assert.equal(treatment.recipe.saturation, 0.11, "already-saturated targets cap color lift without neutralizing it");
-  assert.equal(treatment.recipe.temperature, 0.12, "skin caps hue authority without weakening tonal treatment");
+  assert.equal(treatment.recipe.saturation, 0.08, "warm human targets retain color while capping the combined orange pressure");
+  assert.equal(treatment.recipe.temperature, 0.075, "warm human targets use a restrained global warmth envelope");
   assert.equal(treatment.recipe.shadows, 0, "underexposed targets do not deepen blacks");
   assert.throws(() => validateReferenceStyleAnalysis({ ...analysis, safe: false }), (error) => error instanceof ReferenceStyleError && error.message === REFERENCE_STYLE_SAFE_ERROR);
   assert.throws(() => deriveReferenceStyleTreatment({ analysis: { ...analysis, target: { ...analysis.target, coherent: false } }, metrics: { lumaP05: 0.1, lumaP50: 0.5, lumaP95: 0.8, nearBlackFraction: 0, nearWhiteFraction: 0, saturationIndex: 0.2 } }), /visually coherent footage/);
   const plan = validateEditPlan({ version: "1", operations: [{ type: "reference_style_treatment", treatment }] });
-  assert.equal(plan.operations[0].treatment.recipe.temperature, 0.12);
+  assert.equal(plan.operations[0].treatment.recipe.temperature, 0.075);
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "reference_style_treatment", sourceId: "source-1", treatment }] }), /sourceId is supported only/);
   assert.throws(() => validateEditPlan({ version: "1", operations: [{ type: "reference_style_treatment", treatment }, { type: "style_profile", profileId: "cinematic" }] }), /conflicts with named visual styles/);
   const diagnostic = createReferenceStyleDiagnostic({ jobId: "job-safe", analysis, metrics: { lumaP05: 0.02, lumaP50: 0.45, lumaP95: 0.96, nearBlackFraction: 0.1, nearWhiteFraction: 0.05, saturationIndex: 0.8 }, treatment });
@@ -577,6 +577,22 @@ test("B2A reference-directed signatures retain strong bounded authority while sk
     shadowTemperature: 0, midtoneTemperature: 0, highlightTemperature: 0
   });
   assert.ok(buildReferenceStyleTreatmentFilters(treatment.recipe).length >= 4);
+});
+
+test("B2A warm-golden human footage uses a restrained combined treatment while landscapes retain warmth", () => {
+  const reference = { context: "lifestyle", peopleOrSkin: true, exposure: "high", saturation: "high", warmth: "warm", ambientColorCharacter: "warm_golden", dominantColorBias: "yellow_orange", highlightCharacter: "flash", blackCharacter: "deep", saturationCharacter: "rich", colorSeparation: "editorial" };
+  const target = { context: "portrait", coherent: true, peopleOrSkin: true, exposure: "medium", saturation: "low", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "muted", colorSeparation: "neutral", compatible: true };
+  const metrics = { lumaP05: 0.18, lumaP50: 0.48, lumaP95: 0.78, lumaP99: 0.84, nearBlackFraction: 0, nearWhiteFraction: 0, saturationIndex: 0.1 };
+  const human = deriveReferenceStyleTreatment({ analysis: { safe: true, reference, target }, metrics }).recipe;
+  const landscape = deriveReferenceStyleTreatment({ analysis: { safe: true, reference, target: { ...target, context: "landscape", peopleOrSkin: false } }, metrics }).recipe;
+  assert.deepEqual(
+    { temperature: human.temperature, tint: human.tint, saturation: human.saturation, vibrance: human.vibrance, contrast: human.contrast, shadows: human.shadows, blackLift: human.blackLift },
+    { temperature: 0.075, tint: 0.025, saturation: 0.08, vibrance: 0.12, contrast: 0.1, shadows: -0.04, blackLift: -0.06 },
+    "human warm treatment limits the combined global color and density stack without claiming selective masking"
+  );
+  assert.ok(landscape.temperature > human.temperature && landscape.saturation > human.saturation && landscape.vibrance > human.vibrance, "non-human outdoor footage retains meaningful reference-directed golden treatment");
+  assert.equal(human.brightness, landscape.brightness, "human safety does not unnecessarily remove reference-directed exposure support");
+  assert.ok(buildReferenceStyleTreatmentFilters(human).at(-1).startsWith("curves=master="), "human treatment retains protected final curve ordering");
 });
 
 test("B2A reference analysis contract defaults enrichment but fails closed on safety facts", async () => {
