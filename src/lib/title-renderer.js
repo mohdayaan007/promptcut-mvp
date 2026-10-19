@@ -35,9 +35,19 @@ function assTimestamp(seconds) {
   return `${Math.floor(totalMinutes / 60)}:${String(totalMinutes % 60).padStart(2, "0")}:${String(secondsPart).padStart(2, "0")}.${String(centiseconds).padStart(2, "0")}`;
 }
 
-function runOverrides(run, height) {
+function safeReadabilityOverrides(readability) {
+  if (!readability || typeof readability !== "object") return "";
+  const outline = Number(readability.outline);
+  const shadow = Number(readability.shadow);
+  if (!Number.isFinite(outline) || !Number.isFinite(shadow) || outline < 0 || outline > 2 || shadow < 0 || shadow > 1) return "";
+  // Server-owned values only. This remains intentionally understated rather
+  // than introducing a title-card or a heavy universal shadow.
+  return `\\bord${outline}\\shad${shadow}\\3c&H55000000&`;
+}
+
+function runOverrides(run, height, readability) {
   const font = FONT_CATALOG[run.font];
-  return `{\\fn${escapeAssFont(font.family)}\\fs${titleFontSize(run.size, height)}\\c${assColor(run.color)}\\b${run.weight === "bold" ? 1 : 0}}`;
+  return `{${safeReadabilityOverrides(readability)}\\fn${escapeAssFont(font.family)}\\fs${titleFontSize(run.size, height)}\\c${assColor(run.color)}\\b${run.weight === "bold" ? 1 : 0}}`;
 }
 
 export function buildAssDocument(titles, { width, height }) {
@@ -58,7 +68,7 @@ export function buildAssDocument(titles, { width, height }) {
 
   for (const title of titles) {
     const { alignment, x, y } = positionForTitle(title.position, width, height);
-    const text = title.runs.map((run) => `${runOverrides(run, height)}${escapeAssText(run.text)}`).join("");
+    const text = title.runs.map((run) => `${runOverrides(run, height, title.readability)}${escapeAssText(run.text)}`).join("");
     lines.push(`Dialogue: 0,${assTimestamp(title.start)},${assTimestamp(title.end)},Default,,0,0,0,,{\\an${alignment}\\pos(${x},${y})}${text}`);
   }
   return `${lines.join("\n")}\n`;

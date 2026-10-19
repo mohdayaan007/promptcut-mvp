@@ -11,7 +11,7 @@ import { CaptionError, createCaptionCues, extractCaptionCorrection, requestsCapt
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
 import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, evaluateReferenceStyleProxy, isB2aProxyRefinementEnabled, refineReferenceStyleTreatment, ReferenceStyleError, requestsReferenceStyleMatch } from "@/lib/editor-core/reference-style-matching";
 import { createReferenceStyleProxyFrames, extractTargetReferenceFrames, validateReferenceImageFile } from "@/lib/editor-core/reference-style-media";
-import { analyzeTypographyReference, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, TypographyReferenceError } from "@/lib/editor-core/typography-reference-matching";
+import { analyzeTypographyReference, extractTypographyReferenceSelector, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, TypographyReferenceError } from "@/lib/editor-core/typography-reference-matching";
 import { parseTitle } from "@/lib/title-parser";
 import { is4kCapableMedia } from "@/lib/media/media-config";
 import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
@@ -47,6 +47,7 @@ function safeError(error) {
     if (error.reason === "TYPOGRAPHY_REFERENCE_SAFETY_REJECTED") return "This reference can’t be used for style matching. Please choose another image or video.";
     if (error.reason === "TYPOGRAPHY_REFERENCE_AMBIGUOUS") return "This reference has more than one typography style. Please choose a clearer reference.";
     if (error.reason === "TYPOGRAPHY_REFERENCE_NO_TEXT") return "This reference doesn’t contain a clear typography style.";
+    if (error.reason === "TYPOGRAPHY_REFERENCE_SELECTOR_NO_MATCH") return "I couldn’t identify that typography in the reference.";
     if (error.reason === "TYPOGRAPHY_TITLE_REQUIRED") return "Add a title in your request to use a typography reference.";
     return "This reference image could not be used safely.";
   }
@@ -115,7 +116,7 @@ async function processJob(job) {
       const referencePath = path.join(scratch, `reference.${extension}`);
       await downloadObject(job.reference.key, referencePath);
       await validateReferenceImageFile({ inputPath: referencePath, type: job.reference.type, executionController });
-      const result = await analyzeTypographyReference({ referencePath, referenceMimeType: job.reference.type });
+      const result = await analyzeTypographyReference({ referencePath, referenceMimeType: job.reference.type, selector: extractTypographyReferenceSelector(job.prompt) });
       typographyTreatment = result.treatment;
       console.info("Typography reference treatment prepared:", {
         jobId: job.id,
@@ -123,7 +124,8 @@ async function processJob(job) {
         weight: typographyTreatment.weight,
         size: typographyTreatment.size,
         color: typographyTreatment.color,
-        position: typographyTreatment.position
+        position: typographyTreatment.position,
+        selectedCandidateId: typographyTreatment.selectedCandidateId
       });
     } else if (job.reference && requestsReferenceStyleMatch(job.prompt, true)) {
       if (sources.length !== 1) throw new ReferenceStyleError("REFERENCE_TARGET_COUNT", "Reference style matching currently supports one target video.");

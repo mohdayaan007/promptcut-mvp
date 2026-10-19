@@ -585,6 +585,41 @@ async function applyTitles(input, output, titles, { width, height, tempDirectory
   return output;
 }
 
+/** A B2B-only, one-frame safeguard; it never changes ordinary title rendering. */
+export function titleReadabilityForLuma(luma) {
+  if (!Number.isFinite(luma) || luma < 0.62) return null;
+  return Object.freeze({ outline: 1.45, shadow: 0.3 });
+}
+
+async function sampleTitleFrameLuma(input, seconds, executionController) {
+  try {
+    const { stderr } = await exec(FFMPEG, [
+      "-hide_banner", "-loglevel", "info", "-ss", String(seconds), "-i", input,
+      "-frames:v", "1", "-vf", "signalstats,metadata=print", "-f", "null", "-"
+    ], { executionController });
+    const match = stderr.match(/lavfi\.signalstats\.YAVG=([0-9.]+)/);
+    const average = Number(match?.[1]);
+    return Number.isFinite(average) ? average / 255 : null;
+  } catch (error) {
+    if (error instanceof EditExecutionCancelledError) throw error;
+    return null;
+  }
+}
+
+async function prepareTargetAwareTitles(titles, input, executionController) {
+  const prepared = [];
+  for (const title of titles) {
+    if (title.readability?.mode !== "target_aware") {
+      prepared.push(title);
+      continue;
+    }
+    const sampleTime = title.start + Math.min(0.5, (title.end - title.start) / 2);
+    const readability = titleReadabilityForLuma(await sampleTitleFrameLuma(input, sampleTime, executionController));
+    prepared.push(readability ? { ...title, readability } : { ...title, readability: null });
+  }
+  return prepared;
+}
+
 /** Executes only capabilities registered in the validated edit plan. */
 export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog = [], tempDirectory, exportQuality = "standard", executionController, captionCues = [], captionCorrection = null, jobId = null }) {
   const sequence = plan.operations.find((operation) => operation.type === "sequence");
@@ -697,7 +732,8 @@ export async function executeEditPlan({ inputPaths, media, plan, sourceCatalog =
     weight: captionStyle.weight
   } : null;
   if (captionDiagnostics) console.info("Caption render prepared:", captionDiagnostics);
-  const titledVideo = await applyTitles(timedVideo, path.join(tempDirectory, "titled.mp4"), [...titles, ...captionLayers], {
+  const readableTitles = await prepareTargetAwareTitles(titles, timedVideo, executionController);
+  const titledVideo = await applyTitles(timedVideo, path.join(tempDirectory, "titled.mp4"), [...readableTitles, ...captionLayers], {
     width: cropSettings.width, height: cropSettings.height, tempDirectory, executionController, captionDiagnostics
   });
   const audioControlledVideo = await applyAudioControls(titledVideo, path.join(tempDirectory, "audio-controlled.mp4"), audioVolume, audioFade, executionController);

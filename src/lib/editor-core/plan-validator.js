@@ -12,6 +12,8 @@ function isNonNegativeNumber(value) {
 }
 
 function validateTitle(operation) {
+  const allowedFields = new Set(["type", "text", "start", "end", "position", "size", "color", "weight", "font", "fontIntent", "runs", "readability"]);
+  for (const field of Object.keys(operation)) if (!allowedFields.has(field)) throw validationError(`title does not support ${field}`);
   if (typeof operation.text !== "string" || !operation.text.trim()) {
     throw validationError("title text must be non-empty");
   }
@@ -46,6 +48,12 @@ function validateTitle(operation) {
   });
   if (operation.runs.map((run) => run.text).join("") !== operation.text) {
     throw validationError("title runs must reproduce title text exactly");
+  }
+  if (operation.readability !== undefined) {
+    if (!operation.readability || typeof operation.readability !== "object" || Array.isArray(operation.readability) || Object.keys(operation.readability).length !== 1 || operation.readability.mode !== "target_aware") {
+      throw validationError("title readability is unsupported");
+    }
+    operation.readability = { mode: "target_aware" };
   }
 }
 

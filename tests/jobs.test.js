@@ -18,7 +18,7 @@ import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createDelegatedStyleDecisionJsonSchema, createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { buildDelegatedStyleContents, createAiEditPlan, createStylePlanningDiagnostics, reconcileReferenceStylePlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, summarizeStylePlanDiagnostic, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt, buildDelegatedStyleDecisionPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
-import { buildReferenceStyleTreatmentFilters, buildReferenceToneCurveFilter, buildReferenceToneCurvePoints, buildStyleProfileFilters, buildStyleRecipeFilters, buildToneCurveFilter, buildToneCurvePoints, buildVibranceFilter, buildVisualAdjustmentFilters, compileStyleProfileForExecution, createExecutionController, createStyleProfileExecutionDiagnostic, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
+import { buildReferenceStyleTreatmentFilters, buildReferenceToneCurveFilter, buildReferenceToneCurvePoints, buildStyleProfileFilters, buildStyleRecipeFilters, buildToneCurveFilter, buildToneCurvePoints, buildVibranceFilter, buildVisualAdjustmentFilters, compileStyleProfileForExecution, createExecutionController, createStyleProfileExecutionDiagnostic, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, titleReadabilityForLuma, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
 import { CAPABILITY_REGISTRY } from "@/lib/editor-core/capability-registry";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
 import { extractSpeechAudio, transcribeSource, wordAnnotations, SpokenTranscriptionError } from "@/lib/editor-core/spoken-transcription";
@@ -34,7 +34,7 @@ import { measureReferenceRgbFrame, REFERENCE_FRAME_METRICS_VERSION, summarizeRef
 import { createReferenceStyleProxyFrames, extractTargetReferenceFrames } from "@/lib/editor-core/reference-style-media";
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
 import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, evaluateReferenceStyleProxy, isB2aProxyRefinementEnabled, refineReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, referenceStyleProxyEvaluationSchema, referenceStyleReferenceAnalysisSchema, referenceStyleTargetAnalysisSchema, requestsReferenceStyleMatch, TONAL_COLOR_BIASES, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
-import { analyzeTypographyReference, deriveTypographyTitleTreatment, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, typographyReferenceAnalysisSchema, TypographyReferenceError, validateTypographyReferenceAnalysis } from "@/lib/editor-core/typography-reference-matching";
+import { analyzeTypographyReference, deriveTypographyTitleTreatment, extractTypographyReferenceSelector, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, selectTypographyReferenceCandidate, typographyReferenceAnalysisSchema, TypographyReferenceError, validateTypographyReferenceAnalysis } from "@/lib/editor-core/typography-reference-matching";
 
 function canonicalStyleRecipe(recipe) {
   return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
@@ -598,7 +598,7 @@ test("B2A warm-golden human footage uses a restrained combined treatment while l
 
 test("B2B typography reference analysis maps only registered title styling and preserves user title wording and timing", async () => {
   const prompt = "Use the typography from this reference and add the title 'A Day in Kerala' at 0:03.";
-  const observed = { safe: true, typography: "single", fontCharacter: "serif", weight: "bold", caseStyle: "uppercase", size: "large", color: "yellow", position: "bottom-center", lineBreakStyle: "single_line" };
+  const observed = { safe: true, typography: "single", candidates: [{ candidateId: "candidate-1", referenceText: "KERALA", role: "creative_title", fontCharacter: "serif", weight: "bold", caseStyle: "uppercase", size: "large", color: "yellow", position: "bottom-center", lineBreakStyle: "single_line" }] };
   const calls = { uploads: 0, deletes: [], requests: [] };
   const aiClient = {
     files: {
@@ -612,7 +612,7 @@ test("B2B typography reference analysis maps only registered title styling and p
   assert.equal(requestsReferenceStyleMatch(prompt, true), false, "typography intent must not enter B2A photographic matching");
   assert.equal(typographyReferenceAnalysisSchema().additionalProperties, false);
   const result = await analyzeTypographyReference({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", aiClient });
-  assert.deepEqual(result.treatment, { font: "instrumentSerif", weight: "bold", size: "large", color: "#F6D365", position: "bottom-center", caseStyle: "uppercase", lineBreakStyle: "single_line" });
+  assert.deepEqual(result.treatment, { font: "instrumentSerif", weight: "bold", size: "large", color: "#F6D365", position: "bottom-center", caseStyle: "uppercase", lineBreakStyle: "single_line", selectedCandidateId: "candidate-1" });
   assert.equal(calls.uploads, 1);
   assert.deepEqual(calls.deletes, ["reference-1"], "the scratch Gemini reference is cleaned exactly once");
   assert.equal(calls.requests.length, 1);
@@ -624,7 +624,7 @@ test("B2B typography reference analysis maps only registered title styling and p
   const plan = reconcileTypographyReferenceTitlePlan({ version: "1", operations: [{ type: "captions" }, { type: "title", text: "wrong", start: 0, end: 1, position: "top-left", size: "small", color: "red", weight: "regular", font: "inter" }] }, title, result.treatment);
   const styledTitle = plan.operations.find((operation) => operation.type === "title");
   assert.deepEqual(styledTitle, {
-    type: "title", text: "A Day in Kerala", start: 3, end: 6, position: "bottom-center", size: "large", color: "#F6D365", weight: "bold", font: "instrumentSerif",
+    type: "title", text: "A Day in Kerala", start: 3, end: 6, position: "bottom-center", size: "large", color: "#F6D365", weight: "bold", font: "instrumentSerif", readability: { mode: "target_aware" },
     runs: [{ text: "A Day in Kerala", font: "instrumentSerif", size: "large", color: "#F6D365", weight: "bold" }]
   });
   assert.equal(plan.operations.filter((operation) => operation.type === "title").length, 1, "reference styling never duplicates the title operation");
@@ -633,13 +633,14 @@ test("B2B typography reference analysis maps only registered title styling and p
 });
 
 test("B2B typography references reject ambiguity, absent text, and unsafe or unsupported model output without fabricating a title style", () => {
-  const base = { safe: true, typography: "single", fontCharacter: "sans_serif", weight: "regular", caseStyle: "as_supplied", size: "medium", color: "white", position: "center", lineBreakStyle: "single_line" };
-  assert.deepEqual(deriveTypographyTitleTreatment(base), { font: "inter", weight: "regular", size: "medium", color: "#FFFFFF", position: "center", caseStyle: "as_supplied", lineBreakStyle: "single_line" });
-  assert.equal(deriveTypographyTitleTreatment({ ...base, fontCharacter: "monospace" }).font, "jetbrainsMono");
-  assert.throws(() => deriveTypographyTitleTreatment({ ...base, typography: "multiple" }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_AMBIGUOUS");
-  assert.throws(() => deriveTypographyTitleTreatment({ ...base, typography: "none" }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_NO_TEXT");
+  const candidate = { candidateId: "candidate-1", referenceText: "Title", role: "creative_title", fontCharacter: "sans_serif", weight: "regular", caseStyle: "as_supplied", size: "medium", color: "white", position: "center", lineBreakStyle: "single_line" };
+  const base = { safe: true, typography: "single", candidates: [candidate] };
+  assert.deepEqual(deriveTypographyTitleTreatment(base), { font: "inter", weight: "regular", size: "medium", color: "#FFFFFF", position: "center", caseStyle: "as_supplied", lineBreakStyle: "single_line", selectedCandidateId: "candidate-1" });
+  assert.equal(deriveTypographyTitleTreatment({ ...base, candidates: [{ ...candidate, fontCharacter: "monospace" }] }).font, "jetbrainsMono");
+  assert.throws(() => deriveTypographyTitleTreatment({ ...base, typography: "multiple", candidates: [candidate, { ...candidate, candidateId: "candidate-2", referenceText: "Other", size: "large" }] }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_AMBIGUOUS");
+  assert.throws(() => deriveTypographyTitleTreatment({ ...base, typography: "none", candidates: [] }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_NO_TEXT");
   assert.throws(() => deriveTypographyTitleTreatment({ ...base, safe: false }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_SAFETY_REJECTED");
-  assert.throws(() => validateTypographyReferenceAnalysis({ ...base, fontCharacter: "Comic Sans", rawFfmpeg: "drawtext" }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_INVALID_MODEL_RESPONSE");
+  assert.throws(() => validateTypographyReferenceAnalysis({ ...base, candidates: [{ ...candidate, fontCharacter: "Comic Sans", rawFfmpeg: "drawtext" }] }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_INVALID_MODEL_RESPONSE");
   assert.throws(() => reconcileTypographyReferenceTitlePlan({ version: "1", operations: [] }, null, deriveTypographyTitleTreatment(base)), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_TITLE_REQUIRED");
 });
 
@@ -657,6 +658,47 @@ test("B2B typography analysis cleans its Gemini scratch image after a model fail
     (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_MODEL_REQUEST_FAILED"
   );
   assert.deepEqual(deleted, ["reference-failure"]);
+});
+
+test("B2B resolves an explicit creative-title selector while refusing unselected mixed typography and ignoring platform UI", () => {
+  const candidate = (candidateId, referenceText, role, overrides = {}) => ({
+    candidateId, referenceText, role, fontCharacter: "sans_serif", weight: "bold", caseStyle: "title_case", size: "medium", color: "white", position: "center", lineBreakStyle: "single_line", ...overrides
+  });
+  const analysis = {
+    safe: true,
+    typography: "multiple",
+    candidates: [
+      candidate("candidate-1", "Blue Hours", "creative_title", { fontCharacter: "serif", size: "large", color: "blue", position: "top-center" }),
+      candidate("candidate-2", "A quiet evening by the coast", "supporting_text", { size: "small", color: "white", position: "bottom-center" }),
+      candidate("candidate-3", "@creator", "platform_ui", { size: "small", color: "white", position: "top-left" })
+    ]
+  };
+  assert.throws(() => deriveTypographyTitleTreatment(analysis), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_AMBIGUOUS");
+
+  const bigBlueSelector = extractTypographyReferenceSelector("Use the typography of the big blue title in this reference and add the title 'Kerala Diaries' at 0:03.");
+  assert.deepEqual(bigBlueSelector, { size: "large", color: "#4A90E2", role: "creative_title" });
+  const selected = selectTypographyReferenceCandidate(analysis, bigBlueSelector);
+  assert.equal(selected.candidateId, "candidate-1");
+  assert.equal(deriveTypographyTitleTreatment(analysis, bigBlueSelector).font, "instrumentSerif");
+
+  const textSelector = extractTypographyReferenceSelector("Use the font style of 'Blue Hours' in this reference and add the title 'My Trip' at 0:03.");
+  assert.equal(textSelector.referenceText, "Blue Hours");
+  assert.equal(selectTypographyReferenceCandidate(analysis, textSelector).candidateId, "candidate-1");
+  assert.throws(() => deriveTypographyTitleTreatment(analysis, extractTypographyReferenceSelector("Use the font style of 'Missing Words' in this reference and add the title 'My Trip' at 0:03.")), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_SELECTOR_NO_MATCH");
+
+  const onlyCreativePlusUi = { ...analysis, typography: "single", candidates: [analysis.candidates[0], analysis.candidates[2]] };
+  assert.equal(deriveTypographyTitleTreatment(onlyCreativePlusUi).selectedCandidateId, "candidate-1", "platform UI cannot override a single clear creative title");
+});
+
+test("B2B target-aware readability adds an understated ASS safeguard only for bright target frames", () => {
+  assert.equal(titleReadabilityForLuma(0.45), null, "dark backgrounds keep the existing elegant title treatment");
+  assert.deepEqual(titleReadabilityForLuma(0.8), { outline: 1.45, shadow: 0.3 }, "bright targets receive a bounded readability treatment");
+  const document = buildAssDocument([{
+    text: "Mylene", start: 1, end: 3, position: "bottom-center", readability: titleReadabilityForLuma(0.8),
+    runs: [{ text: "Mylene", font: "instrumentSerif", size: "medium", color: "#FFFFFF", weight: "regular" }]
+  }], { width: 1280, height: 720 });
+  assert.match(document, /\\bord1\.45\\shad0\.3\\3c&H55000000&/, "bright-frame protection remains a subtle outline/shadow rather than a title box");
+  assert.match(document, /\\fnInstrument Serif\\fs50\\c&H00FFFFFF&\\b0/);
 });
 
 test("B2A reference analysis contract defaults enrichment but fails closed on safety facts", async () => {
@@ -4567,6 +4609,31 @@ test("rich ASS titles render after a sequence and temporal trim on the final out
     assert.match(ass, /\\fnInstrument Serif/);
     assert.ok(duration > 1.35 && duration < 1.65, `unexpected title render duration: ${duration}`);
     assert.ok(video && audio, "rich title output should remain playable with audio");
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test("B2B target-aware title readability samples a bright final frame and keeps its ASS protection understated", { timeout: 20_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-b2b-title-readability-"));
+  const sourcePath = path.join(tempDirectory, "bright.mp4");
+  try {
+    await makeSolidSequenceSource(sourcePath, "white", 2);
+    const media = [{ duration: 2, width: 160, height: 90, hasAudio: true, frameRate: 30 }];
+    const plan = {
+      version: "1",
+      operations: [{
+        type: "title", text: "Kerala", start: 0.5, end: 1.5, position: "bottom-center", size: "medium", color: "white", weight: "regular", font: "instrumentSerif",
+        readability: { mode: "target_aware" },
+        runs: [{ text: "Kerala", font: "instrumentSerif", size: "medium", color: "#FFFFFF", weight: "regular" }]
+      }]
+    };
+    validateEditPlan(plan);
+    const output = await executeWithWatchdog({ inputPaths: [sourcePath], media, tempDirectory, plan }, { watchdogMs: 15_000 });
+    const ass = await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8");
+    const { video, audio } = await probeRenderedVideo(output);
+    assert.match(ass, /\\bord1\.45\\shad0\.3\\3c&H55000000&/, "bright footage gets bounded readability contrast without a box");
+    assert.ok(video && audio, "target-aware title output remains playable");
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });
   }
