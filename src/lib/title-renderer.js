@@ -41,9 +41,14 @@ function safeReadabilityOverrides(readability) {
   const outline = Number(readability.outline);
   const shadow = Number(readability.shadow);
   if (!Number.isFinite(outline) || !Number.isFinite(shadow) || outline < 0 || outline > 2 || shadow < 0 || shadow > 1) return "";
+  const outlineColor = readability.outlineColor && assColor(readability.outlineColor);
+  const outlineAlpha = Number(readability.outlineAlpha);
+  const outlineColorOverride = outlineColor && Number.isFinite(outlineAlpha) && outlineAlpha >= 0 && outlineAlpha <= 255
+    ? `\\3c&H${Math.round(outlineAlpha).toString(16).padStart(2, "0").toUpperCase()}${outlineColor.slice(4)}`
+    : "\\3c&H55000000&";
   // Server-owned values only. This remains intentionally understated rather
   // than introducing a title-card or a heavy universal shadow.
-  return `\\bord${outline}\\shad${shadow}\\3c&H55000000&`;
+  return `\\bord${outline}\\shad${shadow}${outlineColorOverride}`;
 }
 
 // B2B keeps canonical title text untouched in the plan, then applies a bounded
@@ -88,7 +93,8 @@ function titleRunSize(run, width, height, presentation, renderedText) {
 
 function runOverrides(run, width, height, readability, presentation, renderedText) {
   const font = FONT_CATALOG[run.font];
-  return `{${safeReadabilityOverrides(readability)}\\fn${escapeAssFont(font.family)}\\fs${titleRunSize(run, width, height, presentation, renderedText)}\\c${assColor(run.color)}\\b${run.weight === "bold" ? 1 : 0}}`;
+  const family = font.familyByWeight?.[run.weight] || font.family;
+  return `{${safeReadabilityOverrides(readability)}\\fn${escapeAssFont(family)}\\fs${titleRunSize(run, width, height, presentation, renderedText)}\\c${assColor(run.color)}\\b${run.weight === "bold" ? 1 : 0}}`;
 }
 
 export function buildAssDocument(titles, { width, height }) {

@@ -23,7 +23,7 @@ import { CAPABILITY_REGISTRY } from "@/lib/editor-core/capability-registry";
 import { TranscriptValidationError, createCanonicalTranscript, findPhraseOccurrences, normalizePhrase, pairPhraseOccurrences, validateTranscriptWords } from "@/lib/editor-core/spoken-transcript";
 import { extractSpeechAudio, transcribeSource, wordAnnotations, SpokenTranscriptionError } from "@/lib/editor-core/spoken-transcription";
 import { FONT_CATALOG, resolveFontId, resolveSemanticFontIntent } from "@/lib/title-config";
-import { buildAssDocument } from "@/lib/title-renderer";
+import { buildAssDocument, buildAssFilter } from "@/lib/title-renderer";
 import { parseTitle } from "@/lib/title-parser";
 import { applyCaptionCorrection, CaptionError, createCaptionCues, extractCaptionCorrection, extractCaptionStyleRequest, mapCaptionCuesToOutput, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { extractAudioControlIntent, reconcileAudioControls } from "@/lib/editor-core/audio-controls";
@@ -598,7 +598,7 @@ test("B2A warm-golden human footage uses a restrained combined treatment while l
 
 test("B2B typography reference analysis maps only registered title styling and preserves user title wording and timing", async () => {
   const prompt = "Use the typography from this reference and add the title 'A Day in Kerala' at 0:03.";
-  const observed = { safe: true, typography: "single", candidates: [{ candidateId: "candidate-1", referenceText: "KERALA", role: "creative_title", prominence: "standard", fontCharacter: "serif", weight: "bold", caseStyle: "uppercase", size: "large", color: "yellow", position: "bottom-center", lineBreakStyle: "single_line" }] };
+  const observed = { safe: true, typography: "single", candidates: [{ candidateId: "candidate-1", referenceText: "KERALA", role: "creative_title", prominence: "standard", fontCharacter: "serif", weight: "bold", caseStyle: "uppercase", size: "large", color: "yellow", colorLightness: "medium", colorTreatment: "balanced", position: "bottom-center", lineBreakStyle: "single_line" }] };
   const calls = { uploads: 0, deletes: [], requests: [] };
   const aiClient = {
     files: {
@@ -612,7 +612,7 @@ test("B2B typography reference analysis maps only registered title styling and p
   assert.equal(requestsReferenceStyleMatch(prompt, true), false, "typography intent must not enter B2A photographic matching");
   assert.equal(typographyReferenceAnalysisSchema().additionalProperties, false);
   const result = await analyzeTypographyReference({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", aiClient });
-  assert.deepEqual(result.treatment, { font: "instrumentSerif", weight: "bold", size: "large", color: "#F6D365", position: "bottom-center", caseStyle: "uppercase", lineBreakStyle: "single_line", heroDisplay: false, selectedCandidateId: "candidate-1" });
+  assert.deepEqual(result.treatment, { font: "instrumentSerif", weight: "bold", size: "large", color: "#F6D365", colorLightness: "medium", colorTreatment: "balanced", position: "bottom-center", caseStyle: "uppercase", lineBreakStyle: "single_line", heroDisplay: false, selectedCandidateId: "candidate-1" });
   assert.equal(calls.uploads, 1);
   assert.deepEqual(calls.deletes, ["reference-1"], "the scratch Gemini reference is cleaned exactly once");
   assert.equal(calls.requests.length, 1);
@@ -633,9 +633,9 @@ test("B2B typography reference analysis maps only registered title styling and p
 });
 
 test("B2B typography references reject ambiguity, absent text, and unsafe or unsupported model output without fabricating a title style", () => {
-  const candidate = { candidateId: "candidate-1", referenceText: "Title", role: "creative_title", prominence: "standard", fontCharacter: "sans_serif", weight: "regular", caseStyle: "as_supplied", size: "medium", color: "white", position: "center", lineBreakStyle: "single_line" };
+  const candidate = { candidateId: "candidate-1", referenceText: "Title", role: "creative_title", prominence: "standard", fontCharacter: "sans_serif", weight: "regular", caseStyle: "as_supplied", size: "medium", color: "white", colorLightness: "light", colorTreatment: "balanced", position: "center", lineBreakStyle: "single_line" };
   const base = { safe: true, typography: "single", candidates: [candidate] };
-  assert.deepEqual(deriveTypographyTitleTreatment(base), { font: "inter", weight: "regular", size: "medium", color: "#FFFFFF", position: "center", caseStyle: "as_supplied", lineBreakStyle: "single_line", heroDisplay: false, selectedCandidateId: "candidate-1" });
+  assert.deepEqual(deriveTypographyTitleTreatment(base), { font: "inter", weight: "regular", size: "medium", color: "#FFFFFF", colorLightness: "light", colorTreatment: "balanced", position: "center", caseStyle: "as_supplied", lineBreakStyle: "single_line", heroDisplay: false, selectedCandidateId: "candidate-1" });
   assert.equal(deriveTypographyTitleTreatment({ ...base, candidates: [{ ...candidate, fontCharacter: "monospace" }] }).font, "jetbrainsMono");
   assert.throws(() => deriveTypographyTitleTreatment({ ...base, typography: "multiple", candidates: [candidate, { ...candidate, candidateId: "candidate-2", referenceText: "Other", size: "large" }] }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_AMBIGUOUS");
   assert.throws(() => deriveTypographyTitleTreatment({ ...base, typography: "none", candidates: [] }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_NO_TEXT");
@@ -662,7 +662,7 @@ test("B2B typography analysis cleans its Gemini scratch image after a model fail
 
 test("B2B resolves an explicit creative-title selector while refusing unselected mixed typography and ignoring platform UI", () => {
   const candidate = (candidateId, referenceText, role, overrides = {}) => ({
-    candidateId, referenceText, role, prominence: "standard", fontCharacter: "sans_serif", weight: "bold", caseStyle: "title_case", size: "medium", color: "white", position: "center", lineBreakStyle: "single_line", ...overrides
+    candidateId, referenceText, role, prominence: "standard", fontCharacter: "sans_serif", weight: "bold", caseStyle: "title_case", size: "medium", color: "white", colorLightness: "light", colorTreatment: "balanced", position: "center", lineBreakStyle: "single_line", ...overrides
   });
   const analysis = {
     safe: true,
@@ -692,7 +692,7 @@ test("B2B resolves an explicit creative-title selector while refusing unselected
 
 test("B2B Stage 3 matches grounded relative selectors and transfers only rendered reference casing", () => {
   const candidate = (candidateId, referenceText, overrides = {}) => ({
-    candidateId, referenceText, role: "creative_title", prominence: "standard", fontCharacter: "sans_serif", weight: "bold", caseStyle: "title_case", size: "medium", color: "white", position: "center", lineBreakStyle: "single_line", ...overrides
+    candidateId, referenceText, role: "creative_title", prominence: "standard", fontCharacter: "sans_serif", weight: "bold", caseStyle: "title_case", size: "medium", color: "white", colorLightness: "light", colorTreatment: "balanced", position: "center", lineBreakStyle: "single_line", ...overrides
   });
   const analysis = {
     safe: true,
@@ -733,7 +733,7 @@ test("B2B Stage 3 matches grounded relative selectors and transfers only rendere
 
 test("B2B Stage 4 scores imperfect selector evidence safely and exposes only sanitized selection diagnostics", () => {
   const candidate = (candidateId, overrides = {}) => ({
-    candidateId, referenceText: `internal-${candidateId}`, role: "creative_title", prominence: "standard", fontCharacter: "sans_serif", weight: "bold", caseStyle: "title_case", size: "medium", color: "white", position: "center", lineBreakStyle: "single_line", ...overrides
+    candidateId, referenceText: `internal-${candidateId}`, role: "creative_title", prominence: "standard", fontCharacter: "sans_serif", weight: "bold", caseStyle: "title_case", size: "medium", color: "white", colorLightness: "light", colorTreatment: "balanced", position: "center", lineBreakStyle: "single_line", ...overrides
   });
   const selector = extractTypographyReferenceSelector("Use the typography of the big blue title in this reference and add the title 'Kerala Diaries' at 0:03.");
   const imperfect = {
@@ -759,7 +759,7 @@ test("B2B Stage 4 scores imperfect selector evidence safely and exposes only san
 test("B2B Stage 4 derives a bounded reference-inspired hero display without altering ordinary titles", () => {
   const heroAnalysis = {
     safe: true, typography: "single", candidates: [{
-      candidateId: "candidate-1", referenceText: "SIMON", role: "creative_title", prominence: "high", fontCharacter: "condensed_sans", weight: "bold", caseStyle: "uppercase", size: "large", color: "white", position: "center", lineBreakStyle: "single_line"
+      candidateId: "candidate-1", referenceText: "SIMON", role: "creative_title", prominence: "high", fontCharacter: "condensed_sans", weight: "bold", caseStyle: "uppercase", size: "large", color: "white", colorLightness: "light", colorTreatment: "balanced", position: "center", lineBreakStyle: "single_line"
     }]
   };
   const heroTreatment = deriveTypographyTitleTreatment(heroAnalysis);
@@ -774,7 +774,7 @@ test("B2B Stage 4 derives a bounded reference-inspired hero display without alte
   assert.equal(hero.font, "barlowCondensed");
   const document = buildAssDocument([hero], { width: 854, height: 480 });
   assert.match(document, /\\an8\\pos\(427,106\)/, "hero placement is safely in the upper third");
-  assert.match(document, /\\fnBarlow Condensed\\fs67\\c&H00FFFFFF&\\b1\}THE JOURNEY BEGINS/, "hero scale is materially stronger than the 48px large preset without a heavy event outline");
+  assert.match(document, /\\fnBarlow Condensed ExtraBold\\fs67\\c&H00FFFFFF&\\b1\}THE JOURNEY BEGINS/, "hero scale is materially stronger than the 48px large preset without a heavy event outline");
   assert.doesNotMatch(document, /\\bord/);
   const ordinary = buildAssDocument([{ ...requested, runs: [{ text: requested.text, font: "instrumentSerif", size: "medium", color: "#FFFFFF", weight: "regular" }] }], { width: 854, height: 480 });
   assert.match(ordinary, /\\an5\\pos\(427,240\).*\\fs34/);
@@ -784,12 +784,69 @@ test("B2B Stage 4 derives a bounded reference-inspired hero display without alte
 test("B2B target-aware readability adds an understated ASS safeguard only for bright target frames", () => {
   assert.equal(titleReadabilityForLuma(0.45), null, "dark backgrounds keep the existing elegant title treatment");
   assert.deepEqual(titleReadabilityForLuma(0.8), { outline: 1.45, shadow: 0.3 }, "bright targets receive a bounded readability treatment");
+  assert.deepEqual(titleReadabilityForLuma(0.8, "#CAD8FF"), { outline: 1.05, shadow: 0.2, outlineColor: "#203B5A", outlineAlpha: 142 }, "a light-blue reference title keeps its pale treatment with a subtle cool edge");
   const document = buildAssDocument([{
     text: "Mylene", start: 1, end: 3, position: "bottom-center", readability: titleReadabilityForLuma(0.8),
     runs: [{ text: "Mylene", font: "instrumentSerif", size: "medium", color: "#FFFFFF", weight: "regular" }]
   }], { width: 1280, height: 720 });
   assert.match(document, /\\bord1\.45\\shad0\.3\\3c&H55000000&/, "bright-frame protection remains a subtle outline/shadow rather than a title box");
   assert.match(document, /\\fnInstrument Serif\\fs50\\c&H00FFFFFF&\\b0/);
+});
+
+test("B2B preserves observed pale-blue reference character and renders it readably on a bright title region", { timeout: 20_000 }, async () => {
+  const analysis = {
+    safe: true, typography: "single", candidates: [{
+      candidateId: "candidate-1", referenceText: "BLUE HOURS", role: "creative_title", prominence: "high", fontCharacter: "serif", weight: "regular", caseStyle: "uppercase", size: "large", color: "blue", colorLightness: "light", colorTreatment: "pastel", position: "top-center", lineBreakStyle: "single_line"
+    }]
+  };
+  const treatment = deriveTypographyTitleTreatment(analysis, extractTypographyReferenceSelector("Use the typography of the big blue title in this reference and add the title 'Kerala Diaries' at 0:03."));
+  assert.equal(treatment.color, "#CAD8FF", "light pastel blue must not collapse to ordinary medium blue");
+  assert.equal(treatment.colorLightness, "light");
+  assert.equal(treatment.colorTreatment, "pastel");
+  assert.equal(deriveTypographyTitleTreatment({ ...analysis, candidates: [{ ...analysis.candidates[0], colorLightness: "medium", colorTreatment: "balanced" }] }).color, "#4A90E2", "ordinary blue remains available for references that actually observe it");
+
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-b2b-light-blue-"));
+  const sourcePath = path.join(tempDirectory, "bright.mp4");
+  try {
+    await makeSolidCaptionSource(sourcePath, 2, { width: 854, height: 480, color: "white" });
+    const media = [{ duration: 2, width: 854, height: 480, hasAudio: true, frameRate: 30 }];
+    const requested = { text: "Kerala Diaries", start: 0.5, end: 1.5, position: "center", size: "medium", color: "white", weight: "regular", font: "inter" };
+    const plan = reconcileTypographyReferenceTitlePlan({ version: "1", operations: [] }, requested, treatment);
+    validateEditPlan(plan);
+    const output = await executeWithWatchdog({ inputPaths: [sourcePath], media, tempDirectory, plan }, { watchdogMs: 15_000 });
+    const ass = await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8");
+    assert.match(ass, /\\c&H00FFD8CA&/, "ASS uses the server-owned pale-blue BGR color");
+    assert.match(ass, /\\bord1\.05\\shad0\.2\\3c&H8E5A3B20&/, "bright title region receives a thin translucent cool edge, not a dark box");
+    assert.ok(await videoFrameDifference(sourcePath, output, 1) > 100_000, "the reference-inspired pale-blue title visibly renders on bright footage");
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test("B2B target-aware readability samples the title region rather than averaging unrelated frame brightness", { timeout: 20_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-b2b-title-region-"));
+  const sourcePath = path.join(tempDirectory, "split-light.mp4");
+  try {
+    await execFileAsync("ffmpeg", [
+      "-y", "-hide_banner", "-loglevel", "error",
+      "-f", "lavfi", "-i", "color=c=black:size=854x480:rate=30,drawbox=x=0:y=0:w=854:h=150:color=white:t=fill",
+      "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+      "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", sourcePath
+    ]);
+    const media = [{ duration: 2, width: 854, height: 480, hasAudio: true, frameRate: 30 }];
+    const run = { text: "Kerala", font: "instrumentSerif", size: "medium", color: "#FFFFFF", weight: "regular" };
+    const plan = { version: "1", operations: [
+      { type: "title", text: "Kerala", start: 0.5, end: 1.5, position: "top-center", size: "medium", color: "white", weight: "regular", font: "instrumentSerif", readability: { mode: "target_aware" }, runs: [run] },
+      { type: "title", text: "Kerala", start: 0.5, end: 1.5, position: "bottom-center", size: "medium", color: "white", weight: "regular", font: "instrumentSerif", readability: { mode: "target_aware" }, runs: [run] }
+    ] };
+    validateEditPlan(plan);
+    await executeWithWatchdog({ inputPaths: [sourcePath], media, tempDirectory, plan }, { watchdogMs: 15_000 });
+    const dialogues = (await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8")).split("\n").filter((line) => line.startsWith("Dialogue:"));
+    assert.match(dialogues[0], /\\an8.*\\bord1\.45/, "the bright upper title region receives the readability edge");
+    assert.doesNotMatch(dialogues[1], /\\bord/, "the dark lower title region retains the elegant unmodified treatment");
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
 });
 
 test("B2A reference analysis contract defaults enrichment but fails closed on safety facts", async () => {
@@ -3861,10 +3918,10 @@ async function makeMixedFrameRateSource(output, frameRate, duration) {
   ]);
 }
 
-async function makeSolidCaptionSource(output, duration, { width = 1280, height = 720 } = {}) {
+async function makeSolidCaptionSource(output, duration, { width = 1280, height = 720, color = "black" } = {}) {
   await execFileAsync("ffmpeg", [
     "-y", "-hide_banner", "-loglevel", "error",
-    "-f", "lavfi", "-i", `color=c=black:size=${width}x${height}:rate=30`,
+    "-f", "lavfi", "-i", `color=c=${color}:size=${width}x${height}:rate=30`,
     "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
     "-t", duration.toString(), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-ac", "2", output
   ]);
@@ -4740,14 +4797,19 @@ test("B2B condensed all-caps hero display titles load through real FFmpeg/libass
     const plan = {
       version: "1",
       operations: [{
-        type: "title", text: "The Journey Begins", start: 0.5, end: 1.5, position: "upper-third", size: "large", color: "white", weight: "bold", font: "barlowCondensed", renderCaseStyle: "uppercase", presentation: "hero_display",
+        type: "title", text: "The Journey Begins", start: 0, end: 1.5, position: "upper-third", size: "large", color: "white", weight: "bold", font: "barlowCondensed", renderCaseStyle: "uppercase", presentation: "hero_display",
         runs: [{ text: "The Journey Begins", font: "barlowCondensed", size: "large", color: "#FFFFFF", weight: "bold" }]
       }]
     };
     validateEditPlan(plan);
     const output = await executeWithWatchdog({ inputPaths: [sourcePath], media, tempDirectory, plan }, { watchdogMs: 15_000 });
     const ass = await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8");
-    assert.match(ass, /\\an8\\pos\(427,106\).*\\fnBarlow Condensed\\fs67\\c&H00FFFFFF&\\b1\}THE JOURNEY BEGINS/);
+    assert.match(ass, /\\an8\\pos\(427,106\).*\\fnBarlow Condensed ExtraBold\\fs67\\c&H00FFFFFF&\\b1\}THE JOURNEY BEGINS/);
+    const { stderr } = await execFileAsync("ffmpeg", [
+      "-hide_banner", "-loglevel", "verbose", "-i", sourcePath,
+      "-vf", buildAssFilter(path.join(tempDirectory, "title-layers.ass")), "-frames:v", "1", "-f", "null", "-"
+    ]);
+    assert.match(stderr, /Barlow Condensed ExtraBold/, "libass selects the bundled ExtraBold display face rather than a generic bold fallback");
     assert.ok(await videoFrameDifference(sourcePath, output, 1) > 100_000, "the self-hosted condensed display font visibly renders through libass");
     assert.ok((await probeRenderedVideo(output)).video);
   } finally {

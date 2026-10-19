@@ -586,16 +586,37 @@ async function applyTitles(input, output, titles, { width, height, tempDirectory
 }
 
 /** A B2B-only, one-frame safeguard; it never changes ordinary title rendering. */
-export function titleReadabilityForLuma(luma) {
+function isLightBlue(value) {
+  const color = String(value || "").replace("#", "");
+  if (!/^[0-9a-f]{6}$/i.test(color)) return false;
+  const red = Number.parseInt(color.slice(0, 2), 16);
+  const green = Number.parseInt(color.slice(2, 4), 16);
+  const blue = Number.parseInt(color.slice(4, 6), 16);
+  return red >= 145 && green >= 170 && blue >= 205 && blue > red;
+}
+
+export function titleReadabilityForLuma(luma, color = null) {
   if (!Number.isFinite(luma) || luma < 0.62) return null;
+  // A pale blue reference title retains its observed light treatment on a
+  // bright target. A thin, translucent blue-black edge provides local
+  // separation without replacing it with a muddy dark-blue title or box.
+  if (isLightBlue(color)) return Object.freeze({ outline: 1.05, shadow: 0.2, outlineColor: "#203B5A", outlineAlpha: 142 });
   return Object.freeze({ outline: 1.45, shadow: 0.3 });
 }
 
-async function sampleTitleFrameLuma(input, seconds, executionController) {
+function titleRegionCrop(title) {
+  const y = title.position === "upper-third" ? "ih*0.10"
+    : title.position?.startsWith("top") ? "ih*0.04"
+      : title.position?.startsWith("bottom") ? "ih*0.70"
+        : "ih*0.38";
+  return `crop=w=iw*0.78:h=ih*0.24:x=iw*0.11:y=${y}`;
+}
+
+async function sampleTitleFrameLuma(input, seconds, title, executionController) {
   try {
     const { stderr } = await exec(FFMPEG, [
       "-hide_banner", "-loglevel", "info", "-ss", String(seconds), "-i", input,
-      "-frames:v", "1", "-vf", "signalstats,metadata=print", "-f", "null", "-"
+      "-frames:v", "1", "-vf", `${titleRegionCrop(title)},signalstats,metadata=print`, "-f", "null", "-"
     ], { executionController });
     const match = stderr.match(/lavfi\.signalstats\.YAVG=([0-9.]+)/);
     const average = Number(match?.[1]);
@@ -614,7 +635,7 @@ async function prepareTargetAwareTitles(titles, input, executionController) {
       continue;
     }
     const sampleTime = title.start + Math.min(0.5, (title.end - title.start) / 2);
-    const readability = titleReadabilityForLuma(await sampleTitleFrameLuma(input, sampleTime, executionController));
+    const readability = titleReadabilityForLuma(await sampleTitleFrameLuma(input, sampleTime, title, executionController), title.color);
     prepared.push(readability ? { ...title, readability } : { ...title, readability: null });
   }
   return prepared;

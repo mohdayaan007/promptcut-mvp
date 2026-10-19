@@ -14,6 +14,8 @@ const CASE_STYLES = Object.freeze(["as_supplied", "uppercase", "lowercase", "tit
 const TYPOGRAPHY_ROLES = Object.freeze(["creative_title", "supporting_text", "platform_ui"]);
 const TYPOGRAPHY_PROMINENCE = Object.freeze(["low", "standard", "high"]);
 const COLOR_NAMES = Object.freeze(Object.keys(COLOR_MAP));
+const COLOR_LIGHTNESS = Object.freeze(["light", "medium", "dark"]);
+const COLOR_TREATMENTS = Object.freeze(["pastel", "balanced", "vivid"]);
 const POSITION_NAMES = Object.freeze(Object.keys(POSITION_MAP));
 const SIZE_NAMES = Object.freeze(Object.keys(TITLE_SIZE_PRESETS));
 const WEIGHT_NAMES = Object.freeze(["regular", "bold"]);
@@ -64,10 +66,12 @@ export function typographyReferenceAnalysisSchema() {
       caseStyle: { type: "string", enum: CASE_STYLES },
       size: { type: "string", enum: SIZE_NAMES },
       color: { type: "string", enum: COLOR_NAMES },
+      colorLightness: { type: "string", enum: COLOR_LIGHTNESS },
+      colorTreatment: { type: "string", enum: COLOR_TREATMENTS },
       position: { type: "string", enum: POSITION_NAMES },
       lineBreakStyle: { type: "string", enum: ["single_line", "multi_line"] }
     },
-    required: ["candidateId", "referenceText", "role", "prominence", "fontCharacter", "weight", "caseStyle", "size", "color", "position", "lineBreakStyle"],
+    required: ["candidateId", "referenceText", "role", "prominence", "fontCharacter", "weight", "caseStyle", "size", "color", "colorLightness", "colorTreatment", "position", "lineBreakStyle"],
     additionalProperties: false
   };
   return {
@@ -92,7 +96,7 @@ export function validateTypographyReferenceAnalysis(value) {
   if (!typography || !Array.isArray(value.candidates) || value.candidates.length > 4 || (typography === "none" && value.candidates.length)) {
     throw new TypographyReferenceError("TYPOGRAPHY_REFERENCE_INVALID_MODEL_RESPONSE");
   }
-  const candidateFields = ["candidateId", "referenceText", "role", "prominence", "fontCharacter", "weight", "caseStyle", "size", "color", "position", "lineBreakStyle"];
+  const candidateFields = ["candidateId", "referenceText", "role", "prominence", "fontCharacter", "weight", "caseStyle", "size", "color", "colorLightness", "colorTreatment", "position", "lineBreakStyle"];
   const candidateIds = new Set();
   const candidates = value.candidates.map((candidate) => {
     if (!exactObject(candidate, candidateFields) || !/^candidate-[1-4]$/.test(candidate.candidateId) || candidateIds.has(candidate.candidateId)) {
@@ -106,12 +110,14 @@ export function validateTypographyReferenceAnalysis(value) {
     const caseStyle = enumValue(candidate.caseStyle, CASE_STYLES);
     const size = normalizeTitleSize(candidate.size);
     const color = normalizeTitleColor(candidate.color);
+    const colorLightness = enumValue(candidate.colorLightness, COLOR_LIGHTNESS);
+    const colorTreatment = enumValue(candidate.colorTreatment, COLOR_TREATMENTS);
     const position = normalizeTitlePosition(candidate.position);
     const lineBreakStyle = enumValue(candidate.lineBreakStyle, ["single_line", "multi_line"]);
-    if (typeof candidate.referenceText !== "string" || candidate.referenceText.length > 160 || !role || !prominence || !fontCharacter || !weight || !caseStyle || !size || !color || !position || !lineBreakStyle) {
+    if (typeof candidate.referenceText !== "string" || candidate.referenceText.length > 160 || !role || !prominence || !fontCharacter || !weight || !caseStyle || !size || !color || !colorLightness || !colorTreatment || !position || !lineBreakStyle) {
       throw new TypographyReferenceError("TYPOGRAPHY_REFERENCE_INVALID_MODEL_RESPONSE");
     }
-    return Object.freeze({ candidateId: candidate.candidateId, referenceText: candidate.referenceText.trim(), role, prominence, fontCharacter, weight, caseStyle, size, color, position, lineBreakStyle });
+    return Object.freeze({ candidateId: candidate.candidateId, referenceText: candidate.referenceText.trim(), role, prominence, fontCharacter, weight, caseStyle, size, color, colorLightness, colorTreatment, position, lineBreakStyle });
   });
   if (typography !== "none" && !candidates.length) throw new TypographyReferenceError("TYPOGRAPHY_REFERENCE_INVALID_MODEL_RESPONSE");
   return Object.freeze({ safe: value.safe, typography, candidates: Object.freeze(candidates) });
@@ -155,9 +161,56 @@ function selectorSummary(selector) {
 function candidateSummary(candidate) {
   return {
     candidateId: candidate.candidateId, role: candidate.role, color: colorName(candidate.color),
+    colorLightness: candidate.colorLightness, colorTreatment: candidate.colorTreatment,
     size: candidate.size, prominence: candidate.prominence, fontCharacter: candidate.fontCharacter,
     caseStyle: candidate.caseStyle, position: candidate.position
   };
+}
+
+// This is intentionally a small, B2B-only observed-color palette. The model
+// reports category/lightness/treatment; the renderer receives only one of
+// these server-owned colors, never a model-provided arbitrary hex value.
+const REFERENCE_TITLE_COLOR_VARIANTS = Object.freeze({
+  blue: Object.freeze({
+    light: Object.freeze({ pastel: "#CAD8FF", balanced: "#B8D0FF", vivid: "#9DC5FF" }),
+    medium: Object.freeze({ pastel: "#739ED8", balanced: "#4A90E2", vivid: "#3579D1" }),
+    dark: Object.freeze({ pastel: "#416A9E", balanced: "#2E5F9E", vivid: "#214D8B" })
+  }),
+  purple: Object.freeze({
+    light: Object.freeze({ pastel: "#DDD0FF", balanced: "#C9B4FF", vivid: "#B494F5" }),
+    medium: Object.freeze({ pastel: "#A88BDE", balanced: "#8E6CEF", vivid: "#764FE0" }),
+    dark: Object.freeze({ pastel: "#725AA0", balanced: "#6247A8", vivid: "#513593" })
+  }),
+  green: Object.freeze({
+    light: Object.freeze({ pastel: "#C9F0D6", balanced: "#B2E8C2", vivid: "#91D9A9" }),
+    medium: Object.freeze({ pastel: "#78BE82", balanced: "#4CAF50", vivid: "#329A42" }),
+    dark: Object.freeze({ pastel: "#467B54", balanced: "#2F7040", vivid: "#225E34" })
+  }),
+  yellow: Object.freeze({
+    light: Object.freeze({ pastel: "#FFF1B8", balanced: "#FFE89A", vivid: "#FFDD70" }),
+    medium: Object.freeze({ pastel: "#E7C77A", balanced: "#F6D365", vivid: "#FFC83D" }),
+    dark: Object.freeze({ pastel: "#AF914C", balanced: "#9B7A2C", vivid: "#866000" })
+  }),
+  orange: Object.freeze({
+    light: Object.freeze({ pastel: "#FFD2A3", balanced: "#FFC18A", vivid: "#FFAA63" }),
+    medium: Object.freeze({ pastel: "#D69A5B", balanced: "#F28C28", vivid: "#E77812" }),
+    dark: Object.freeze({ pastel: "#A76B36", balanced: "#9A5619", vivid: "#874400" })
+  }),
+  red: Object.freeze({
+    light: Object.freeze({ pastel: "#FFC5C5", balanced: "#FFADAD", vivid: "#FF9191" }),
+    medium: Object.freeze({ pastel: "#D97878", balanced: "#E94B4B", vivid: "#D83333" }),
+    dark: Object.freeze({ pastel: "#A65757", balanced: "#963838", vivid: "#802020" })
+  }),
+  pink: Object.freeze({
+    light: Object.freeze({ pastel: "#FFD0E4", balanced: "#FFC0DB", vivid: "#FFA8CF" }),
+    medium: Object.freeze({ pastel: "#D782AD", balanced: "#EC6AA8", vivid: "#D94D91" }),
+    dark: Object.freeze({ pastel: "#9F5D7C", balanced: "#923C68", vivid: "#7D2054" })
+  })
+});
+
+function resolveReferenceTitleColor(candidate) {
+  const named = colorName(candidate.color);
+  return REFERENCE_TITLE_COLOR_VARIANTS[named]?.[candidate.colorLightness]?.[candidate.colorTreatment] || candidate.color;
 }
 
 function selectionError(reason, selector, candidates, checks) {
@@ -227,7 +280,9 @@ export function deriveTypographyTitleTreatment(analysis, selector = null) {
     font,
     weight: selected.weight,
     size: selected.size,
-    color: selected.color,
+    color: resolveReferenceTitleColor(selected),
+    colorLightness: selected.colorLightness,
+    colorTreatment: selected.colorTreatment,
     position: selected.position,
     // Observational only: Stage 1 never changes the user's supplied title text.
     caseStyle: selector?.preserveCase ? "as_supplied" : selected.caseStyle,
@@ -242,7 +297,7 @@ export function buildTypographyReferenceAnalysisPrompt(selector = null) {
     "Analyze the supplied image only as a typography reference for an existing video title renderer. Do not create an edit plan or return text from the image, font names, font files, file paths, renderer syntax, filters, or numeric controls.",
     "First set safe=false only for explicit sexual acts/pornography, sexual content involving minors, sexual violence, or extreme graphic gore. Fashion, swimwear, kissing, portraits, and lifestyle images are safe.",
     "Classify typography as single when one clear usable creative title style dominates, multiple when two or more clearly different creative styles compete, or none when there is no meaningful readable typography. Return every distinct visible treatment as at most four candidates. Mark each candidate as creative_title, supporting_text, or platform_ui. Incidental usernames, controls, and social-platform interface text are platform_ui, not a creative title.",
-    "For every candidate return only these supported observations: a short visible referenceText for grounding; creative_title, supporting_text, or platform_ui role; low, standard, or high prominence relative to other visible text; serif, sans_serif, condensed_sans (only for visibly tall/narrow display sans), or monospace; regular or bold; as_supplied, uppercase, lowercase, or title_case; small, medium, or large; one closest supported named color; one supported title position; and single_line or multi_line. Select the closest visual alternative rather than claiming an exact proprietary font.",
+    "For every candidate return only these supported observations: a short visible referenceText for grounding; creative_title, supporting_text, or platform_ui role; low, standard, or high prominence relative to other visible text; serif, sans_serif, condensed_sans (only for visibly tall/narrow display sans), or monospace; regular or bold; as_supplied, uppercase, lowercase, or title_case; small, medium, or large; one closest supported named color; whether that color is light, medium, or dark; whether its treatment is pastel, balanced, or vivid; one supported title position; and single_line or multi_line. For example, an elegant pale lavender-blue title is blue + light + pastel, not ordinary medium blue. Select the closest visual alternative rather than claiming an exact proprietary font.",
     selector ? `The user supplied these bounded selection clues. Treat them only as a request for which visible candidate to describe; never invent absent text or style: ${JSON.stringify({ ...selectorSummary(selector), ...(selector.referenceText ? { referenceText: String(selector.referenceText).slice(0, 160) } : {}) })}.` : "",
     "Return only JSON matching the supplied schema."
   ].join("\n\n");
@@ -311,6 +366,8 @@ export function reconcileTypographyReferenceTitlePlan(plan, title, treatment) {
       caseStyle: treatment?.caseStyle || "as_supplied",
       size: treatment?.size,
       color: treatment?.color,
+      colorLightness: treatment?.colorLightness || "medium",
+      colorTreatment: treatment?.colorTreatment || "balanced",
       position: treatment?.position,
       lineBreakStyle: treatment?.lineBreakStyle || "single_line"
     }]

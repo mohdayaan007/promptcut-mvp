@@ -28,6 +28,10 @@ export const FONT_CATALOG = {
   barlowCondensed: {
     id: "barlowCondensed",
     family: "Barlow Condensed",
+    // libass/fontconfig resolves this bundled font by family, not filename.
+    // The ExtraBold face exposes a distinct family name, so select it
+    // explicitly for the server-owned bold display treatment.
+    familyByWeight: { regular: "Barlow Condensed", bold: "Barlow Condensed ExtraBold" },
     aliases: ["barlow condensed", "barlowcondensed", "condensed display"],
     // Barlow Condensed is bundled under the SIL Open Font License 1.1; see
     // licenses/BarlowCondensed-OFL.txt. The heavy file is deliberate for
