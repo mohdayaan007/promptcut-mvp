@@ -5,7 +5,8 @@ import { FONT_CATALOG, assColor, titleFontDirectory, titleFontSize } from "@/lib
 const ASS_ALIGNMENTS = {
   "bottom-left": 1, "bottom-center": 2, "bottom-right": 3,
   "center-left": 4, center: 5, "center-right": 6,
-  "top-left": 7, "top-center": 8, "top-right": 9
+  "top-left": 7, "top-center": 8, "top-right": 9,
+  "upper-third": 8
 };
 
 function escapeAssText(value = "") {
@@ -22,7 +23,7 @@ function escapeAssFont(value = "") {
 
 function positionForTitle(position, width, height) {
   const horizontal = position.endsWith("left") ? width * 0.1 : position.endsWith("right") ? width * 0.9 : width / 2;
-  const vertical = position.startsWith("top") ? height * 0.13 : position.startsWith("bottom") ? height * 0.84 : height / 2;
+  const vertical = position === "upper-third" ? height * 0.22 : position.startsWith("top") ? height * 0.13 : position.startsWith("bottom") ? height * 0.84 : height / 2;
   return { alignment: ASS_ALIGNMENTS[position], x: Math.round(horizontal), y: Math.round(vertical) };
 }
 
@@ -57,9 +58,37 @@ function renderTextCase(value, caseStyle) {
   return text;
 }
 
-function runOverrides(run, height, readability) {
+function wrapHeroText(value, width, height) {
+  const baseSize = height * 0.14;
+  const maxCharacters = Math.max(8, Math.floor((width * 0.78) / (baseSize * 0.35)));
+  return String(value).split(/\r?\n/).flatMap((line) => {
+    const words = line.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return [""];
+    const lines = [];
+    let current = "";
+    for (const word of words) {
+      const next = current ? `${current} ${word}` : word;
+      if (current && next.length > maxCharacters) {
+        lines.push(current);
+        current = word;
+      } else current = next;
+    }
+    if (current) lines.push(current);
+    return lines;
+  }).join("\n");
+}
+
+function titleRunSize(run, width, height, presentation, renderedText) {
+  if (presentation !== "hero_display") return titleFontSize(run.size, height);
+  const ideal = Math.round(height * 0.14);
+  const longestLine = Math.max(...String(renderedText).split(/\r?\n/).map((line) => line.length), 1);
+  const widthBound = Math.floor((width * 0.78) / (longestLine * 0.35));
+  return Math.max(12, Math.min(ideal, widthBound));
+}
+
+function runOverrides(run, width, height, readability, presentation, renderedText) {
   const font = FONT_CATALOG[run.font];
-  return `{${safeReadabilityOverrides(readability)}\\fn${escapeAssFont(font.family)}\\fs${titleFontSize(run.size, height)}\\c${assColor(run.color)}\\b${run.weight === "bold" ? 1 : 0}}`;
+  return `{${safeReadabilityOverrides(readability)}\\fn${escapeAssFont(font.family)}\\fs${titleRunSize(run, width, height, presentation, renderedText)}\\c${assColor(run.color)}\\b${run.weight === "bold" ? 1 : 0}}`;
 }
 
 export function buildAssDocument(titles, { width, height }) {
@@ -80,7 +109,11 @@ export function buildAssDocument(titles, { width, height }) {
 
   for (const title of titles) {
     const { alignment, x, y } = positionForTitle(title.position, width, height);
-    const text = title.runs.map((run) => `${runOverrides(run, height, title.readability)}${escapeAssText(renderTextCase(run.text, title.renderCaseStyle))}`).join("");
+    const text = title.runs.map((run) => {
+      const cased = renderTextCase(run.text, title.renderCaseStyle);
+      const rendered = title.presentation === "hero_display" ? wrapHeroText(cased, width, height) : cased;
+      return `${runOverrides(run, width, height, title.readability, title.presentation, rendered)}${escapeAssText(rendered)}`;
+    }).join("");
     lines.push(`Dialogue: 0,${assTimestamp(title.start)},${assTimestamp(title.end)},Default,,0,0,0,,{\\an${alignment}\\pos(${x},${y})}${text}`);
   }
   return `${lines.join("\n")}\n`;

@@ -116,7 +116,16 @@ async function processJob(job) {
       const referencePath = path.join(scratch, `reference.${extension}`);
       await downloadObject(job.reference.key, referencePath);
       await validateReferenceImageFile({ inputPath: referencePath, type: job.reference.type, executionController });
-      const result = await analyzeTypographyReference({ referencePath, referenceMimeType: job.reference.type, selector: extractTypographyReferenceSelector(job.prompt) });
+      const selector = extractTypographyReferenceSelector(job.prompt);
+      let result;
+      try {
+        result = await analyzeTypographyReference({ referencePath, referenceMimeType: job.reference.type, selector });
+      } catch (error) {
+        if (error instanceof TypographyReferenceError && error.selectionDiagnostic) {
+          console.info("Typography reference selection rejected:", { jobId: job.id, reason: error.reason, ...error.selectionDiagnostic });
+        }
+        throw error;
+      }
       typographyTreatment = result.treatment;
       console.info("Typography reference treatment prepared:", {
         jobId: job.id,

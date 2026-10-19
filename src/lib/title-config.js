@@ -51,6 +51,7 @@ export const POSITION_MAP = {
   "top-left": "top-left",
   "top-center": "top-center",
   "top-right": "top-right",
+  "upper-third": "upper-third",
   "center-left": "center-left",
   "center-right": "center-right",
   "bottom-left": "bottom-left",

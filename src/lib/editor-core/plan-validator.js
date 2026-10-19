@@ -12,7 +12,7 @@ function isNonNegativeNumber(value) {
 }
 
 function validateTitle(operation) {
-  const allowedFields = new Set(["type", "text", "start", "end", "position", "size", "color", "weight", "font", "fontIntent", "runs", "readability", "renderCaseStyle"]);
+  const allowedFields = new Set(["type", "text", "start", "end", "position", "size", "color", "weight", "font", "fontIntent", "runs", "readability", "renderCaseStyle", "presentation"]);
   for (const field of Object.keys(operation)) if (!allowedFields.has(field)) throw validationError(`title does not support ${field}`);
   if (typeof operation.text !== "string" || !operation.text.trim()) {
     throw validationError("title text must be non-empty");
@@ -58,6 +58,7 @@ function validateTitle(operation) {
   if (operation.renderCaseStyle !== undefined && !["as_supplied", "uppercase", "lowercase", "title_case"].includes(operation.renderCaseStyle)) {
     throw validationError("title render case style is unsupported");
   }
+  if (operation.presentation !== undefined && operation.presentation !== "hero_display") throw validationError("title presentation is unsupported");
 }
 
 function validateCaptions(operation) {
