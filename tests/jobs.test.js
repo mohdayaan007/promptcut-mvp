@@ -820,6 +820,20 @@ test("B2A one-pass proxy refinement is bounded, directional, and safe to skip", 
   const cool = refineReferenceStyleTreatment({ initialTreatment: deriveReferenceStyleTreatment({ analysis: coolAnalysis, metrics }), analysis: coolAnalysis, metrics, evaluation: residual({ ambient: "stronger" }) });
   assert.ok(cool.treatment.recipe.temperature < 0, "cool refinement cannot reverse ambient direction");
 
+  const warmComplementary = analysisFor({ warmth: "warm", ambientColorCharacter: "warm_golden", dominantColorBias: "yellow_orange", shadowColorBias: "cool_cyan", midtoneColorBias: "warm_orange", highlightColorBias: "warm_yellow" });
+  const warmComplementaryInitial = deriveReferenceStyleTreatment({ analysis: warmComplementary, metrics });
+  const warmComplementaryAmbient = refineReferenceStyleTreatment({ initialTreatment: warmComplementaryInitial, analysis: warmComplementary, metrics, evaluation: residual({ ambient: "stronger" }) });
+  assert.equal(warmComplementaryAmbient.treatment.recipe.temperature, warmComplementaryInitial.recipe.temperature, "warm ambient with opposing tonal bands does not receive extra blanket warming");
+  assert.equal(warmComplementaryAmbient.applied, false, "an ambient-only complementary request is correctly a no-op");
+  const warmComplementaryShadows = refineReferenceStyleTreatment({ initialTreatment: warmComplementaryInitial, analysis: warmComplementary, metrics, evaluation: residual({ ambient: "stronger", shadows: "raise" }) });
+  assert.equal(warmComplementaryShadows.treatment.recipe.temperature, warmComplementaryInitial.recipe.temperature, "safe independent refinement preserves complementary global temperature");
+  assert.equal(warmComplementaryShadows.treatment.recipe.shadows, warmComplementaryInitial.recipe.shadows + 0.035);
+
+  const coolComplementary = analysisFor({ warmth: "cool", ambientColorCharacter: "cool_mint", dominantColorBias: "green_mint", shadowColorBias: "cool_blue", midtoneColorBias: "warm_yellow", highlightColorBias: "warm_orange" });
+  const coolComplementaryInitial = deriveReferenceStyleTreatment({ analysis: coolComplementary, metrics });
+  const coolComplementaryAmbient = refineReferenceStyleTreatment({ initialTreatment: coolComplementaryInitial, analysis: coolComplementary, metrics, evaluation: residual({ ambient: "stronger" }) });
+  assert.equal(coolComplementaryAmbient.treatment.recipe.temperature, coolComplementaryInitial.recipe.temperature, "cool ambient with warm accents does not receive extra blanket cooling");
+
   const neutralAnalysis = analysisFor({ dominantColorBias: "mixed", shadowColorBias: "cool_blue", midtoneColorBias: "warm_yellow" });
   const neutral = refineReferenceStyleTreatment({ initialTreatment: deriveReferenceStyleTreatment({ analysis: neutralAnalysis, metrics }), analysis: neutralAnalysis, metrics, evaluation: residual({ ambient: "stronger" }) });
   assert.equal(neutral.treatment.recipe.temperature, 0, "neutral complementary architecture never receives a blanket cast");

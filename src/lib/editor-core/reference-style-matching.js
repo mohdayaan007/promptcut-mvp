@@ -376,6 +376,7 @@ function adjust(value, residual, amount, { canRaise = true } = {}) {
 export function refineReferenceStyleTreatment({ initialTreatment, analysis, metrics, evaluation }) {
   const initial = createCanonicalReferenceStyleTreatment(initialTreatment);
   const safe = validateReferenceStyleAnalysis(analysis);
+  const delta = deriveReferenceStyleDelta(safe);
   if (!evaluation?.available || !evaluation.evaluation || evaluation.evaluation.confidence !== "high" || evaluation.evaluation.decision !== "refine") {
     return Object.freeze({ treatment: initial, applied: false, reason: evaluation?.available ? "proxy_already_matched_or_uncertain" : "proxy_evaluation_unavailable" });
   }
@@ -389,7 +390,10 @@ export function refineReferenceStyleTreatment({ initialTreatment, analysis, metr
   recipe.shadows = adjust(recipe.shadows, residual.shadows, 0.035);
   recipe.highlights = adjust(recipe.highlights, residual.highlights, 0.035, { canRaise: !highToneRisk });
   const ambient = ambientDirection[safe.reference.ambientColorCharacter];
-  if (ambient !== 0) {
+  // Opposing reference tonal bands are intentional photographic structure,
+  // not a request to make the global ambient cast stronger. Keep the accepted
+  // baseline temperature while still allowing unrelated safe corrections.
+  if (ambient !== 0 && !delta.complementaryTonalPalette) {
     const skinCap = safe.target.peopleOrSkin || safe.reference.peopleOrSkin ? 0.12 : 0.2;
     if (residual.ambient === "stronger") recipe.temperature = bounded(recipe.temperature + (ambient * 0.025), -skinCap, skinCap);
     if (residual.ambient === "weaker") recipe.temperature = ambient > 0 ? Math.max(0.05, recipe.temperature * 0.75) : Math.min(-0.05, recipe.temperature * 0.75);
