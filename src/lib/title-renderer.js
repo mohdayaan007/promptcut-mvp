@@ -45,6 +45,18 @@ function safeReadabilityOverrides(readability) {
   return `\\bord${outline}\\shad${shadow}\\3c&H55000000&`;
 }
 
+// B2B keeps canonical title text untouched in the plan, then applies a bounded
+// reference-derived presentation case only while generating safe ASS text.
+function renderTextCase(value, caseStyle) {
+  const text = String(value);
+  if (caseStyle === "uppercase") return text.toUpperCase();
+  if (caseStyle === "lowercase") return text.toLowerCase();
+  if (caseStyle === "title_case") {
+    return text.toLowerCase().replace(/(^|[\s\-–—])([^\s\-–—])/g, (_, prefix, character) => `${prefix}${character.toUpperCase()}`);
+  }
+  return text;
+}
+
 function runOverrides(run, height, readability) {
   const font = FONT_CATALOG[run.font];
   return `{${safeReadabilityOverrides(readability)}\\fn${escapeAssFont(font.family)}\\fs${titleFontSize(run.size, height)}\\c${assColor(run.color)}\\b${run.weight === "bold" ? 1 : 0}}`;
@@ -68,7 +80,7 @@ export function buildAssDocument(titles, { width, height }) {
 
   for (const title of titles) {
     const { alignment, x, y } = positionForTitle(title.position, width, height);
-    const text = title.runs.map((run) => `${runOverrides(run, height, title.readability)}${escapeAssText(run.text)}`).join("");
+    const text = title.runs.map((run) => `${runOverrides(run, height, title.readability)}${escapeAssText(renderTextCase(run.text, title.renderCaseStyle))}`).join("");
     lines.push(`Dialogue: 0,${assTimestamp(title.start)},${assTimestamp(title.end)},Default,,0,0,0,,{\\an${alignment}\\pos(${x},${y})}${text}`);
   }
   return `${lines.join("\n")}\n`;

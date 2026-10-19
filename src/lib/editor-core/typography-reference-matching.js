@@ -5,6 +5,7 @@ const MODEL = "gemini-3.6-flash";
 const FONT_BY_CHARACTER = Object.freeze({
   serif: "instrumentSerif",
   sans_serif: "inter",
+  condensed_sans: "barlowCondensed",
   monospace: "jetbrainsMono"
 });
 const TYPOGRAPHY_STYLES = Object.freeze(["single", "multiple", "none"]);
@@ -42,8 +43,10 @@ function enumValue(value, values) {
 export function requestsTypographyReferenceMatch(prompt = "", hasReference = false) {
   if (!hasReference) return false;
   const text = String(prompt);
-  return /\b(?:typography|typeface|font(?:\s+style)?|title\s+style)\b[\s\S]{0,80}\b(?:this|the)?\s*reference\b/i.test(text)
-    || /\b(?:this|the)?\s*reference\b[\s\S]{0,80}\b(?:typography|typeface|font(?:\s+style)?|title\s+style)\b/i.test(text);
+  const reference = "(?:this|the)?\\s*(?:reference|screenshot)";
+  const typography = "(?:typography|typeface|font(?:\\s+style)?|title\\s+style|(?:serif|sans(?:-?serif)?|condensed|monospace)\\s+(?:title|heading|headline))";
+  return new RegExp(`\\b${typography}\\b[\\s\\S]{0,80}\\b${reference}\\b`, "i").test(text)
+    || new RegExp(`\\b${reference}\\b[\\s\\S]{0,80}\\b${typography}\\b`, "i").test(text);
 }
 
 export function typographyReferenceAnalysisSchema() {
@@ -116,15 +119,19 @@ function normalizedText(value = "") {
 
 /** Extracts only bounded, user-written selection facts; no general OCR/NLP layer. */
 export function extractTypographyReferenceSelector(prompt = "") {
-  const referenceClause = String(prompt).split(/\b(?:and\s+)?(?:add|show|put)\s+(?:the\s+)?title\b/i)[0];
+  const fullPrompt = String(prompt);
+  const referenceClause = fullPrompt.split(/\b(?:and\s+)?(?:add|show|put)\s+(?:the\s+)?title\b/i)[0];
   const quoted = referenceClause.match(/\b(?:font|typeface|typography|style)\s+(?:of|from)\s+(?:"([^"]+)"|'([^']+)'|“([^”]+)”|‘([^’]+)’)/i);
   const referenceText = quoted?.slice(1).find(Boolean);
   const lower = referenceClause.toLowerCase();
-  const size = /\b(?:big|large|main)\b/.test(lower) ? "large" : /\b(?:small|tiny)\b/.test(lower) ? "small" : null;
+  // Prominence is relative to the candidates in this one screenshot, rather
+  // than a claim that Gemini must use our absolute title-size preset.
+  const prominence = /\b(?:big|large|main|prominent)\b/.test(lower) ? "high" : /\b(?:small|tiny)\b/.test(lower) ? "low" : null;
   const color = COLOR_NAMES.find((value) => new RegExp(`\\b${value}\\b`, "i").test(referenceClause)) || null;
-  const fontCharacter = /\bmono(?:space)?\b/i.test(referenceClause) ? "monospace" : /\bserif\b/i.test(referenceClause) ? "serif" : /\b(?:sans(?:-?serif)?|modern|minimal)\b/i.test(referenceClause) ? "sans_serif" : null;
+  const fontCharacter = /\b(?:condensed|narrow|tall)\b/i.test(referenceClause) ? "condensed_sans" : /\bmono(?:space)?\b/i.test(referenceClause) ? "monospace" : /\bserif\b/i.test(referenceClause) ? "serif" : /\b(?:sans(?:-?serif)?|modern|minimal)\b/i.test(referenceClause) ? "sans_serif" : null;
   const role = /\b(?:title|heading|headline)\b/i.test(referenceClause) ? "creative_title" : /\b(?:subtitle|caption|supporting)\b/i.test(referenceClause) ? "supporting_text" : null;
-  const selector = { ...(referenceText ? { referenceText } : {}), ...(size ? { size } : {}), ...(color ? { color: normalizeTitleColor(color) } : {}), ...(fontCharacter ? { fontCharacter } : {}), ...(role ? { role } : {}) };
+  const preserveCase = /\b(?:keep|preserve|retain)\s+(?:the\s+)?(?:original\s+)?(?:letter\s+)?(?:case|casing)\b/i.test(fullPrompt);
+  const selector = { ...(referenceText ? { referenceText } : {}), ...(prominence ? { prominence } : {}), ...(color ? { color: normalizeTitleColor(color) } : {}), ...(fontCharacter ? { fontCharacter } : {}), ...(role ? { role } : {}), ...(preserveCase ? { preserveCase: true } : {}) };
   return Object.keys(selector).length ? Object.freeze(selector) : null;
 }
 
@@ -140,9 +147,20 @@ export function selectTypographyReferenceCandidate(analysis, selector = null) {
       const visible = normalizedText(candidate.referenceText);
       return visible === wanted || (wanted.length >= 3 && visible.includes(wanted));
     });
+    if (!candidates.length) throw new TypographyReferenceError("TYPOGRAPHY_REFERENCE_SELECTOR_NO_MATCH");
+    if (candidates.length > 1) throw new TypographyReferenceError("TYPOGRAPHY_REFERENCE_AMBIGUOUS");
+    // Quoted visible copy is stronger grounding than a relative descriptor.
+    return candidates[0];
   }
-  for (const field of ["size", "color", "fontCharacter", "role"]) {
+  for (const field of ["color", "fontCharacter", "role", "position"]) {
     if (selector?.[field]) candidates = candidates.filter((candidate) => candidate[field] === selector[field]);
+  }
+  if (selector?.prominence) {
+    const sizes = { small: 1, medium: 2, large: 3 };
+    const desired = selector.prominence === "high"
+      ? Math.max(...candidates.map((candidate) => sizes[candidate.size]))
+      : Math.min(...candidates.map((candidate) => sizes[candidate.size]));
+    candidates = candidates.filter((candidate) => sizes[candidate.size] === desired);
   }
   if (!candidates.length) throw new TypographyReferenceError(selector ? "TYPOGRAPHY_REFERENCE_SELECTOR_NO_MATCH" : "TYPOGRAPHY_REFERENCE_NO_TEXT");
   if (candidates.length > 1) throw new TypographyReferenceError("TYPOGRAPHY_REFERENCE_AMBIGUOUS");
@@ -163,7 +181,7 @@ export function deriveTypographyTitleTreatment(analysis, selector = null) {
     color: selected.color,
     position: selected.position,
     // Observational only: Stage 1 never changes the user's supplied title text.
-    caseStyle: selected.caseStyle,
+    caseStyle: selector?.preserveCase ? "as_supplied" : selected.caseStyle,
     lineBreakStyle: selected.lineBreakStyle,
     selectedCandidateId: selected.candidateId
   });
@@ -174,7 +192,7 @@ export function buildTypographyReferenceAnalysisPrompt() {
     "Analyze the supplied image only as a typography reference for an existing video title renderer. Do not create an edit plan or return text from the image, font names, font files, file paths, renderer syntax, filters, or numeric controls.",
     "First set safe=false only for explicit sexual acts/pornography, sexual content involving minors, sexual violence, or extreme graphic gore. Fashion, swimwear, kissing, portraits, and lifestyle images are safe.",
     "Classify typography as single when one clear usable creative title style dominates, multiple when two or more clearly different creative styles compete, or none when there is no meaningful readable typography. Return every distinct visible treatment as at most four candidates. Mark each candidate as creative_title, supporting_text, or platform_ui. Incidental usernames, controls, and social-platform interface text are platform_ui, not a creative title.",
-    "For every candidate return only these supported observations: a short visible referenceText for grounding; serif, sans_serif, or monospace; regular or bold; as_supplied, uppercase, lowercase, or title_case; small, medium, or large; one closest supported named color; one supported title position; and single_line or multi_line. Select the closest visual alternative rather than claiming an exact proprietary font.",
+    "For every candidate return only these supported observations: a short visible referenceText for grounding; serif, sans_serif, condensed_sans (only for visibly tall/narrow display sans), or monospace; regular or bold; as_supplied, uppercase, lowercase, or title_case; small, medium, or large; one closest supported named color; one supported title position; and single_line or multi_line. Select the closest visual alternative rather than claiming an exact proprietary font.",
     "Return only JSON matching the supplied schema."
   ].join("\n\n");
 }
@@ -257,6 +275,7 @@ export function reconcileTypographyReferenceTitlePlan(plan, title, treatment) {
     color: safeTreatment.color,
     weight: safeTreatment.weight,
     font: safeTreatment.font,
+    renderCaseStyle: safeTreatment.caseStyle,
     readability: { mode: "target_aware" },
     runs: [{ text: title.text, font: safeTreatment.font, size: safeTreatment.size, color: safeTreatment.color, weight: safeTreatment.weight }]
   };

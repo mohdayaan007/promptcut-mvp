@@ -24,6 +24,17 @@ export const FONT_CATALOG = {
     weights: ["regular", "bold"],
     files: { regular: `${FONT_DIRECTORY}/JetBrainsMono-Regular.ttf`, bold: `${FONT_DIRECTORY}/JetBrainsMono-Bold.ttf` },
     tags: ["mono", "technical", "gaming", "futuristic", "bold", "fun", "playful"]
+  },
+  barlowCondensed: {
+    id: "barlowCondensed",
+    family: "Barlow Condensed",
+    aliases: ["barlow condensed", "barlowcondensed", "condensed display"],
+    // Barlow Condensed is bundled under the SIL Open Font License 1.1; see
+    // licenses/BarlowCondensed-OFL.txt. The heavy file is deliberate for
+    // the small, server-owned B2B condensed-display capability.
+    weights: ["regular", "bold"],
+    files: { regular: `${FONT_DIRECTORY}/BarlowCondensed-Regular.ttf`, bold: `${FONT_DIRECTORY}/BarlowCondensed-ExtraBold.ttf` },
+    tags: ["sans-serif", "condensed", "display", "bold", "headline", "title"]
   }
 };
 

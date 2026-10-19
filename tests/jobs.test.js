@@ -624,7 +624,7 @@ test("B2B typography reference analysis maps only registered title styling and p
   const plan = reconcileTypographyReferenceTitlePlan({ version: "1", operations: [{ type: "captions" }, { type: "title", text: "wrong", start: 0, end: 1, position: "top-left", size: "small", color: "red", weight: "regular", font: "inter" }] }, title, result.treatment);
   const styledTitle = plan.operations.find((operation) => operation.type === "title");
   assert.deepEqual(styledTitle, {
-    type: "title", text: "A Day in Kerala", start: 3, end: 6, position: "bottom-center", size: "large", color: "#F6D365", weight: "bold", font: "instrumentSerif", readability: { mode: "target_aware" },
+    type: "title", text: "A Day in Kerala", start: 3, end: 6, position: "bottom-center", size: "large", color: "#F6D365", weight: "bold", font: "instrumentSerif", renderCaseStyle: "uppercase", readability: { mode: "target_aware" },
     runs: [{ text: "A Day in Kerala", font: "instrumentSerif", size: "large", color: "#F6D365", weight: "bold" }]
   });
   assert.equal(plan.operations.filter((operation) => operation.type === "title").length, 1, "reference styling never duplicates the title operation");
@@ -676,7 +676,7 @@ test("B2B resolves an explicit creative-title selector while refusing unselected
   assert.throws(() => deriveTypographyTitleTreatment(analysis), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_AMBIGUOUS");
 
   const bigBlueSelector = extractTypographyReferenceSelector("Use the typography of the big blue title in this reference and add the title 'Kerala Diaries' at 0:03.");
-  assert.deepEqual(bigBlueSelector, { size: "large", color: "#4A90E2", role: "creative_title" });
+  assert.deepEqual(bigBlueSelector, { prominence: "high", color: "#4A90E2", role: "creative_title" });
   const selected = selectTypographyReferenceCandidate(analysis, bigBlueSelector);
   assert.equal(selected.candidateId, "candidate-1");
   assert.equal(deriveTypographyTitleTreatment(analysis, bigBlueSelector).font, "instrumentSerif");
@@ -688,6 +688,47 @@ test("B2B resolves an explicit creative-title selector while refusing unselected
 
   const onlyCreativePlusUi = { ...analysis, typography: "single", candidates: [analysis.candidates[0], analysis.candidates[2]] };
   assert.equal(deriveTypographyTitleTreatment(onlyCreativePlusUi).selectedCandidateId, "candidate-1", "platform UI cannot override a single clear creative title");
+});
+
+test("B2B Stage 3 matches grounded relative selectors and transfers only rendered reference casing", () => {
+  const candidate = (candidateId, referenceText, overrides = {}) => ({
+    candidateId, referenceText, role: "creative_title", fontCharacter: "sans_serif", weight: "bold", caseStyle: "title_case", size: "medium", color: "white", position: "center", lineBreakStyle: "single_line", ...overrides
+  });
+  const analysis = {
+    safe: true,
+    typography: "multiple",
+    candidates: [
+      candidate("candidate-1", "BLUE HOURS", { fontCharacter: "condensed_sans", caseStyle: "uppercase", size: "medium", color: "blue", position: "top-center" }),
+      candidate("candidate-2", "A story from the coast", { role: "supporting_text", size: "large", color: "white", position: "bottom-center" }),
+      candidate("candidate-3", "@creator", { role: "platform_ui", size: "small", position: "top-left" })
+    ]
+  };
+  const bigBlue = extractTypographyReferenceSelector("Use the typography of the big blue title in this reference and add the title 'Kerala Diaries' at 0:03.");
+  assert.equal(selectTypographyReferenceCandidate(analysis, bigBlue).candidateId, "candidate-1", "relative prominence must not reject a uniquely blue creative title categorized as medium");
+  assert.equal(deriveTypographyTitleTreatment(analysis, bigBlue).font, "barlowCondensed");
+  assert.equal(requestsTypographyReferenceMatch("Match the white serif heading in this screenshot and add the title 'Kerala' at 0:03.", true), true);
+  const quoted = extractTypographyReferenceSelector("Use the font style of 'Blue Hours' in this reference and add the title 'The Journey Begins' at 0:03.");
+  assert.equal(selectTypographyReferenceCandidate(analysis, quoted).candidateId, "candidate-1");
+  assert.throws(() => selectTypographyReferenceCandidate(analysis, extractTypographyReferenceSelector("Use the font style of 'Not Present' in this reference and add the title 'Kerala' at 0:03.")), (error) => error.reason === "TYPOGRAPHY_REFERENCE_SELECTOR_NO_MATCH");
+  assert.throws(() => selectTypographyReferenceCandidate({ ...analysis, candidates: [candidate("candidate-1", "ONE", { color: "blue" }), candidate("candidate-2", "TWO", { color: "blue" })] }, bigBlue), (error) => error.reason === "TYPOGRAPHY_REFERENCE_AMBIGUOUS");
+
+  const treatment = deriveTypographyTitleTreatment(analysis, bigBlue);
+  const original = { text: "The Journey Begins", start: 3, end: 6, position: "center", size: "medium", color: "white", weight: "regular", font: "inter" };
+  const plan = reconcileTypographyReferenceTitlePlan({ version: "1", operations: [] }, original, treatment);
+  const title = plan.operations[0];
+  assert.equal(title.text, "The Journey Begins", "canonical plan text remains user-authored");
+  assert.equal(title.start, 3);
+  assert.equal(title.end, 6);
+  assert.equal(title.font, "barlowCondensed");
+  assert.equal(title.renderCaseStyle, "uppercase");
+  assert.match(buildAssDocument([title], { width: 1280, height: 720 }), /THE JOURNEY BEGINS/, "reference all-caps applies only while rendering");
+
+  const preserve = deriveTypographyTitleTreatment(analysis, extractTypographyReferenceSelector("Use the font style of 'Blue Hours' in this reference, keep the original casing, and add the title 'The Journey Begins' at 0:03."));
+  const preservePlan = reconcileTypographyReferenceTitlePlan({ version: "1", operations: [] }, original, preserve);
+  assert.equal(preservePlan.operations[0].text, "The Journey Begins");
+  assert.equal(preservePlan.operations[0].renderCaseStyle, "as_supplied");
+  assert.match(buildAssDocument([preservePlan.operations[0]], { width: 1280, height: 720 }), /The Journey Begins/);
+  assert.equal(deriveTypographyTitleTreatment({ safe: true, typography: "single", candidates: [candidate("candidate-1", "Modern", { fontCharacter: "sans_serif" })] }).font, "inter", "ordinary sans remains Inter");
 });
 
 test("B2B target-aware readability adds an understated ASS safeguard only for bright target frames", () => {
@@ -4533,6 +4574,7 @@ test("title typography normalizes legacy and rich title plans through the regist
   validateEditPlan(rich);
   assert.deepEqual(rich.operations[0].runs[1], { text: "Kerala", font: "instrumentSerif", size: 58, color: "#677DEC", weight: "bold" });
   assert.equal(resolveFontId("Instrument Serif"), "instrumentSerif");
+  assert.equal(resolveFontId("Barlow Condensed"), "barlowCondensed");
   assert.equal(resolveFontId("Comic Sans"), null);
   assert.equal(resolveSemanticFontIntent("gaming fun"), "jetbrainsMono");
   assert.ok(Object.values(FONT_CATALOG).every((font) => font.files.regular));
@@ -4634,6 +4676,30 @@ test("B2B target-aware title readability samples a bright final frame and keeps 
     const { video, audio } = await probeRenderedVideo(output);
     assert.match(ass, /\\bord1\.45\\shad0\.3\\3c&H55000000&/, "bright footage gets bounded readability contrast without a box");
     assert.ok(video && audio, "target-aware title output remains playable");
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test("B2B condensed all-caps display titles load through real FFmpeg/libass rendering", { timeout: 20_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-b2b-condensed-title-"));
+  const sourcePath = path.join(tempDirectory, "source.mp4");
+  try {
+    await makeSolidCaptionSource(sourcePath, 2, { width: 854, height: 480 });
+    const media = [{ duration: 2, width: 854, height: 480, hasAudio: true, frameRate: 30 }];
+    const plan = {
+      version: "1",
+      operations: [{
+        type: "title", text: "The Journey Begins", start: 0.5, end: 1.5, position: "center", size: "large", color: "white", weight: "bold", font: "barlowCondensed", renderCaseStyle: "uppercase",
+        runs: [{ text: "The Journey Begins", font: "barlowCondensed", size: "large", color: "#FFFFFF", weight: "bold" }]
+      }]
+    };
+    validateEditPlan(plan);
+    const output = await executeWithWatchdog({ inputPaths: [sourcePath], media, tempDirectory, plan }, { watchdogMs: 15_000 });
+    const ass = await readFile(path.join(tempDirectory, "title-layers.ass"), "utf8");
+    assert.match(ass, /\\fnBarlow Condensed\\fs48\\c&H00FFFFFF&\\b1\}THE JOURNEY BEGINS/);
+    assert.ok(await videoFrameDifference(sourcePath, output, 1) > 100_000, "the self-hosted condensed display font visibly renders through libass");
+    assert.ok((await probeRenderedVideo(output)).video);
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });
   }
