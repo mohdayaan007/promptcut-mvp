@@ -420,6 +420,11 @@ export function requestsReferenceStyleMatch(prompt = "", hasReference = false) {
   return Boolean(hasReference && /\b(?:make|match|use|give)\b[\s\S]{0,80}\b(?:look like this|this style|reference (?:style|look)|style reference|same look)\b/i.test(prompt));
 }
 
+/** Deliberately opt-in: production keeps the accepted initial B2A treatment by default. */
+export function isB2aProxyRefinementEnabled(value = process.env.B2A_PROXY_REFINEMENT_ENABLED) {
+  return value === "true";
+}
+
 export function referenceStyleAnalysisSchema() {
   const level = { type: "string", enum: LEVELS };
   return { type: "object", properties: {

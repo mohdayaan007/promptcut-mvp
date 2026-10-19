@@ -33,7 +33,7 @@ import { createCanonicalReferenceStyleTreatment, REFERENCE_STYLE_TREATMENT_VERSI
 import { measureReferenceRgbFrame, REFERENCE_FRAME_METRICS_VERSION, summarizeReferenceFrameMetrics } from "@/lib/editor-core/reference-style-metrics";
 import { createReferenceStyleProxyFrames, extractTargetReferenceFrames } from "@/lib/editor-core/reference-style-media";
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
-import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, evaluateReferenceStyleProxy, refineReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, referenceStyleProxyEvaluationSchema, referenceStyleReferenceAnalysisSchema, referenceStyleTargetAnalysisSchema, requestsReferenceStyleMatch, TONAL_COLOR_BIASES, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
+import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, evaluateReferenceStyleProxy, isB2aProxyRefinementEnabled, refineReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, referenceStyleProxyEvaluationSchema, referenceStyleReferenceAnalysisSchema, referenceStyleTargetAnalysisSchema, requestsReferenceStyleMatch, TONAL_COLOR_BIASES, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
 
 function canonicalStyleRecipe(recipe) {
   return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
@@ -801,6 +801,10 @@ test("B2A tonal bands follow reference direction and complementary palettes supp
 });
 
 test("B2A one-pass proxy refinement is bounded, directional, and safe to skip", async () => {
+  for (const value of [undefined, "", "false", "TRUE", "1", " yes"]) {
+    assert.equal(isB2aProxyRefinementEnabled(value), false, `only exact true enables proxy refinement (${String(value)})`);
+  }
+  assert.equal(isB2aProxyRefinementEnabled("true"), true);
   const metrics = { lumaP05: 0.08, lumaP50: 0.45, lumaP95: 0.78, lumaP99: 0.84, nearBlackFraction: 0.01, nearWhiteFraction: 0, saturationIndex: 0.2 };
   const signature = (overrides = {}) => ({ context: "lifestyle", peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: "neutral", ambientColorCharacter: "neutral", dominantColorBias: "neutral", shadowColorBias: "neutral", midtoneColorBias: "neutral", highlightColorBias: "neutral", highlightCharacter: "natural", blackCharacter: "neutral", saturationCharacter: "natural", colorSeparation: "neutral", ...overrides });
   const target = signature({ coherent: true, compatible: true });
