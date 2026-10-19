@@ -10,7 +10,14 @@ function findStyleValue(prompt, values, fallback) {
   return values.find((value) => new RegExp(`\\b${value}\\b`, "i").test(prompt)) || fallback;
 }
 
-function extractTitleText(prompt) {
+function extractTitleText(prompt, { stripQuotedText = false } = {}) {
+  // Prefer an explicitly quoted title so punctuation in the requested wording
+  // is preserved and the quotation marks themselves never reach the renderer.
+  // Legacy title parsing retains quote characters unless a reference-matching
+  // caller explicitly requests this safer literal-title form.
+  const quotedTitleMatch = stripQuotedText
+    ? prompt.match(/\b(?:add|show|put)\s+(?:the\s+)?title\s+(?:"([^"]*)"|'([^']*)'|“([^”]*)”|‘([^’]*)’)/i)
+    : null;
   const colonMatch = prompt.match(/\b(?:title|text|caption|headline)\s*:\s*(.+)/i);
   const sayingMatch = prompt.match(/\b(?:title|text|caption|headline)\s+saying\s+(.+)/i);
   const positionedMatch = prompt.match(
@@ -19,6 +26,7 @@ function extractTitleText(prompt) {
   const titleMatch = prompt.match(/\b(?:title|text|caption|headline)\s+(.+)/i);
 
   let text =
+    quotedTitleMatch?.slice(1).find((value) => value !== undefined) ||
     colonMatch?.[1] ||
     sayingMatch?.[1] ||
     positionedMatch?.[1] ||
@@ -58,8 +66,8 @@ function extractFont(prompt) {
   return exactRequest ? { font: "__unavailable__" } : { font: TITLE_DEFAULTS.font };
 }
 
-export function parseTitle(prompt = "") {
-  const text = extractTitleText(prompt);
+export function parseTitle(prompt = "", options = {}) {
+  const text = extractTitleText(prompt, options);
   if (!text) return null;
 
   const start = extractStartTime(prompt);

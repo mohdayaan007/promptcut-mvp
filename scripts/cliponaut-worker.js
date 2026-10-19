@@ -11,6 +11,8 @@ import { CaptionError, createCaptionCues, extractCaptionCorrection, requestsCapt
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
 import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, evaluateReferenceStyleProxy, isB2aProxyRefinementEnabled, refineReferenceStyleTreatment, ReferenceStyleError, requestsReferenceStyleMatch } from "@/lib/editor-core/reference-style-matching";
 import { createReferenceStyleProxyFrames, extractTargetReferenceFrames, validateReferenceImageFile } from "@/lib/editor-core/reference-style-media";
+import { analyzeTypographyReference, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, TypographyReferenceError } from "@/lib/editor-core/typography-reference-matching";
+import { parseTitle } from "@/lib/title-parser";
 import { is4kCapableMedia } from "@/lib/media/media-config";
 import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
 import { jobConfig } from "@/lib/jobs/job-config";
@@ -39,6 +41,13 @@ function safeError(error) {
     if (error.reason === "REFERENCE_SAFETY_REJECTED") return "This reference can’t be used for style matching. Please choose another image or video.";
     if (error.reason === "REFERENCE_TARGET_HETEROGENEOUS") return "This first version works best with visually coherent footage. Please choose another video.";
     if (["REFERENCE_TARGET_COUNT", "REFERENCE_COMPATIBILITY_WEAK"].includes(error.reason)) return error.message;
+    return "This reference image could not be used safely.";
+  }
+  if (error instanceof TypographyReferenceError) {
+    if (error.reason === "TYPOGRAPHY_REFERENCE_SAFETY_REJECTED") return "This reference can’t be used for style matching. Please choose another image or video.";
+    if (error.reason === "TYPOGRAPHY_REFERENCE_AMBIGUOUS") return "This reference has more than one typography style. Please choose a clearer reference.";
+    if (error.reason === "TYPOGRAPHY_REFERENCE_NO_TEXT") return "This reference doesn’t contain a clear typography style.";
+    if (error.reason === "TYPOGRAPHY_TITLE_REQUIRED") return "Add a title in your request to use a typography reference.";
     return "This reference image could not be used safely.";
   }
   return "Unable to process this video. Please try again.";
@@ -98,7 +107,25 @@ async function processJob(job) {
       throw new Error("4K export requires every uploaded video to be 4K-capable");
     }
     let referenceTreatment = null;
-    if (job.reference && requestsReferenceStyleMatch(job.prompt, true)) {
+    let typographyTreatment = null;
+    const typographyReferenceActive = Boolean(job.reference && requestsTypographyReferenceMatch(job.prompt, true));
+    if (typographyReferenceActive) {
+      if (sources.length !== 1) throw new TypographyReferenceError("TYPOGRAPHY_TARGET_COUNT");
+      const extension = job.reference.type === "image/png" ? "png" : job.reference.type === "image/webp" ? "webp" : "jpg";
+      const referencePath = path.join(scratch, `reference.${extension}`);
+      await downloadObject(job.reference.key, referencePath);
+      await validateReferenceImageFile({ inputPath: referencePath, type: job.reference.type, executionController });
+      const result = await analyzeTypographyReference({ referencePath, referenceMimeType: job.reference.type });
+      typographyTreatment = result.treatment;
+      console.info("Typography reference treatment prepared:", {
+        jobId: job.id,
+        font: typographyTreatment.font,
+        weight: typographyTreatment.weight,
+        size: typographyTreatment.size,
+        color: typographyTreatment.color,
+        position: typographyTreatment.position
+      });
+    } else if (job.reference && requestsReferenceStyleMatch(job.prompt, true)) {
       if (sources.length !== 1) throw new ReferenceStyleError("REFERENCE_TARGET_COUNT", "Reference style matching currently supports one target video.");
       const extension = job.reference.type === "image/png" ? "png" : job.reference.type === "image/webp" ? "webp" : "jpg";
       const referencePath = path.join(scratch, `reference.${extension}`);
@@ -145,10 +172,10 @@ async function processJob(job) {
       // Only an otherwise empty ordinary plan may fall back to the B2-only
       // treatment. Deliberate reference + named-style conflicts must remain a
       // safe rejection instead of being silently stacked by the fallback.
-      if (!referenceTreatment || !(error instanceof UnsupportedEditRequestError) || error.message !== "This edit is not supported yet") throw error;
-      planning = { plan: createEditPlan({ prompt: job.prompt, hasMultipleVideos: false, sourceCatalog }), source: "reference_style" };
+      if ((!referenceTreatment && !typographyTreatment) || !(error instanceof UnsupportedEditRequestError) || error.message !== "This edit is not supported yet") throw error;
+      planning = { plan: createEditPlan({ prompt: job.prompt, hasMultipleVideos: false, sourceCatalog }), source: typographyTreatment ? "typography_reference" : "reference_style" };
     }
-    const plan = planning.plan;
+    let plan = planning.plan;
     if (referenceTreatment && plan.referenceStyleReconciliation?.suppressedVisualOperationTypes.length) {
       console.info("Reference style planner visual operations suppressed:", {
         jobId: job.id,
@@ -156,6 +183,7 @@ async function processJob(job) {
       });
     }
     if (referenceTreatment) plan.operations = [...plan.operations, { type: "reference_style_treatment", treatment: referenceTreatment }];
+    if (typographyTreatment) plan = reconcileTypographyReferenceTitlePlan(plan, parseTitle(job.prompt, { stripQuotedText: true }), typographyTreatment);
     if (requestsCaptions(job.prompt) && !plan.operations.some((operation) => operation.type === "captions")) plan.operations.push({ type: "captions" });
     const editPlan = validateEditPlan(plan, { sourceCatalog });
     const stylePlanDiagnostic = summarizeStylePlanDiagnostic(planning, editPlan);

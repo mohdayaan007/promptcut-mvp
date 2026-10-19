@@ -34,6 +34,7 @@ import { measureReferenceRgbFrame, REFERENCE_FRAME_METRICS_VERSION, summarizeRef
 import { createReferenceStyleProxyFrames, extractTargetReferenceFrames } from "@/lib/editor-core/reference-style-media";
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
 import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, evaluateReferenceStyleProxy, isB2aProxyRefinementEnabled, refineReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, referenceStyleProxyEvaluationSchema, referenceStyleReferenceAnalysisSchema, referenceStyleTargetAnalysisSchema, requestsReferenceStyleMatch, TONAL_COLOR_BIASES, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
+import { analyzeTypographyReference, deriveTypographyTitleTreatment, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, typographyReferenceAnalysisSchema, TypographyReferenceError, validateTypographyReferenceAnalysis } from "@/lib/editor-core/typography-reference-matching";
 
 function canonicalStyleRecipe(recipe) {
   return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
@@ -593,6 +594,69 @@ test("B2A warm-golden human footage uses a restrained combined treatment while l
   assert.ok(landscape.temperature > human.temperature && landscape.saturation > human.saturation && landscape.vibrance > human.vibrance, "non-human outdoor footage retains meaningful reference-directed golden treatment");
   assert.equal(human.brightness, landscape.brightness, "human safety does not unnecessarily remove reference-directed exposure support");
   assert.ok(buildReferenceStyleTreatmentFilters(human).at(-1).startsWith("curves=master="), "human treatment retains protected final curve ordering");
+});
+
+test("B2B typography reference analysis maps only registered title styling and preserves user title wording and timing", async () => {
+  const prompt = "Use the typography from this reference and add the title 'A Day in Kerala' at 0:03.";
+  const observed = { safe: true, typography: "single", fontCharacter: "serif", weight: "bold", caseStyle: "uppercase", size: "large", color: "yellow", position: "bottom-center", lineBreakStyle: "single_line" };
+  const calls = { uploads: 0, deletes: [], requests: [] };
+  const aiClient = {
+    files: {
+      upload: async () => ({ name: `reference-${++calls.uploads}`, uri: "gemini://private-reference", mimeType: "image/jpeg" }),
+      delete: async ({ name }) => { calls.deletes.push(name); }
+    },
+    models: { generateContent: async (request) => { calls.requests.push(request); return { text: JSON.stringify(observed) }; } }
+  };
+  assert.equal(requestsTypographyReferenceMatch(prompt, true), true);
+  assert.equal(requestsTypographyReferenceMatch(prompt, false), false);
+  assert.equal(requestsReferenceStyleMatch(prompt, true), false, "typography intent must not enter B2A photographic matching");
+  assert.equal(typographyReferenceAnalysisSchema().additionalProperties, false);
+  const result = await analyzeTypographyReference({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", aiClient });
+  assert.deepEqual(result.treatment, { font: "instrumentSerif", weight: "bold", size: "large", color: "#F6D365", position: "bottom-center", caseStyle: "uppercase", lineBreakStyle: "single_line" });
+  assert.equal(calls.uploads, 1);
+  assert.deepEqual(calls.deletes, ["reference-1"], "the scratch Gemini reference is cleaned exactly once");
+  assert.equal(calls.requests.length, 1);
+  assert.ok(!JSON.stringify(calls.requests[0]).includes("ffmpeg"), "analysis request exposes no rendering controls");
+
+  const title = parseTitle(prompt, { stripQuotedText: true });
+  assert.deepEqual(title, { text: "A Day in Kerala", start: 3, end: 6, position: "center", size: "medium", color: "white", weight: "regular", font: "inter" });
+  assert.equal(parseTitle("Use typography from this reference and add the title ‘A Day in Kerala’ at 0:03.", { stripQuotedText: true }).text, "A Day in Kerala");
+  const plan = reconcileTypographyReferenceTitlePlan({ version: "1", operations: [{ type: "captions" }, { type: "title", text: "wrong", start: 0, end: 1, position: "top-left", size: "small", color: "red", weight: "regular", font: "inter" }] }, title, result.treatment);
+  const styledTitle = plan.operations.find((operation) => operation.type === "title");
+  assert.deepEqual(styledTitle, {
+    type: "title", text: "A Day in Kerala", start: 3, end: 6, position: "bottom-center", size: "large", color: "#F6D365", weight: "bold", font: "instrumentSerif",
+    runs: [{ text: "A Day in Kerala", font: "instrumentSerif", size: "large", color: "#F6D365", weight: "bold" }]
+  });
+  assert.equal(plan.operations.filter((operation) => operation.type === "title").length, 1, "reference styling never duplicates the title operation");
+  assert.equal(plan.operations.some((operation) => operation.type === "captions"), true, "ordinary operations remain intact");
+  assert.doesNotThrow(() => validateEditPlan(plan));
+});
+
+test("B2B typography references reject ambiguity, absent text, and unsafe or unsupported model output without fabricating a title style", () => {
+  const base = { safe: true, typography: "single", fontCharacter: "sans_serif", weight: "regular", caseStyle: "as_supplied", size: "medium", color: "white", position: "center", lineBreakStyle: "single_line" };
+  assert.deepEqual(deriveTypographyTitleTreatment(base), { font: "inter", weight: "regular", size: "medium", color: "#FFFFFF", position: "center", caseStyle: "as_supplied", lineBreakStyle: "single_line" });
+  assert.equal(deriveTypographyTitleTreatment({ ...base, fontCharacter: "monospace" }).font, "jetbrainsMono");
+  assert.throws(() => deriveTypographyTitleTreatment({ ...base, typography: "multiple" }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_AMBIGUOUS");
+  assert.throws(() => deriveTypographyTitleTreatment({ ...base, typography: "none" }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_NO_TEXT");
+  assert.throws(() => deriveTypographyTitleTreatment({ ...base, safe: false }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_SAFETY_REJECTED");
+  assert.throws(() => validateTypographyReferenceAnalysis({ ...base, fontCharacter: "Comic Sans", rawFfmpeg: "drawtext" }), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_INVALID_MODEL_RESPONSE");
+  assert.throws(() => reconcileTypographyReferenceTitlePlan({ version: "1", operations: [] }, null, deriveTypographyTitleTreatment(base)), (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_TITLE_REQUIRED");
+});
+
+test("B2B typography analysis cleans its Gemini scratch image after a model failure", async () => {
+  const deleted = [];
+  const aiClient = {
+    files: {
+      upload: async () => ({ name: "reference-failure", uri: "gemini://private-reference", mimeType: "image/jpeg" }),
+      delete: async ({ name }) => { deleted.push(name); }
+    },
+    models: { generateContent: async () => { throw new Error("temporary model failure"); } }
+  };
+  await assert.rejects(
+    analyzeTypographyReference({ referencePath: "/private/reference.jpg", referenceMimeType: "image/jpeg", aiClient }),
+    (error) => error instanceof TypographyReferenceError && error.reason === "TYPOGRAPHY_REFERENCE_MODEL_REQUEST_FAILED"
+  );
+  assert.deepEqual(deleted, ["reference-failure"]);
 });
 
 test("B2A reference analysis contract defaults enrichment but fails closed on safety facts", async () => {
