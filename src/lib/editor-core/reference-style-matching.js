@@ -134,6 +134,7 @@ const rankedDifference = (reference, target, values) => values.indexOf(reference
 const directionFromDifference = (difference) => difference > 0 ? "raise" : difference < 0 ? "lower" : "preserve";
 const directionalAmount = (difference, values) => intensity(Math.abs(difference) >= 2 ? "strong" : Math.abs(difference) === 1 ? "standard" : "subtle", values);
 const tonalBiasValue = Object.freeze({ neutral: 0, warm_yellow: 0.65, warm_orange: 1, cool_blue: -1, cool_cyan: -0.7, green_mint: -0.45 });
+const ambientDirection = Object.freeze({ neutral: 0, warm_golden: 1, cool_mint: -1, cool_clean: -1 });
 // Reference direction is authoritative. Target resemblance can attenuate an
 // already-matching band, but it must never turn a neutral reference into a
 // correction or reverse a warm/cool reference direction.
@@ -143,6 +144,10 @@ function tonalDifference(reference, target) {
   if (referenceValue === 0) return 0;
   const sameDirection = Math.sign(referenceValue) === Math.sign(targetValue);
   return Math.sign(referenceValue) * Math.max(0, Math.abs(referenceValue) - (sameDirection ? Math.abs(targetValue) : 0));
+}
+function sameAmbientFamily(reference, target) {
+  if (reference === target) return true;
+  return ["cool_mint", "cool_clean"].includes(reference) && ["cool_mint", "cool_clean"].includes(target);
 }
 
 /**
@@ -227,7 +232,16 @@ export function deriveReferenceStyleTreatment({ analysis, metrics }) {
     safe.reference.warmth === "neutral" &&
     delta.dominantColorBias === "mixed";
   const complementaryGlobalTemperatureFactor = neutralSpatialComplementary ? 0 : 1;
-  const ambientTemperature = direction(delta.warmth, warmthAmount) * complementaryGlobalTemperatureFactor;
+  // An explicit warm/cool ambient character owns global direction. When the
+  // target already shares that broad family, retain a conservative floor
+  // rather than erase the reference character or apply a maximum move.
+  const explicitAmbientDirection = ambientDirection[delta.ambientColorCharacter];
+  const ambientTemperatureDirection = explicitAmbientDirection || direction(delta.warmth, 1);
+  const ambientTemperatureMagnitude = explicitAmbientDirection && sameAmbientFamily(
+    delta.ambientColorCharacter,
+    safe.target.ambientColorCharacter
+  ) ? 0.07 : warmthAmount;
+  const ambientTemperature = ambientTemperatureDirection * ambientTemperatureMagnitude * complementaryGlobalTemperatureFactor;
   const tintAmount = delta.dominantColorBias === "green_mint" ? 0.065 : delta.dominantColorBias === "cyan_blue" || delta.dominantColorBias === "yellow_orange" ? 0.035 : 0;
   const ambientTint = delta.dominantColorBias === "green_mint" || delta.dominantColorBias === "cyan_blue" ? -tintAmount : delta.dominantColorBias === "yellow_orange" ? tintAmount : 0;
   // Skin constrains only hue/chroma authority. Tonal structure remains available
