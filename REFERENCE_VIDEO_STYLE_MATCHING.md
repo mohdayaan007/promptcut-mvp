@@ -197,3 +197,49 @@ requested interval. The existing executor preserves the original target audio
 and aspect ratio; reference video/audio never enter the render plan. This proves
 only renderer integration for a synthetic signature, not that real creator
 references have been interpreted or matched successfully.
+
+## RV-2B internal Gemini observation adapter
+
+RV-2B adds an internal-only, one-call Gemini adapter between RV-1's bounded
+JPEG evidence and its existing strict observation validator. It sends only the
+server-extracted JPEG bytes as direct inline `image/jpeg` parts together with
+server-owned frame IDs, shot IDs, timestamps, shot boundaries, and evidence
+limits. It never uploads a persistent Gemini File, sends reference audio,
+exposes local paths or storage URLs, or asks the model for filters, plans,
+LUTs, or exact fonts. The model returns a versioned descriptive observation
+document: `safe` plus only the RV-1 photographic, typography, composition,
+rhythm, and transition fields. `unknown` is required whenever the sampled
+evidence cannot establish a characteristic.
+
+The adapter permits exactly one request and no automatic retry. The locally
+installed `@google/genai` 2.20.0 SDK supports
+`automaticFunctionCalling.disable`; RV-2B sets it to `true` and supplies no
+tools, so its automatic function-calling continuation loop is disabled rather
+than merely assumed absent. The full
+deadline covers bounded JPEG loading, the injected model request, and response
+validation. A pre-aborted or cancelled operation returns a cancellation reason;
+an elapsed deadline returns a distinct timeout reason. The injected SDK adapter
+receives the same abort signal and must honor it to terminate underlying I/O.
+Client-side cancellation can stop the request locally but cannot guarantee that
+a provider has not already started processing or incurred a charge.
+Responses are capped by the existing RV-1 payload limit, then validated against
+the strict server-owned evidence manifest. Invented frame/shot IDs, invalid
+intervals, overlaps, malformed JSON/schema, empty evidence, excessive
+responses, and provider errors reject safely.
+
+Reference safety remains fail-closed. The single bounded response must declare
+`safe`; a false or unverifiable result is rejected before creative observations
+are accepted, with the concise user-facing message “This reference can’t be
+used for style matching. Please choose another image or video.” The schema
+allows ordinary non-explicit fashion, swimwear, kissing, portraits, and
+lifestyle media. It does not expose a moderation taxonomy to users. Because
+one bounded request is the cost/privacy budget, safety and descriptive data are
+returned in the same schema, but the server discards every observation before
+aggregation when safety fails.
+
+RV-2B is not public worker/UI activation and is not creator-fidelity proof.
+Mocked integration tests exercise real FFmpeg temporal extraction, direct
+inline request construction, strict validation, signature aggregation, and
+RV-2A consumption. A separately authorized live evaluation with actual creator
+reference videos, approved credentials, and controlled output review is still
+required before claiming real-model creative-match quality.

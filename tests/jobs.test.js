@@ -37,6 +37,7 @@ import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceS
 import { analyzeTypographyReference, deriveTypographyTitleTreatment, extractTypographyReferenceSelector, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, selectTypographyReferenceCandidate, typographyReferenceAnalysisSchema, TypographyReferenceError, validateTypographyReferenceAnalysis } from "@/lib/editor-core/typography-reference-matching";
 import { assertReferenceVideoFoundationEnabled, assertReferenceVideoMatchingImplemented, createReferenceVideoSamplingPlan, decodeReferenceVideoFrames, ReferenceVideoError, validateReferenceVideoFile } from "@/lib/editor-core/reference-video-foundation";
 import { aggregateReferenceVideoCreativeSignature, allocateReferenceVideoFrameTimes, buildReferenceVideoVisualEvidence, extractReferenceVideoTemporalEvidence, interpretReferenceVideoEvidence, referenceVideoAnalysisFrameWidth, ReferenceVideoObservationError, validateReferenceVideoEvidence, validateReferenceVideoObservations } from "@/lib/editor-core/reference-video-understanding";
+import { analyzeReferenceVideoWithGemini, createGeminiReferenceVideoInterpreter, ReferenceVideoGeminiError, referenceVideoGeminiObservationSchema } from "@/lib/editor-core/reference-video-gemini";
 import { createReferenceVideoTargetAwareTreatment, ReferenceVideoTransferError, validateReferenceVideoCreativeSignature } from "@/lib/editor-core/reference-video-transfer";
 
 function canonicalStyleRecipe(recipe) {
@@ -5321,6 +5322,89 @@ test("RV-1 surfaces saturated event windows and bounds loader/interpreter deadli
   const signature = aggregateReferenceVideoCreativeSignature({ evidence, observations: { version: 1, observations: [] } });
   assert.equal(signature.confidence.eventCoverageComplete, false);
   await assert.rejects(() => interpretReferenceVideoEvidence({ evidence, timeoutMs: 5, loadVisualEvidence: async ({ signal }) => new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(new EditExecutionCancelledError()), { once: true })), interpret: async () => ({}) }), (error) => error.reason === "RV1_INTERPRETER_TIMEOUT");
+});
+
+function rv2bObservation({ observationId, shotId, frameIds, start, end, palette = "cool", exposure = "medium", contrast = "medium", saturation = "medium", typography = {} }) {
+  return {
+    observationId, shotId, frameIds, start, end,
+    photographic: { palette, exposure, contrast, saturation, texture: "clean" },
+    typography: { state: "absent", role: "unknown", prominence: "unknown", fontCharacter: "unknown", weight: "unknown", position: "unknown", alignment: "unknown", colorCharacter: "unknown", ...typography },
+    composition: { framing: "medium", balance: "centered", titleSafeArea: "top", subjectPlacement: "center", negativeSpace: "medium" },
+    rhythm: { pacing: "medium" }, transition: { type: "unknown" }
+  };
+}
+
+function rv2bEvidence() {
+  return {
+    version: 1, duration: 4, coverage: { complete: true, reason: "bounded_temporal_sampling", unrepresentedShotIds: [], eventWindows: [] },
+    shots: [{ shotId: "shot-1", start: 0, end: 2 }, { shotId: "shot-2", start: 2, end: 4 }],
+    frames: [{ frameId: "frame-1", shotId: "shot-1", timestamp: 0.5, imagePath: "/private/rv2b-1.jpg" }, { frameId: "frame-2", shotId: "shot-1", timestamp: 1.5, imagePath: "/private/rv2b-2.jpg" }, { frameId: "frame-3", shotId: "shot-2", timestamp: 2.5, imagePath: "/private/rv2b-3.jpg" }, { frameId: "frame-4", shotId: "shot-2", timestamp: 3.5, imagePath: "/private/rv2b-4.jpg" }],
+    events: [{ eventId: "cut-1", timestamp: 2, kind: "hard_cut" }]
+  };
+}
+
+function rv2bModelDocument(evidence = rv2bEvidence(), overrides = {}) {
+  const observations = evidence.shots.map((shot, index) => {
+    const frames = evidence.frames.filter((frame) => frame.shotId === shot.shotId);
+    return rv2bObservation({ observationId: `observation-${index + 1}`, shotId: shot.shotId, frameIds: frames.map((frame) => frame.frameId), start: shot.start, end: shot.end, palette: "cool", contrast: index ? "low" : "high", typography: index === 0 ? { state: "present", role: "creative_title", prominence: "high", fontCharacter: "sans", weight: "bold", position: "top", alignment: "center", colorCharacter: "light" } : {} });
+  });
+  return { schemaVersion: 1, safe: true, observations, ...overrides };
+}
+
+test("RV-2B sends bounded direct JPEG evidence through Gemini and returns a strict RV-1 signature", { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-rv2b-"));
+  const source = path.join(root, "reference.mp4");
+  let request;
+  try {
+    await execFileAsync("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=navy:s=320x180:r=24:d=1", "-f", "lavfi", "-i", "color=c=teal:s=320x180:r=24:d=1", "-f", "lavfi", "-i", "color=c=navy:s=320x180:r=24:d=1", "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0", "-c:v", "libx264", "-pix_fmt", "yuv420p", source]);
+    const evidence = await extractReferenceVideoTemporalEvidence({ inputPath: source, media: { duration: 3, width: 320, height: 180 }, scratchDirectory: root });
+    const aiClient = { models: { generateContent: async (value) => { request = value; return { text: JSON.stringify(rv2bModelDocument(evidence)) }; } } };
+    const result = await analyzeReferenceVideoWithGemini({ evidence, aiClient });
+    assert.equal(request.model, "gemini-3.6-flash");
+    assert.equal(request.config.temperature, 0);
+    assert.deepEqual(request.config.automaticFunctionCalling, { disable: true }, "the installed SDK's automatic continuation path is explicitly disabled");
+    assert.deepEqual(request.config.responseJsonSchema, referenceVideoGeminiObservationSchema());
+    assert.equal(JSON.stringify(request.config.responseJsonSchema).includes('"pattern"'), false, "the model-facing structured-output schema uses no unsupported pattern keyword");
+    const directImages = request.contents.filter((part) => part?.inlineData);
+    assert.equal(directImages.length, evidence.frames.length, "each bounded extracted JPEG is an inline model part");
+    assert.ok(directImages.every((part) => part.inlineData.mimeType === "image/jpeg" && typeof part.inlineData.data === "string" && part.inlineData.data.length > 0));
+    assert.equal(JSON.stringify(request).includes(root), false, "the request contains no local media path");
+    assert.equal(JSON.stringify(request).includes("fileData"), false, "the adapter does not create or reference a persistent Gemini file");
+    assert.equal(result.observations.observations.length, evidence.shots.length);
+    assert.equal(result.signature.typography.opening.length, 1, "mocked opening creative title remains temporally distinct");
+    assert.equal(result.signature.photographic.persistent[0].palette, "cool");
+    const signature = validateReferenceVideoCreativeSignature(result.signature, { provenance: { observationIds: result.observations.observations.map((entry) => entry.observationId), frameIds: evidence.frames.map((entry) => entry.frameId), shotIds: evidence.shots.map((entry) => entry.shotId) } });
+    const treatment = createReferenceVideoTargetAwareTreatment({ signature, targetAnalysis: rv2aAnalysis({ referenceWarmth: "cool" }), targetMetrics: rv2aMetrics, prompt: "Match the reference photographically", sourceCatalog: [{ sourceId: "source-1", duration: 3 }], reference: rv2aReference });
+    assert.ok(treatment.plan.operations.some((operation) => operation.type === "reference_style_treatment"));
+    assert.equal(treatment.plan.operations.some((operation) => operation.sourceId === "reference-1"), false, "reference evidence cannot become an output source");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("RV-2B rejects unsafe, malformed, invented, provider, cancellation, timeout, and empty model outcomes", async () => {
+  const evidence = rv2bEvidence();
+  const frames = evidence.frames.map((frame) => ({ ...frame, mimeType: "image/jpeg", bytes: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) }));
+  const loadVisualEvidence = async () => frames;
+  const analyze = (text, options = {}) => analyzeReferenceVideoWithGemini({ evidence, loadVisualEvidence, aiClient: { models: { generateContent: async () => ({ text }) } }, ...options });
+  await assert.rejects(() => analyze("{"), (error) => error.reason === "RV2B_INVALID_MODEL_RESPONSE");
+  await assert.rejects(() => analyze(JSON.stringify({ ...rv2bModelDocument(), extra: true })), (error) => error.reason === "RV2B_INVALID_MODEL_RESPONSE");
+  await assert.rejects(() => analyze(JSON.stringify({ schemaVersion: 1, safe: false, observations: [] })), (error) => error.reason === "RV2B_REFERENCE_SAFETY_REJECTED" && error.message === "This reference can’t be used for style matching. Please choose another image or video.");
+  const invented = rv2bModelDocument(); invented.observations[0].frameIds = ["frame-99"];
+  await assert.rejects(() => analyze(JSON.stringify(invented)), (error) => error.reason === "RV1_INVALID_RESPONSE");
+  const wrongShot = rv2bModelDocument(); wrongShot.observations[0].shotId = "shot-2";
+  await assert.rejects(() => analyze(JSON.stringify(wrongShot)), (error) => error.reason === "RV1_INVALID_RESPONSE");
+  const overlapping = rv2bModelDocument(); overlapping.observations.push({ ...overlapping.observations[0], observationId: "observation-9" });
+  await assert.rejects(() => analyze(JSON.stringify(overlapping)), (error) => error.reason === "RV1_INVALID_RESPONSE");
+  await assert.rejects(() => analyze("x".repeat(70 * 1024)), (error) => error.reason === "RV2B_RESPONSE_TOO_LARGE");
+  await assert.rejects(() => analyze(JSON.stringify({ schemaVersion: 1, safe: true, observations: [] })), (error) => error.reason === "RV2B_NO_USABLE_EVIDENCE");
+  await assert.rejects(() => analyzeReferenceVideoWithGemini({ evidence, loadVisualEvidence, aiClient: { models: { generateContent: async () => { throw new Error("provider unavailable"); } } } }), (error) => error.reason === "RV2B_MODEL_REQUEST_FAILED");
+  const cancelled = new AbortController(); cancelled.abort();
+  await assert.rejects(() => analyze(JSON.stringify(rv2bModelDocument()), { signal: cancelled.signal }), (error) => error.reason === "RV1_INTERPRETER_CANCELLED");
+  await assert.rejects(() => analyzeReferenceVideoWithGemini({ evidence, timeoutMs: 5, loadVisualEvidence, aiClient: { models: { generateContent: async ({ config }) => new Promise((resolve, reject) => config.abortSignal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true })) } } }), (error) => error.reason === "RV1_INTERPRETER_TIMEOUT");
+  const interpreter = createGeminiReferenceVideoInterpreter({ aiClient: { models: { generateContent: async () => ({ text: JSON.stringify(rv2bModelDocument()) }) } } });
+  await assert.rejects(() => interpreter({ frames: [{ ...frames[0], bytes: Buffer.from("not-a-jpeg") }], shots: evidence.shots, callBudget: 1 }), (error) => error.reason === "RV2B_NO_USABLE_EVIDENCE");
+  await assert.rejects(() => buildReferenceVideoVisualEvidence({ evidence, read: async () => { throw new Error("missing"); }, fileStat: async () => ({ size: 10 }) }), (error) => error.reason === "RV1_CORRUPT_FRAME");
+  await assert.rejects(() => buildReferenceVideoVisualEvidence({ evidence, read: async () => Buffer.from("not-a-jpeg"), fileStat: async () => ({ size: 10 }) }), (error) => error.reason === "RV1_CORRUPT_FRAME");
+  assert.ok(ReferenceVideoGeminiError);
 });
 
 function rv2aSignature({ palette = "cool", characteristics = {}, titleKind = "opening", conflicts = [], complete = true, eventComplete = true, sceneSpecific = [] } = {}) {

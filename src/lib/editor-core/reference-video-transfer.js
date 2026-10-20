@@ -28,7 +28,7 @@ function validatePhotographicRecord(value) {
   if (record.sampledFrameCount !== frameIds.length) throw new ReferenceVideoTransferError("RV2A_INVALID_SIGNATURE", "sampledFrameCount must equal unique frame IDs.");
   const coverage = fraction(record.coverage, "coverage"); const observedCoverage = fraction(record.observedCoverage, "observedCoverage");
   if (record.state === "persistent" && (coverage < 0.55 || frameIds.length < 2)) throw new ReferenceVideoTransferError("RV2A_INVALID_SIGNATURE", "Persistent evidence needs repeated sampled support.");
-  return Object.freeze({ field: record.field, value: record.value, state: record.state, observationIds, frameIds, shotIds, sampledFrameCount: record.sampledFrameCount, coverage, observedCoverage });
+  return Object.freeze({ field: record.field, value: record.value, [record.field]: record.value, state: record.state, observationIds, frameIds, shotIds, sampledFrameCount: record.sampledFrameCount, coverage, observedCoverage });
 }
 
 function validateTypographyEntry(value) {
