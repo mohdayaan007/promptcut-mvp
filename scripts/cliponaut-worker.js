@@ -11,6 +11,7 @@ import { CaptionError, createCaptionCues, extractCaptionCorrection, requestsCapt
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
 import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, evaluateReferenceStyleProxy, isB2aProxyRefinementEnabled, refineReferenceStyleTreatment, ReferenceStyleError, requestsReferenceStyleMatch } from "@/lib/editor-core/reference-style-matching";
 import { createReferenceStyleProxyFrames, extractTargetReferenceFrames, validateReferenceImageFile } from "@/lib/editor-core/reference-style-media";
+import { assertReferenceVideoFoundationEnabled, assertReferenceVideoMatchingImplemented, createReferenceVideoSamplingPlan, ReferenceVideoError, validateReferenceVideoFile } from "@/lib/editor-core/reference-video-foundation";
 import { analyzeTypographyReference, extractTypographyReferenceSelector, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, TypographyReferenceError } from "@/lib/editor-core/typography-reference-matching";
 import { parseTitle } from "@/lib/title-parser";
 import { is4kCapableMedia } from "@/lib/media/media-config";
@@ -20,7 +21,7 @@ import {
   claimNextJob, completeJob, expireUploadJob, failJob, getAbandonedUploads, getJobsForCleanup, heartbeatJob, isJobCancelled, markOutputCleaned,
   markSourcesCleaned, recoverStaleJobs, setJobStatus
 } from "@/lib/jobs/job-store";
-import { abortMultipartUpload, deleteObjects, downloadObject, outputObjectKey, uploadOutput } from "@/lib/jobs/storage";
+import { abortMultipartUpload, deleteObjects, downloadObject, jobInputObjectKeys, outputObjectKey, uploadOutput } from "@/lib/jobs/storage";
 
 const config = jobConfig();
 const workerId = `${os.hostname()}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
@@ -42,6 +43,10 @@ function safeError(error) {
     if (error.reason === "REFERENCE_TARGET_HETEROGENEOUS") return "This first version works best with visually coherent footage. Please choose another video.";
     if (["REFERENCE_TARGET_COUNT", "REFERENCE_COMPATIBILITY_WEAK"].includes(error.reason)) return error.message;
     return "This reference image could not be used safely.";
+  }
+  if (error instanceof ReferenceVideoError) {
+    if (["REFERENCE_VIDEO_INVALID_MEDIA", "REFERENCE_VIDEO_TIMEOUT"].includes(error.reason)) return "This reference video could not be verified.";
+    return "Video style references are not available yet.";
   }
   if (error instanceof TypographyReferenceError) {
     if (error.reason === "TYPOGRAPHY_REFERENCE_SAFETY_REJECTED") return "This reference can’t be used for style matching. Please choose another image or video.";
@@ -67,7 +72,7 @@ async function cleanExpiredObjects() {
   const jobs = await getJobsForCleanup(config);
   for (const job of jobs) {
     if (!job.sourceCleanedAt && ["completed", "failed", "cancelled"].includes(job.status)) {
-      await deleteObjects([...job.sources.map((source) => source.key), job.reference?.key]);
+      await deleteObjects(jobInputObjectKeys(job));
       await markSourcesCleaned(job.id);
     }
     if (!job.outputCleanedAt && job.status === "completed" && job.outputKey) {
@@ -109,6 +114,26 @@ async function processJob(job) {
     }
     let referenceTreatment = null;
     let typographyTreatment = null;
+    if (job.reference?.kind === "video") {
+      // RV-0 accepts a strictly bounded analysis asset behind an explicit gate,
+      // but it never passes that asset into sources, the planner, or FFmpeg.
+      assertReferenceVideoFoundationEnabled();
+      await throwIfCancelled(job.id);
+      const referencePath = path.join(scratch, "reference-video");
+      await downloadObject(job.reference.key, referencePath);
+      await throwIfCancelled(job.id);
+      const referenceMedia = await validateReferenceVideoFile({ inputPath: referencePath, type: job.reference.type, executionController });
+      const samplingPlan = createReferenceVideoSamplingPlan(referenceMedia);
+      console.info("Reference video foundation validated:", {
+        jobId: job.id,
+        duration: referenceMedia.duration,
+        width: referenceMedia.width,
+        height: referenceMedia.height,
+        momentCount: samplingPlan.moments.length
+      });
+      // The gate cannot accidentally enable an incomplete style engine.
+      assertReferenceVideoMatchingImplemented();
+    }
     const typographyReferenceActive = Boolean(job.reference && requestsTypographyReferenceMatch(job.prompt, true));
     if (typographyReferenceActive) {
       if (sources.length !== 1) throw new TypographyReferenceError("TYPOGRAPHY_TARGET_COUNT");

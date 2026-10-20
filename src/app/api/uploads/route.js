@@ -30,7 +30,7 @@ export async function POST(req) {
     }
     let reference = null;
     if (initialReference) {
-      const key = referenceObjectKey(job.id);
+      const key = referenceObjectKey(job.id, initialReference.kind);
       stage = "reference bucket multipart creation";
       const uploadId = await beginMultipartUpload({ key, contentType: initialReference.type });
       started.push({ key, uploadId });

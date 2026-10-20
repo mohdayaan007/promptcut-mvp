@@ -6,9 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, MAX_REFERENCE_IMAGE_BYTES, validateJobRequest, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, MAX_REFERENCE_IMAGE_BYTES, MAX_REFERENCE_VIDEO_BYTES, MAX_REFERENCE_VIDEO_DURATION_SECONDS, validateJobRequest, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
-import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
+import { DIRECT_UPLOAD_CORS, jobInputObjectKeys, referenceObjectKey, sourceObjectKey } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
 import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
@@ -35,6 +35,7 @@ import { createReferenceStyleProxyFrames, extractTargetReferenceFrames } from "@
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
 import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, evaluateReferenceStyleProxy, isB2aProxyRefinementEnabled, refineReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, referenceStyleProxyEvaluationSchema, referenceStyleReferenceAnalysisSchema, referenceStyleTargetAnalysisSchema, requestsReferenceStyleMatch, TONAL_COLOR_BIASES, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
 import { analyzeTypographyReference, deriveTypographyTitleTreatment, extractTypographyReferenceSelector, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, selectTypographyReferenceCandidate, typographyReferenceAnalysisSchema, TypographyReferenceError, validateTypographyReferenceAnalysis } from "@/lib/editor-core/typography-reference-matching";
+import { assertReferenceVideoFoundationEnabled, assertReferenceVideoMatchingImplemented, createReferenceVideoSamplingPlan, decodeReferenceVideoFrames, ReferenceVideoError, validateReferenceVideoFile } from "@/lib/editor-core/reference-video-foundation";
 
 function canonicalStyleRecipe(recipe) {
   return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
@@ -562,6 +563,87 @@ test("B2A reference style contracts keep private image metadata separate and der
   assert.deepEqual(diagnostic.recipe, treatment.recipe);
   assert.ok(diagnostic.filters.every((filter) => typeof filter === "string"));
   assert.doesNotMatch(JSON.stringify(diagnostic), /uri|path|secret|token|https?:/i);
+});
+
+test("RV-0 keeps a bounded video reference distinct from editable sources and gated by server capability", async () => {
+  const image = { name: "look.jpg", type: "image/jpeg", size: 42 };
+  const videoReference = { kind: "video", name: "inspiration.mov", type: "video/quicktime", size: 1024 };
+  assert.deepEqual(validateReferenceManifest(image), { kind: "image", ...image }, "legacy image metadata remains compatible");
+  assert.throws(() => validateReferenceManifest({ name: "implicit.mp4", type: "video/mp4", size: 3 }, { videoReferenceEnabled: false }), /include kind/);
+  assert.throws(() => validateReferenceManifest(videoReference, { videoReferenceEnabled: false }), /not available yet/);
+  assert.deepEqual(validateReferenceManifest(videoReference, { videoReferenceEnabled: true }), videoReference);
+  assert.throws(() => validateReferenceManifest({ ...videoReference, type: "video/avi" }, { videoReferenceEnabled: true }), /MP4, MOV, WebM, or MKV/);
+  assert.throws(() => validateReferenceManifest({ ...videoReference, size: MAX_REFERENCE_VIDEO_BYTES + 1 }, { videoReferenceEnabled: true }), /250 MB/);
+  assert.throws(() => validateReferenceManifest({ kind: "video", name: "contradictory.jpg", type: "image/jpeg", size: 3 }, { videoReferenceEnabled: true }), /kind and media type do not match/);
+
+  const actualMedia = { format: { duration: "12.5", format_name: "mov,mp4,m4a,3gp,3g2,mj2" }, streams: [{ codec_type: "video", codec_name: "h264", width: 1920, height: 1080, avg_frame_rate: "30000/1001" }, { codec_type: "audio", codec_name: "aac" }] };
+  const decode = async () => [3.125, 6.25, 9.375];
+  const media = await validateReferenceVideoFile({ inputPath: "/private/reference.mov", type: "video/quicktime", probe: async () => actualMedia, decode });
+  assert.deepEqual(media, { duration: 12.5, width: 1920, height: 1080, videoCodec: "h264", frameRate: 30000 / 1001, hasAudio: true, container: "mov", decodedFrameTimestamps: [3.125, 6.25, 9.375] });
+  const sampling = createReferenceVideoSamplingPlan(media);
+  assert.equal(sampling.version, 1);
+  assert.equal(sampling.moments.length, 2, "future temporal analysis is bounded without running it");
+  assert.deepEqual(sampling.moments.map((moment) => moment.momentId), ["reference-moment-1", "reference-moment-2"]);
+  for (const malformed of [
+    { format: { duration: "12" }, streams: [] },
+    { format: { duration: String(MAX_REFERENCE_VIDEO_DURATION_SECONDS + 1), format_name: "mov,mp4,m4a,3gp,3g2,mj2" }, streams: actualMedia.streams },
+    { format: { duration: "12", format_name: "image2" }, streams: actualMedia.streams },
+    { format: { duration: "12", format_name: "mov,mp4,m4a,3gp,3g2,mj2" }, streams: [{ codec_type: "video", codec_name: "h264", width: 10, height: 10, avg_frame_rate: "24/1" }] }
+  ]) {
+    await assert.rejects(() => validateReferenceVideoFile({ inputPath: "/private/misleading.mp4", type: "video/mp4", probe: async () => malformed, decode }), (error) => error instanceof ReferenceVideoError && error.reason === "REFERENCE_VIDEO_INVALID_MEDIA");
+  }
+  const cancelled = createExecutionController();
+  cancelled.cancel();
+  await assert.rejects(() => validateReferenceVideoFile({ inputPath: "/private/cancelled.mp4", type: "video/mp4", executionController: cancelled, probe: async () => actualMedia, decode }), EditExecutionCancelledError, "reference validation observes the job-owned cancellation controller");
+  cancelled.dispose();
+
+  assert.throws(() => assertReferenceVideoFoundationEnabled({}), (error) => error instanceof ReferenceVideoError && error.reason === "REFERENCE_VIDEO_DISABLED");
+  assert.doesNotThrow(() => assertReferenceVideoFoundationEnabled({ REFERENCE_VIDEO_STYLE_MATCHING_ENABLED: "true" }));
+  assert.throws(() => assertReferenceVideoMatchingImplemented(), (error) => error instanceof ReferenceVideoError && error.reason === "REFERENCE_VIDEO_MATCHING_NOT_IMPLEMENTED", "the gate cannot activate an unfinished matching engine");
+
+  const referenceKey = referenceObjectKey("job-safe", "video");
+  const sourceKeys = [sourceObjectKey("job-safe", 0), sourceObjectKey("job-safe", 1)];
+  assert.equal(referenceKey, "jobs/job-safe/reference/video");
+  assert.ok(!sourceKeys.includes(referenceKey));
+  assert.deepEqual(jobInputObjectKeys({ sources: sourceKeys.map((key) => ({ key })), reference: { key: referenceKey } }), [...sourceKeys, referenceKey], "retention cleanup includes the private video reference without putting it in source order");
+  const catalog = createSourceCatalog([{ index: 0, name: "creator.mp4", type: "video/mp4", size: 1 }], [{ duration: 5, width: 640, height: 360, hasAudio: true }]);
+  assert.deepEqual(catalog.map((source) => source.sourceId), ["source-1"], "reference media cannot obtain a source ID, timeline clip, or export slot");
+});
+
+test("RV-0 reference video dimensions are orientation-independent and frame rates stay bounded", async () => {
+  const base = { format: { duration: "20", format_name: "mov,mp4,m4a,3gp,3g2,mj2" }, streams: [{ codec_type: "video", codec_name: "h264", width: 3840, height: 2160, avg_frame_rate: "30000/1001" }] };
+  const verify = (data) => validateReferenceVideoFile({ inputPath: "/private/reference.mp4", type: "video/mp4", probe: async () => data, decode: async () => [] });
+  assert.equal((await verify(base)).width, 3840, "landscape 4K is accepted");
+  assert.equal((await verify({ ...base, streams: [{ ...base.streams[0], width: 2160, height: 3840 }] })).height, 3840, "portrait 4K is accepted");
+  assert.equal((await verify({ ...base, streams: [{ ...base.streams[0], width: 1080, height: 1920, avg_frame_rate: "60/1" }] })).height, 1920, "ordinary vertical creator footage is accepted");
+  for (const stream of [
+    { ...base.streams[0], width: 3841, height: 2160 },
+    { ...base.streams[0], width: 3000, height: 3000 },
+    { ...base.streams[0], avg_frame_rate: "0/0" },
+    { ...base.streams[0], avg_frame_rate: "240/1" }
+  ]) {
+    await assert.rejects(() => verify({ ...base, streams: [stream] }), (error) => error instanceof ReferenceVideoError && error.reason === "REFERENCE_VIDEO_INVALID_MEDIA");
+  }
+});
+
+test("RV-0 bounded frame decoding samples representative frames and stops on cancellation or decode failure", async () => {
+  const commands = [];
+  const timestamps = await decodeReferenceVideoFrames({
+    inputPath: "/private/reference.mp4", duration: 20,
+    run: async (command, args, options) => { commands.push({ command, args, options }); return { stdout: "", stderr: "" }; }
+  });
+  assert.deepEqual(timestamps, [5, 10, 15]);
+  assert.equal(commands.length, 3);
+  assert.ok(commands.every(({ command, args }) => command === "ffmpeg" && args.includes("scale=320:-2") && args.includes("-frames:v")), "decode work is fixed to three reduced-resolution frames");
+  const controller = createExecutionController();
+  let calls = 0;
+  await assert.rejects(() => decodeReferenceVideoFrames({
+    inputPath: "/private/reference.mp4", duration: 20, executionController: controller,
+    run: async () => { calls += 1; controller.cancel(); throw new EditExecutionCancelledError(); }
+  }), EditExecutionCancelledError);
+  assert.equal(calls, 1, "cancellation stops later representative-frame probes");
+  controller.dispose();
+  await assert.rejects(() => decodeReferenceVideoFrames({ inputPath: "/private/broken.mp4", duration: 20, run: async () => { throw new Error("broken packets"); } }), (error) => error instanceof ReferenceVideoError && error.reason === "REFERENCE_VIDEO_INVALID_MEDIA");
 });
 
 test("B2A reference-directed signatures retain strong bounded authority while skin protects only hue axes", () => {
@@ -2752,6 +2834,48 @@ test("direct multipart retry observes cancellation and counts progress only afte
   assert.equal(result.status, "queued");
   assert.equal(signedAttempts, 2);
   assert.deepEqual(progress, [{ uploadedBytes: 4, totalBytes: 4 }]);
+});
+
+test("RV-0 client upload keeps explicit video reference routing separate and aborts interrupted attachments", async () => {
+  const source = { name: "creator.mp4", size: 4, type: "video/mp4", slice: () => new Blob([new Uint8Array([1, 2, 3, 4])]) };
+  const reference = { name: "inspiration.mp4", size: 3, type: "video/mp4", slice: () => new Blob([new Uint8Array([5, 6, 7])]) };
+  await assert.rejects(() => uploadAndQueueJob({ videos: [source], referenceImage: { ...reference, type: "image/jpeg" }, referenceAttachment: { kind: "video", file: reference }, prompt: "Match this reference.", exportQuality: "standard", fetchFn: async () => { throw new Error("must not upload"); } }), /one style reference/);
+
+  const requests = [];
+  const queued = await uploadAndQueueJob({
+    videos: [source], referenceAttachment: { kind: "video", file: reference }, prompt: "Match this reference.", exportQuality: "standard", sleepFn: async () => {},
+    fetchFn: async (url, options = {}) => {
+      requests.push({ url, options });
+      if (url === "/api/uploads") return Response.json({ id: "job-rv0", accessToken: "token", partSize: 8, uploads: [{ index: 0, key: "jobs/job-rv0/sources/0", uploadId: "source-upload" }], referenceUpload: { key: "jobs/job-rv0/reference/video", uploadId: "reference-upload" } });
+      if (url === "/api/uploads/job-rv0/parts") {
+        const body = JSON.parse(options.body);
+        return Response.json({ parts: [{ partNumber: 1, url: body.kind === "reference" ? "https://storage.example/reference" : "https://storage.example/source" }] });
+      }
+      if (url.startsWith("https://storage.example/")) return new Response(null, { status: 200, headers: { etag: '"part"' } });
+      if (url === "/api/uploads/job-rv0/complete") return Response.json({ id: "job-rv0", status: "queued" });
+      throw new Error(`Unexpected ${url}`);
+    }
+  });
+  assert.equal(queued.status, "queued");
+  assert.deepEqual(JSON.parse(requests[0].options.body).reference, { kind: "video", name: "inspiration.mp4", size: 3, type: "video/mp4" });
+  assert.ok(requests.some(({ url, options }) => url.endsWith("/parts") && JSON.parse(options.body).kind === "reference"), "reference parts use the isolated server route");
+
+  const aborted = [];
+  await assert.rejects(() => uploadAndQueueJob({
+    videos: [source], referenceAttachment: { kind: "video", file: reference }, prompt: "Match this reference.", exportQuality: "standard", sleepFn: async () => {},
+    fetchFn: async (url, options = {}) => {
+      if (url === "/api/uploads") return Response.json({ id: "job-abort", accessToken: "token", partSize: 8, uploads: [{ index: 0, key: "source", uploadId: "source-upload" }], referenceUpload: { key: "reference", uploadId: "reference-upload" } });
+      if (url === "/api/uploads/job-abort/parts") {
+        const body = JSON.parse(options.body);
+        return Response.json({ parts: [{ partNumber: 1, url: body.kind === "reference" ? "https://storage.example/fail-reference" : "https://storage.example/source-ok" }] });
+      }
+      if (url === "https://storage.example/source-ok") return new Response(null, { status: 200, headers: { etag: '"part"' } });
+      if (url === "https://storage.example/fail-reference") return new Response(null, { status: 403 });
+      if (url === "/api/uploads/job-abort/abort") { aborted.push(options); return Response.json({ status: "failed" }); }
+      throw new Error(`Unexpected ${url}`);
+    }
+  }), PartUploadError);
+  assert.equal(aborted.length, 1, "an interrupted reference upload invokes existing job abort cleanup");
 });
 
 test("single-step Undo state migrates legacy sessions and retains only current and previous successful states", () => {

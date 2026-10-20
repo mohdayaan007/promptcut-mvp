@@ -328,21 +328,32 @@ async function uploadMultipartFile({ session, file, fileIndex, kind = "source", 
   return { key: upload.key, uploadId: upload.uploadId, parts };
 }
 
-export async function uploadAndQueueJob({ videos, referenceImage = null, prompt, exportQuality, signal, onProgress, onSession, fetchFn = fetch, sleepFn }) {
+/**
+ * `referenceAttachment` is intentionally internal until video-reference
+ * matching is complete. The public workspace continues to pass referenceImage.
+ */
+export async function uploadAndQueueJob({ videos, referenceImage = null, referenceAttachment = null, prompt, exportQuality, signal, onProgress, onSession, fetchFn = fetch, sleepFn }) {
+  if (referenceImage && referenceAttachment) throw new Error("Choose one style reference attachment");
+  const attachment = referenceAttachment || (referenceImage ? { kind: "image", file: referenceImage } : null);
+  if (attachment && (!attachment.file || !["image", "video"].includes(attachment.kind))) {
+    throw new Error("The style reference attachment is invalid");
+  }
+  const reference = attachment?.file || null;
+  const referenceKind = attachment?.kind;
   const session = await requestJson("/api/uploads", {
     method: "POST",
-    body: JSON.stringify({ files: videos.map((file) => ({ name: file.name, size: file.size, type: file.type || "video/mp4" })), reference: referenceImage ? { name: referenceImage.name, size: referenceImage.size, type: referenceImage.type } : null }),
+    body: JSON.stringify({ files: videos.map((file) => ({ name: file.name, size: file.size, type: file.type || "video/mp4" })), reference: reference ? { kind: referenceKind, name: reference.name, size: reference.size, type: reference.type } : null }),
     signal
   }, fetchFn);
   onSession?.({ id: session.id, accessToken: session.accessToken });
   const completedFiles = [];
   let uploadedBytes = 0;
-  const totalBytes = videos.reduce((total, file) => total + file.size, 0) + (referenceImage?.size || 0);
+  const totalBytes = videos.reduce((total, file) => total + file.size, 0) + (reference?.size || 0);
   try {
     for (const [fileIndex, file] of videos.entries()) {
       completedFiles.push(await uploadMultipartFile({ session, file, fileIndex, signal, fetchFn, sleepFn, onPartUploaded: (size) => { uploadedBytes += size; onProgress?.({ uploadedBytes, totalBytes }); } }));
     }
-    const completedReference = referenceImage ? await uploadMultipartFile({ session, file: referenceImage, kind: "reference", signal, fetchFn, sleepFn, onPartUploaded: (size) => { uploadedBytes += size; onProgress?.({ uploadedBytes, totalBytes }); } }) : null;
+    const completedReference = reference ? await uploadMultipartFile({ session, file: reference, kind: "reference", signal, fetchFn, sleepFn, onPartUploaded: (size) => { uploadedBytes += size; onProgress?.({ uploadedBytes, totalBytes }); } }) : null;
     return await requestJson(`/api/uploads/${session.id}/complete`, {
       method: "POST", headers: jobHeaders(session.accessToken),
       body: JSON.stringify({ prompt, exportQuality, files: completedFiles, ...(completedReference ? { reference: completedReference } : {}) }), signal

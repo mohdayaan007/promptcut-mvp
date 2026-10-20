@@ -13,7 +13,17 @@ function storageConfig() {
 function s3() { if (!client) { const { bucket, ...config } = storageConfig(); client = new S3Client(config); } return client; }
 function bucket() { return storageConfig().bucket; }
 export function sourceObjectKey(jobId, index) { return `jobs/${jobId}/sources/${index}`; }
-export function referenceObjectKey(jobId) { return `jobs/${jobId}/reference/image`; }
+/** Reference storage remains segregated from editable sources for every media kind. */
+export function referenceObjectKey(jobId, kind = "image") {
+  if (!["image", "video"].includes(kind)) throw new Error("Unsupported reference object kind");
+  return `jobs/${jobId}/reference/${kind}`;
+}
+/** All private input objects eligible for upload-abort/retention cleanup. */
+export function jobInputObjectKeys(job) {
+  return [...(Array.isArray(job?.sources) ? job.sources : []), ...(job?.reference ? [job.reference] : [])]
+    .map((entry) => entry?.key)
+    .filter(Boolean);
+}
 export function outputObjectKey(jobId) { return `jobs/${jobId}/output/cliponaut.mp4`; }
 export const DIRECT_UPLOAD_CORS = {
   CORSRules: [{
