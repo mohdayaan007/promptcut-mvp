@@ -10,6 +10,13 @@ function findStyleValue(prompt, values, fallback) {
   return values.find((value) => new RegExp(`\\b${value}\\b`, "i").test(prompt)) || fallback;
 }
 
+// Reference-style callers need literal quoted title wording to be opaque to
+// styling detection: `"Blue Skies"` is text, not a request for blue styling.
+function maskQuotedText(prompt) {
+  return String(prompt)
+    .replace(/"[^"\n]*"|'[^'\n]*'|“[^”\n]*”|‘[^’\n]*’/g, (match) => " ".repeat(match.length));
+}
+
 function extractTitleText(prompt, { stripQuotedText = false } = {}) {
   // Prefer an explicitly quoted title so punctuation in the requested wording
   // is preserved and the quotation marks themselves never reach the renderer.
@@ -70,19 +77,21 @@ export function parseTitle(prompt = "", options = {}) {
   const text = extractTitleText(prompt, options);
   if (!text) return null;
 
-  const start = extractStartTime(prompt);
+  const stylePrompt = options.stripQuotedText ? maskQuotedText(prompt) : prompt;
 
-  const font = extractFont(prompt);
-  const explicitSize = prompt.match(/\b(\d{1,3})\s*px\b/i);
-  const hex = prompt.match(/#[0-9a-f]{6}\b/i);
+  const start = extractStartTime(stylePrompt);
+
+  const font = extractFont(stylePrompt);
+  const explicitSize = stylePrompt.match(/\b(\d{1,3})\s*px\b/i);
+  const hex = stylePrompt.match(/#[0-9a-f]{6}\b/i);
   return {
     text,
     start,
     end: start + 3,
-    position: findStyleValue(prompt, STYLE_VALUES.position, TITLE_DEFAULTS.position),
-    size: explicitSize ? Number(explicitSize[1]) : findStyleValue(prompt, STYLE_VALUES.size, TITLE_DEFAULTS.size),
-    color: hex?.[0] || findStyleValue(prompt, STYLE_VALUES.color, TITLE_DEFAULTS.color),
-    weight: /\bbold\b/i.test(prompt) ? "bold" : TITLE_DEFAULTS.weight,
+    position: findStyleValue(stylePrompt, STYLE_VALUES.position, TITLE_DEFAULTS.position),
+    size: explicitSize ? Number(explicitSize[1]) : findStyleValue(stylePrompt, STYLE_VALUES.size, TITLE_DEFAULTS.size),
+    color: hex?.[0] || findStyleValue(stylePrompt, STYLE_VALUES.color, TITLE_DEFAULTS.color),
+    weight: /\bbold\b/i.test(stylePrompt) ? "bold" : TITLE_DEFAULTS.weight,
     ...font
   };
 }

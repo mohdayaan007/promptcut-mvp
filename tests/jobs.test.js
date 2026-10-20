@@ -37,6 +37,7 @@ import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceS
 import { analyzeTypographyReference, deriveTypographyTitleTreatment, extractTypographyReferenceSelector, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, selectTypographyReferenceCandidate, typographyReferenceAnalysisSchema, TypographyReferenceError, validateTypographyReferenceAnalysis } from "@/lib/editor-core/typography-reference-matching";
 import { assertReferenceVideoFoundationEnabled, assertReferenceVideoMatchingImplemented, createReferenceVideoSamplingPlan, decodeReferenceVideoFrames, ReferenceVideoError, validateReferenceVideoFile } from "@/lib/editor-core/reference-video-foundation";
 import { aggregateReferenceVideoCreativeSignature, allocateReferenceVideoFrameTimes, buildReferenceVideoVisualEvidence, extractReferenceVideoTemporalEvidence, interpretReferenceVideoEvidence, referenceVideoAnalysisFrameWidth, ReferenceVideoObservationError, validateReferenceVideoEvidence, validateReferenceVideoObservations } from "@/lib/editor-core/reference-video-understanding";
+import { createReferenceVideoTargetAwareTreatment, ReferenceVideoTransferError, validateReferenceVideoCreativeSignature } from "@/lib/editor-core/reference-video-transfer";
 
 function canonicalStyleRecipe(recipe) {
   return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
@@ -4090,7 +4091,7 @@ async function executeWithWatchdog(options, { watchdogMs = 8_000 } = {}) {
 
 async function probeRenderedVideo(outputPath) {
   const { stdout } = await execFileAsync("ffprobe", [
-    "-v", "error", "-show_entries", "format=duration:stream=codec_type,avg_frame_rate,r_frame_rate,time_base,nb_frames", "-of", "json", outputPath
+    "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height,avg_frame_rate,r_frame_rate,time_base,nb_frames", "-of", "json", outputPath
   ]);
   const probe = JSON.parse(stdout);
   return {
@@ -4121,6 +4122,18 @@ async function videoFrameDifference(firstPath, secondPath, time = 1) {
     "-ss", time.toString(), "-i", secondPath,
     "-filter_complex", "[0:v][1:v]blend=all_mode=difference", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"
   ], { encoding: "buffer", maxBuffer: 2 * 1024 * 1024 });
+  return [...stdout].reduce((sum, value) => sum + value, 0);
+}
+
+// Typography presence can be measured in luma, but a photographic treatment
+// may deliberately change hue while preserving comparable luminance. Keep the
+// B2/RV proof color-aware so a cool/warm transfer cannot look like a no-op.
+async function videoRgbFrameDifference(firstPath, secondPath, time = 1) {
+  const { stdout } = await execFileAsync("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-ss", time.toString(), "-i", firstPath,
+    "-ss", time.toString(), "-i", secondPath,
+    "-filter_complex", "[0:v][1:v]blend=all_mode=difference", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"
+  ], { encoding: "buffer", maxBuffer: 4 * 1024 * 1024 });
   return [...stdout].reduce((sum, value) => sum + value, 0);
 }
 
@@ -5308,4 +5321,200 @@ test("RV-1 surfaces saturated event windows and bounds loader/interpreter deadli
   const signature = aggregateReferenceVideoCreativeSignature({ evidence, observations: { version: 1, observations: [] } });
   assert.equal(signature.confidence.eventCoverageComplete, false);
   await assert.rejects(() => interpretReferenceVideoEvidence({ evidence, timeoutMs: 5, loadVisualEvidence: async ({ signal }) => new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(new EditExecutionCancelledError()), { once: true })), interpret: async () => ({}) }), (error) => error.reason === "RV1_INTERPRETER_TIMEOUT");
+});
+
+function rv2aSignature({ palette = "cool", characteristics = {}, titleKind = "opening", conflicts = [], complete = true, eventComplete = true, sceneSpecific = [] } = {}) {
+  const observedCoverage = complete ? 0.8 : 0.7;
+  const supportCoverage = complete ? 0.8 : 0.6;
+  const record = (field, value) => ({ field, value, [field]: value, state: "persistent", observationIds: [`${field}-observation-a`, `${field}-observation-b`], frameIds: [`${field}-frame-a`, `${field}-frame-b`], shotIds: [`${field}-shot-a`, `${field}-shot-b`], sampledFrameCount: 2, coverage: supportCoverage, observedCoverage });
+  const title = { observationId: "title-observation", start: titleKind === "closing" ? 7 : 0, end: titleKind === "closing" ? 8 : 1.5, prominence: "high", fontCharacter: "serif", weight: "bold", position: "top", alignment: "center", colorCharacter: "cool" };
+  return {
+    version: 1, evidenceVersion: 1,
+    confidence: { completeEvidence: complete, eventCoverageComplete: eventComplete, observedCoverage, incompleteObservationCoverage: !complete, observationCount: 2, conflicts },
+    photographic: {
+      persistent: [record("palette", palette), ...Object.entries(characteristics).map(([field, value]) => record(field, value))],
+      characteristics: [record("palette", palette), ...Object.entries(characteristics).map(([field, value]) => record(field, value))],
+      provisional: [], sceneSpecific
+    },
+    typography: { opening: titleKind === "opening" ? [title] : [], closing: titleKind === "closing" ? [title] : [], sustained: [], recurring: [], sceneSpecific: [] },
+    composition: [], rhythm: { segments: [] }, transitions: []
+  };
+}
+
+function rv2aAnalysis({ referenceWarmth = "cool", targetWarmth = "neutral" } = {}) {
+  return { safe: true, reference: { peopleOrSkin: false, exposure: "medium", saturation: "medium", warmth: referenceWarmth }, target: { peopleOrSkin: false, coherent: true, compatible: true, exposure: "medium", saturation: "medium", warmth: targetWarmth } };
+}
+
+const rv2aMetrics = Object.freeze({ lumaP95: 0.5, lumaP99: 0.7, nearWhiteFraction: 0, lumaP05: 0.1, nearBlackFraction: 0, saturationIndex: 0.2 });
+const rv2aReference = Object.freeze({ kind: "video", signatureVersion: 1, evidenceVersion: 1 });
+
+test("RV-2A validates authoritative signatures and derives the reference treatment from their persistent appearance", () => {
+  const signature = rv2aSignature();
+  assert.doesNotThrow(() => validateReferenceVideoCreativeSignature(signature));
+  const result = createReferenceVideoTargetAwareTreatment({ signature, targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: 'Make this look like the reference and add title "HELLO" at 0:05 for 2 seconds', sourceCatalog: [{ sourceId: "source-1", duration: 8 }], reference: rv2aReference });
+  assert.ok(result.plan.operations.some((entry) => entry.type === "reference_style_treatment"));
+  assert.deepEqual({ ...result.plan.operations.find((entry) => entry.type === "title"), runs: undefined }, { type: "title", text: "HELLO", start: 5, end: 7, position: "top-center", size: "large", color: "#D7E8FF", weight: "bold", font: "instrumentSerif", runs: undefined });
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature({ palette: "warm" }), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: "Match the reference", sourceCatalog: [{ sourceId: "source-1", duration: 8 }], reference: rv2aReference }), (error) => error.reason === "RV2A_REFERENCE_SIGNATURE_MISMATCH");
+  assert.throws(() => validateReferenceVideoCreativeSignature({ ...signature, unexpected: true }), (error) => error.reason === "RV2A_INVALID_SIGNATURE");
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ signature, targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: "Match the reference", sourceCatalog: [{ sourceId: "source-1", duration: 8 }, { sourceId: "source-2", duration: 8 }], reference: rv2aReference }), (error) => error.reason === "RV2A_EXACTLY_ONE_TARGET");
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ signature, targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: "Match the reference", sourceCatalog: [{ sourceId: "source-1", duration: 8 }], reference: { kind: "image", signatureVersion: 1, evidenceVersion: 1 } }), (error) => error.reason === "RV2A_REFERENCE_REQUIRED");
+});
+
+test("RV-2A handles insufficient evidence, title precedence, supported ordinary edits, and unsupported central requests honestly", () => {
+  const sourceCatalog = [{ sourceId: "source-1", duration: 8 }];
+  const cool = createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature({ palette: "cool" }), targetAnalysis: rv2aAnalysis({ referenceWarmth: "cool" }), targetMetrics: rv2aMetrics, prompt: "Match the reference", sourceCatalog, reference: rv2aReference });
+  const warm = createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature({ palette: "warm" }), targetAnalysis: rv2aAnalysis({ referenceWarmth: "warm" }), targetMetrics: rv2aMetrics, prompt: "Match the reference", sourceCatalog, reference: rv2aReference });
+  const neutral = createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature({ palette: "neutral" }), targetAnalysis: rv2aAnalysis({ referenceWarmth: "neutral" }), targetMetrics: rv2aMetrics, prompt: "Match the reference", sourceCatalog, reference: rv2aReference });
+  assert.ok(cool.plan.operations[0].treatment.recipe.temperature < 0 && warm.plan.operations[0].treatment.recipe.temperature > 0 && neutral.plan.operations[0].treatment.recipe.temperature === 0, "the same target receives reference-directed rather than unrelated photographic treatment");
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature({ complete: false }), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: "Match the reference", sourceCatalog, reference: rv2aReference }), (error) => error.reason === "RV2A_NO_SUPPORTED_TREATMENT");
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature({ conflicts: ["persistent_palette_conflict"] }), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: "Match the reference", sourceCatalog, reference: rv2aReference }), (error) => error.reason === "RV2A_INVALID_SIGNATURE");
+  const closing = createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature({ titleKind: "closing" }), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: 'Add the title "END" for 2 seconds', sourceCatalog, reference: rv2aReference });
+  assert.deepEqual(closing.plan.operations.find((entry) => entry.type === "title").start, 6, "closing evidence adapts timing only when the user did not specify a timestamp");
+  const ordinary = createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature(), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: "Make this match the reference", sourceCatalog, reference: rv2aReference, basePlan: { version: "1", operations: [{ type: "trim", start: 1, end: 6 }, { type: "captions" }] } });
+  assert.ok(ordinary.plan.operations.some((entry) => entry.type === "trim"));
+  assert.ok(ordinary.plan.operations.some((entry) => entry.type === "captions"));
+  const override = createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature(), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: "Match the reference but make it warmer", sourceCatalog, reference: rv2aReference });
+  assert.ok(override.plan.operations.some((entry) => entry.type === "reference_style_treatment"), "explicit warmth adapts only competing thermal reference axes rather than dropping all photographic transfer");
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature(), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: 'Add the title "Hi" using Comic Sans font', sourceCatalog, reference: rv2aReference }), (error) => error.reason === "RV2A_UNSUPPORTED_TITLE_FONT");
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature(), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: "Clone the transition exactly", sourceCatalog, reference: rv2aReference }), (error) => error.reason === "RV2A_UNSUPPORTED_CENTRAL_CHARACTERISTIC");
+});
+
+test("RV-2A applies bounded explicit temperature overrides without discarding supported reference treatment", () => {
+  const options = { signature: rv2aSignature(), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, sourceCatalog: [{ sourceId: "source-1", duration: 8 }], reference: rv2aReference };
+  const baseline = createReferenceVideoTargetAwareTreatment({ ...options, prompt: "Match the reference" }).plan.operations[0].treatment.recipe;
+  const warm = createReferenceVideoTargetAwareTreatment({ ...options, prompt: "Match the reference and make it warmer" }).plan.operations[0].treatment.recipe;
+  const cool = createReferenceVideoTargetAwareTreatment({ ...options, prompt: "Match the reference and make it cooler" }).plan.operations[0].treatment.recipe;
+  assert.ok(baseline.temperature < 0);
+  assert.ok(warm.temperature > 0 && warm.temperature <= 0.13, "warm explicitly changes the signed global direction within the B2A envelope");
+  assert.ok(cool.temperature < 0 && cool.temperature >= -0.13, "cool explicitly changes the signed global direction within the B2A envelope");
+  assert.equal(warm.contrast, baseline.contrast, "nonthermal reference treatment remains intact");
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ ...options, prompt: "Match the reference and make it warmer and cooler" }), (error) => error.reason === "RV2A_CONTRADICTORY_TEMPERATURE_OVERRIDE");
+});
+
+test("RV-2A rejects inconsistent signature membership, support, and conflicts", () => {
+  const inconsistentCount = rv2aSignature(); inconsistentCount.photographic.characteristics[0].sampledFrameCount = 1;
+  assert.throws(() => validateReferenceVideoCreativeSignature(inconsistentCount), (error) => error.reason === "RV2A_INVALID_SIGNATURE");
+  const contradictoryMembership = rv2aSignature(); contradictoryMembership.photographic.provisional = [{ ...contradictoryMembership.photographic.characteristics[0], state: "provisional" }];
+  assert.throws(() => validateReferenceVideoCreativeSignature(contradictoryMembership), (error) => error.reason === "RV2A_INVALID_SIGNATURE");
+  const conflicting = rv2aSignature(); const cool = conflicting.photographic.characteristics[0]; const warm = { ...cool, value: "warm", palette: "warm", observationIds: ["warm-a", "warm-b"], frameIds: ["warm-a", "warm-b"], shotIds: ["warm-a", "warm-b"] };
+  conflicting.photographic.characteristics.push(warm); conflicting.photographic.persistent.push(warm); conflicting.confidence.conflicts = ["persistent_palette_conflict"];
+  assert.throws(() => validateReferenceVideoCreativeSignature(conflicting), (error) => error.reason === "RV2A_INVALID_SIGNATURE");
+  const valid = rv2aSignature();
+  assert.doesNotThrow(() => validateReferenceVideoCreativeSignature(valid, { provenance: { observationIds: ["palette-observation-a", "palette-observation-b"], frameIds: ["palette-frame-a", "palette-frame-b"], shotIds: ["palette-shot-a", "palette-shot-b"] } }));
+  assert.throws(() => validateReferenceVideoCreativeSignature(valid, { provenance: { observationIds: [], frameIds: [], shotIds: [] } }), (error) => error.reason === "RV2A_INVALID_PROVENANCE");
+});
+
+test("RV-2A does not fabricate title or photographic success from unrelated prompt words", () => {
+  const options = { signature: rv2aSignature(), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, sourceCatalog: [{ sourceId: "source-1", duration: 8 }], reference: rv2aReference };
+  const blueBackground = createReferenceVideoTargetAwareTreatment({ ...options, prompt: 'Keep the blue background. Add a title "HELLO" like the reference.' });
+  const title = blueBackground.plan.operations.find((operation) => operation.type === "title");
+  assert.equal(title.color, "#D7E8FF", "background color wording does not override reference title color");
+  assert.equal(title.font, "instrumentSerif"); assert.equal(title.weight, "bold");
+  const titleColor = createReferenceVideoTargetAwareTreatment({ ...options, prompt: 'Add a title "HELLO" in red like the reference.' }).plan.operations.find((operation) => operation.type === "title");
+  assert.equal(titleColor.color, "#E94B4B"); assert.equal(titleColor.font, "instrumentSerif"); assert.equal(titleColor.weight, "bold");
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ ...options, prompt: "Match the title style from the reference" }), (error) => error.reason === "RV2A_NO_SUPPORTED_TREATMENT");
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ ...options, signature: rv2aSignature({ complete: false }), prompt: "Match the reference", basePlan: { version: "1", operations: [{ type: "trim", start: 1, end: 6 }] } }), (error) => error.reason === "RV2A_NO_SUPPORTED_TREATMENT");
+});
+
+test("RV-2A only grades photographic axes supported by persistent reference evidence", () => {
+  const options = { targetMetrics: rv2aMetrics, prompt: "Match the reference", sourceCatalog: [{ sourceId: "source-1", duration: 8 }], reference: rv2aReference };
+  const recipeFor = (characteristics) => {
+    const analysis = rv2aAnalysis();
+    analysis.reference = { ...analysis.reference, exposure: characteristics.exposure ?? "medium", saturation: characteristics.saturation ?? "medium" };
+    return createReferenceVideoTargetAwareTreatment({ ...options, targetAnalysis: analysis, signature: rv2aSignature({ characteristics }) }).plan.operations[0].treatment.recipe;
+  };
+  const paletteOnly = recipeFor({});
+  assert.ok(paletteOnly.temperature < 0, "the persistent cool palette still authorizes broad cool transfer");
+  for (const field of ["brightness", "contrast", "saturation", "tint", "shadows", "highlights", "vibrance", "blackLift", "midtoneGamma", "shadowTemperature", "midtoneTemperature", "highlightTemperature"]) assert.equal(paletteOnly[field], 0, `${field} stays neutral without evidence for that axis`);
+  const exposed = recipeFor({ exposure: "high" });
+  const saturated = recipeFor({ saturation: "high" });
+  const contrasted = recipeFor({ contrast: "high" });
+  assert.ok(exposed.brightness > 0 || exposed.midtoneGamma > 0, "persistent exposure evidence can authorize a bounded tonal adjustment");
+  assert.ok(saturated.saturation > 0 || saturated.vibrance > 0, "persistent saturation evidence can authorize bounded color adjustment");
+  assert.equal(contrasted.contrast, 0.14, "persistent contrast evidence maps through the canonical treatment surface");
+});
+
+test("RV-2A preserves quoted title text literally and ignores quoted style-like words", () => {
+  const options = { signature: rv2aSignature(), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, sourceCatalog: [{ sourceId: "source-1", duration: 12 }], reference: rv2aReference };
+  const titleFor = (prompt) => createReferenceVideoTargetAwareTreatment({ ...options, prompt }).plan.operations.find((operation) => operation.type === "title");
+  const { runs: ignoredRuns, ...drStrange } = titleFor('Add title "Dr. Strange" at 0:05');
+  assert.deepEqual(drStrange, { type: "title", text: "Dr. Strange", start: 5, end: 8, position: "top-center", size: "large", color: "#D7E8FF", weight: "bold", font: "instrumentSerif" });
+  assert.equal(titleFor('Add title "Blue Skies" at 0:05').text, "Blue Skies");
+  assert.equal(titleFor('Add title "Hello; World!" at 0:05').text, "Hello; World!");
+  const literalStyleWords = titleFor('Add title "large bold center red" at 0:05');
+  assert.equal(literalStyleWords.text, "large bold center red");
+  assert.equal(literalStyleWords.color, "#D7E8FF"); assert.equal(literalStyleWords.size, "large"); assert.equal(literalStyleWords.position, "top-center"); assert.equal(literalStyleWords.weight, "bold");
+  const explicitStyle = titleFor('Add title "Dr. Strange" at 0:05 for 2 seconds in red bold');
+  assert.equal(explicitStyle.text, "Dr. Strange"); assert.equal(explicitStyle.start, 5); assert.equal(explicitStyle.end, 7); assert.equal(explicitStyle.color, "#E94B4B"); assert.equal(explicitStyle.weight, "bold"); assert.equal(explicitStyle.font, "instrumentSerif");
+});
+
+test("RV-2A rejects ordinary central requests outside its supported creative capabilities", () => {
+  const options = { signature: rv2aSignature(), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, sourceCatalog: [{ sourceId: "source-1", duration: 8 }], reference: rv2aReference };
+  for (const prompt of ["Match the transitions.", "Use the same camera movements.", "Copy the editing rhythm.", "Recreate the shot compositions."]) {
+    assert.throws(() => createReferenceVideoTargetAwareTreatment({ ...options, prompt }), (error) => error.reason === "RV2A_UNSUPPORTED_CENTRAL_CHARACTERISTIC", prompt);
+  }
+});
+
+test("RV-2A synthetic-signature treatment renders a playable target-only MP4 through the existing executor", { timeout: 20_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-rv2a-render-"));
+  const sourcePath = path.join(tempDirectory, "target.mp4");
+  try {
+    await makeSolidCaptionSource(sourcePath, 3, { width: 854, height: 480, color: "gray" });
+    const signature = rv2aSignature();
+    const analysis = rv2aAnalysis();
+    const result = createReferenceVideoTargetAwareTreatment({
+      signature,
+      targetAnalysis: analysis,
+      targetMetrics: rv2aMetrics,
+      prompt: 'Match the reference photographically and add title "HELLO" at 0:01',
+      sourceCatalog: [{ sourceId: "source-1", duration: 3 }],
+      reference: rv2aReference
+    });
+    const output = await executeWithWatchdog({
+      inputPaths: [sourcePath],
+      media: [{ duration: 3, width: 854, height: 480, hasAudio: true, frameRate: 30 }],
+      sourceCatalog: [{ sourceId: "source-1", duration: 3 }],
+      tempDirectory,
+      plan: result.plan
+    }, { watchdogMs: 15_000 });
+    const probe = await probeRenderedVideo(output);
+    assert.equal(probe.video.width, 854);
+    assert.equal(probe.video.height, 480);
+    assert.ok(probe.audio, "the target's original audio remains in the rendered MP4");
+    assert.ok(probe.duration > 2.9 && probe.duration < 3.1);
+    const frameDifference = await videoFrameDifference(sourcePath, output, 1);
+    assert.ok(frameDifference > 50_000, `the bounded treatment and user-authorized title alter only the target render (difference=${frameDifference})`);
+    assert.equal(result.plan.operations.some((operation) => operation.sourceId === "reference-1"), false, "reference media cannot enter the renderer plan");
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test("RV-2A proves photography without a title and a delayed title only changes its requested interval", { timeout: 25_000 }, async () => {
+  const tempDirectory = await mkdtemp(path.join(os.tmpdir(), "cliponaut-rv2a-timing-"));
+  const sourcePath = path.join(tempDirectory, "target.mp4");
+  try {
+    await makeSolidCaptionSource(sourcePath, 3, { width: 854, height: 480, color: "orange" });
+    const options = { signature: rv2aSignature(), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, sourceCatalog: [{ sourceId: "source-1", duration: 3 }], reference: rv2aReference };
+    const photoOnly = createReferenceVideoTargetAwareTreatment({ ...options, prompt: "Match the reference photographically" });
+    const delayedTitle = createReferenceVideoTargetAwareTreatment({ ...options, prompt: 'Match the reference and add title "HELLO" at 0:01' });
+    const photoDirectory = path.join(tempDirectory, "photo"); const titleDirectory = path.join(tempDirectory, "title");
+    await mkdir(photoDirectory); await mkdir(titleDirectory);
+    const render = (plan, directory) => executeWithWatchdog({ inputPaths: [sourcePath], media: [{ duration: 3, width: 854, height: 480, hasAudio: true, frameRate: 30 }], sourceCatalog: options.sourceCatalog, tempDirectory: directory, plan }, { watchdogMs: 15_000 });
+    const photoOutput = await render(photoOnly.plan, photoDirectory);
+    const titledOutput = await render(delayedTitle.plan, titleDirectory);
+    const photoDifference = await videoRgbFrameDifference(sourcePath, photoOutput, 1);
+    assert.ok(photoDifference > 5_000, `photographic transfer renders without relying on a title overlay (difference=${photoDifference})`);
+    assert.ok((await probeRenderedVideo(titledOutput)).audio, "the title render retains target audio");
+    const ass = await readFile(path.join(titleDirectory, "title-layers.ass"), "utf8");
+    assert.match(ass, /Dialogue:.*0:00:01\.00.*HELLO/, "the explicit nonzero title timestamp reaches ASS unchanged");
+    const regionDifference = async (firstTime, secondTime) => {
+      const { stdout } = await execFileAsync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-ss", String(firstTime), "-i", titledOutput, "-ss", String(secondTime), "-i", titledOutput, "-filter_complex", "[0:v][1:v]blend=all_mode=difference,crop=600:180:127:0", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"], { encoding: "buffer", maxBuffer: 2 * 1024 * 1024 });
+      return [...stdout].reduce((sum, value) => sum + value, 0);
+    };
+    assert.ok(await regionDifference(0.2, 0.5) < 5_000, "no title pixels appear before the requested interval on static target footage");
+    assert.ok(await regionDifference(0.5, 1.5) > 5_000, "the title pixels appear during the requested interval");
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
 });

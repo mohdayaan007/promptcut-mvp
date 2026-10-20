@@ -122,3 +122,78 @@ support exist. Composition, rhythm, and transitions remain observations until a
 safe renderer capability exists. If a central requested characteristic cannot be
 reproduced, Cliponaut must disclose the limitation or safely reject it; it must not
 pretend to have matched the reference.
+
+## RV-2A internal target-aware render proof
+
+RV-2A is an internal-only bridge from a strictly validated RV-1 signature to the
+existing B2A reference-style-treatment operation and B2B title renderer. It accepts
+exactly one target source and one server-bound reference descriptor with kind video,
+signature version, and evidence version. The trusted worker must bind those artifacts
+to the same job/reference; the pure transfer function validates their structure and
+version but cannot establish database provenance by itself. The reference is never
+inserted into the source catalog, sequence, audio graph, or output.
+
+Photographic transfer is only considered when RV-1 has complete, non-conflicting,
+persistent palette evidence and the target has validated bounded B2A observations
+and metrics. RV-1 evidence is authoritative: its palette and any persistent exposure
+or saturation facts build the reference side of the B2A derivation. A richer B2A
+reference observation is checked for agreement, never silently substituted as an
+unrelated creative profile. Missing fine-grained tonal, highlight, or color-band
+facts remain neutral rather than invented. The existing target-aware B2A treatment
+builder remains the sole source of renderer-mappable normalized controls and retains
+its highlight and skin safeguards. Provisional, conflicting, incomplete, and
+scene-specific evidence is reported as needing more evidence; it never becomes a
+global grade by itself.
+
+Reference typography can adapt style only when the user explicitly supplies title
+text through the existing title parser. User wording, punctuation, case, explicit
+timestamp, duration, placement, and supported font choice win over reference
+evidence. Opening/closing evidence supplies timing only when the user did not.
+RV-2A maps supported font character, weight, prominence, position, and color to the
+existing bounded title catalog; it never copies reference wording, claims an exact
+proprietary font, or extends a brief title across the target duration. Unsupported
+exact fonts and invalid title timing reject safely.
+
+Explicit user instructions outrank reference evidence. An explicit warm/cool request
+adapts only competing reference thermal axes while preserving independently supported
+photographic structure; ordinary validated operations such as trim and captions may
+be passed through in the existing base plan. Conflicting global visual treatments,
+duplicate titles, unsupported exact fonts, and empty would-be matching plans reject.
+The override is bounded and signed: it cannot silently collapse to neutral or reverse
+the requested warm/cool direction, but it retains the independently supported
+non-thermal recipe instead of replacing the reference treatment with a blanket
+filter. RV-2A accepts only internally consistent creative signatures: persistent and
+provisional records must be exact members of the photographic-characteristic set,
+their sampled support, coverage, conflicts, and optional trusted provenance must all
+agree. Coarse RV-1 palette evidence establishes broad warmth only; it cannot invent
+fine color-band, highlight, or saturation-character claims. Such details are used
+only when explicitly observed in the compatible B2A analysis. A central request to
+match the reference rejects when the required photographic evidence is insufficient;
+an ordinary trim or caption operation cannot turn that into a partial claimed match.
+Missing RV-1 exposure, saturation, contrast, or richer color/tonal evidence is not
+silently converted into a `medium`, `natural`, or neutral creative target: the
+corresponding recipe axis remains neutral. Persistent broad palette evidence can
+still authorize only its bounded warm/cool direction, while persistent exposure,
+saturation, and contrast evidence can authorize their matching canonical axes.
+Reference title styling is similarly limited to a user-authorized title clause and
+applies field-by-field, so unrelated prompt wording cannot accidentally override a
+reference-derived title style or invent title text. Quoted title wording is literal:
+punctuation and style-like words inside the quote do not become style commands.
+Unsupported central requests such as exact transition cloning, subject-aware
+reframing, camera movement, transition matching, editing-rhythm copying, composition
+recreation, pacing reconstruction, or cut
+reconstruction reject rather than return a misleading matched result. Composition,
+rhythm, and transitions remain observational until a validated renderer capability
+exists. Diagnostics distinguish applied, adapted, needs-evidence, unsupported, and
+rejected decisions without exposing private media data. RV-2A has synthetic-signature
+local validation only; real Gemini interpretation and creator-reference evaluation
+remain the next integration boundary.
+
+The internal proof uses generated 854×480 target fixtures with audio and a
+controlled signature. It separately verifies a photographic-only render with
+an RGB pixel comparison (so a hue-preserving-luma transfer cannot be mistaken
+for a no-op), and a nonzero-time title render with no title pixels before its
+requested interval. The existing executor preserves the original target audio
+and aspect ratio; reference video/audio never enter the render plan. This proves
+only renderer integration for a synthetic signature, not that real creator
+references have been interpreted or matched successfully.
