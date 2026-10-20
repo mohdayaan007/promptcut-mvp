@@ -36,6 +36,7 @@ import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServe
 import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, evaluateReferenceStyleProxy, isB2aProxyRefinementEnabled, refineReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, referenceStyleProxyEvaluationSchema, referenceStyleReferenceAnalysisSchema, referenceStyleTargetAnalysisSchema, requestsReferenceStyleMatch, TONAL_COLOR_BIASES, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
 import { analyzeTypographyReference, deriveTypographyTitleTreatment, extractTypographyReferenceSelector, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, selectTypographyReferenceCandidate, typographyReferenceAnalysisSchema, TypographyReferenceError, validateTypographyReferenceAnalysis } from "@/lib/editor-core/typography-reference-matching";
 import { assertReferenceVideoFoundationEnabled, assertReferenceVideoMatchingImplemented, createReferenceVideoSamplingPlan, decodeReferenceVideoFrames, ReferenceVideoError, validateReferenceVideoFile } from "@/lib/editor-core/reference-video-foundation";
+import { aggregateReferenceVideoCreativeSignature, allocateReferenceVideoFrameTimes, buildReferenceVideoVisualEvidence, extractReferenceVideoTemporalEvidence, interpretReferenceVideoEvidence, referenceVideoAnalysisFrameWidth, ReferenceVideoObservationError, validateReferenceVideoEvidence, validateReferenceVideoObservations } from "@/lib/editor-core/reference-video-understanding";
 
 function canonicalStyleRecipe(recipe) {
   return { shadows: 0, highlights: 0, vibrance: 0, blackLift: 0, midtoneGamma: 0, ...recipe };
@@ -5166,4 +5167,145 @@ test("spoken selection retains its job-local transcript for caption reuse", asyn
   assert.equal(aiClient.interactionRequests.length, 1);
   assert.equal(result.transcripts.get("source-1").segments[0].text, "Welcome");
   assert.ok(result.plan.operations.some((operation) => operation.type === "captions"));
+});
+
+test("RV-1 validates strict temporal observations and rejects invented or malformed evidence", async () => {
+  const evidence = {
+    version: 1, duration: 10, coverage: { complete: true, reason: "test", unrepresentedShotIds: [] },
+    shots: [{ shotId: "shot-1", start: 0, end: 5 }, { shotId: "shot-2", start: 5, end: 10 }],
+    frames: [{ frameId: "frame-1", shotId: "shot-1", timestamp: 1, imagePath: "/private/frame-1.jpg" }, { frameId: "frame-2", shotId: "shot-2", timestamp: 7, imagePath: "/private/frame-2.jpg" }],
+    events: []
+  };
+  const observation = (id, shotId, frameId, start, end, palette = "cool") => ({ observationId: id, shotId, frameIds: [frameId], start, end,
+    photographic: { palette, exposure: "medium", contrast: "high", saturation: "medium", texture: "clean" }, typography: { state: "absent", role: "unknown", prominence: "unknown", fontCharacter: "unknown", weight: "unknown", position: "unknown", alignment: "unknown", colorCharacter: "unknown" }, composition: { framing: "medium", balance: "centered", titleSafeArea: "top", subjectPlacement: "center", negativeSpace: "medium" }, rhythm: { pacing: "fast" }, transition: { type: "hard_cut" } });
+  const valid = { version: 1, observations: [observation("obs-1", "shot-1", "frame-1", 0, 5), observation("obs-2", "shot-2", "frame-2", 5, 10)] };
+  assert.equal(validateReferenceVideoObservations(valid, evidence).observations.length, 2);
+  for (const invalid of [
+    { ...valid, observations: [{ ...valid.observations[0], shotId: "invented" }] },
+    { ...valid, observations: [{ ...valid.observations[0], frameIds: ["invented"] }] },
+    { ...valid, observations: [{ ...valid.observations[0], frameIds: ["frame-2"] }] },
+    { ...valid, observations: [{ ...valid.observations[0], start: 8, end: 2 }] },
+    { ...valid, extra: true }
+  ]) assert.throws(() => validateReferenceVideoObservations(invalid, evidence), ReferenceVideoObservationError);
+  assert.throws(() => validateReferenceVideoEvidence({ ...evidence, shots: [{ ...evidence.shots[0], end: 7 }, evidence.shots[1]] }), ReferenceVideoObservationError);
+  await assert.rejects(() => interpretReferenceVideoEvidence({ evidence, loadVisualEvidence: async () => [], interpret: async () => ({ ...valid, observations: [...valid.observations, ...Array.from({ length: 1000 }, () => valid.observations[0])] }) }), ReferenceVideoObservationError);
+});
+
+test("RV-1 aggregation preserves persistent, opening, scene-specific, and incomplete temporal evidence", () => {
+  const evidence = { version: 1, duration: 12, coverage: { complete: true, reason: "test", unrepresentedShotIds: [] }, shots: [{ shotId: "shot-1", start: 0, end: 2 }, { shotId: "shot-2", start: 2, end: 7 }, { shotId: "shot-3", start: 7, end: 12 }], frames: [{ frameId: "frame-1", shotId: "shot-1", timestamp: 1, imagePath: "/private/1.jpg" }, { frameId: "frame-2", shotId: "shot-2", timestamp: 4, imagePath: "/private/2.jpg" }, { frameId: "frame-3", shotId: "shot-3", timestamp: 9, imagePath: "/private/3.jpg" }], events: [] };
+  const make = (id, shotId, frameId, start, end, palette, typography = "absent", pacing = "slow") => ({ observationId: id, shotId, frameIds: [frameId], start, end, photographic: { palette, exposure: "medium", contrast: "medium", saturation: "medium", texture: "clean" }, typography: { state: typography === "present" ? "present" : "absent", role: typography === "present" ? "creative_title" : "unknown", prominence: typography === "present" ? "high" : "unknown", fontCharacter: "sans", weight: "bold", position: "top", alignment: "center", colorCharacter: "light" }, composition: { framing: "wide", balance: "asymmetric", titleSafeArea: "top", subjectPlacement: "center", negativeSpace: "medium" }, rhythm: { pacing }, transition: { type: "hard_cut" } });
+  const observations = { version: 1, observations: [make("open-title", "shot-1", "frame-1", 0, 2, "cool", "present", "fast"), make("cool-main", "shot-2", "frame-2", 2, 7, "cool"), make("warm-scene", "shot-3", "frame-3", 7, 12, "warm")] };
+  const signature = aggregateReferenceVideoCreativeSignature({ evidence, observations });
+  assert.deepEqual(signature.photographic.persistent.map((entry) => entry.palette), ["cool"], "cool treatment persists across a meaningful majority");
+  assert.equal(signature.typography.opening[0].observationId, "open-title", "opening title remains an opening treatment");
+  assert.equal(signature.photographic.sceneSpecific[0].palette, "warm", "isolated warm scene is not promoted globally");
+  assert.deepEqual(signature.rhythm.segments.map((entry) => entry.pacing), ["medium", "slow", "slow"], "pacing is derived from server-owned shot timing");
+  const incomplete = aggregateReferenceVideoCreativeSignature({ evidence: { ...evidence, coverage: { complete: false, reason: "test", unrepresentedShotIds: [] } }, observations });
+  assert.equal(incomplete.confidence.completeEvidence, false);
+});
+
+test("RV-1 real FFmpeg extraction finds bounded shot evidence and retains opening/end frames", { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-rv1-"));
+  const source = path.join(root, "reference.mp4");
+  try {
+    await execFileAsync("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=blue:s=320x180:r=24:d=1", "-f", "lavfi", "-i", "color=c=orange:s=320x180:r=24:d=1", "-f", "lavfi", "-i", "color=c=blue:s=320x180:r=24:d=1", "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0", "-c:v", "libx264", "-pix_fmt", "yuv420p", source]);
+    const evidence = await extractReferenceVideoTemporalEvidence({ inputPath: source, media: { duration: 3 }, scratchDirectory: root });
+    assert.ok(evidence.frames.some((frame) => frame.timestamp <= 0.1), "opening evidence is retained");
+    assert.ok(evidence.frames.some((frame) => frame.timestamp >= 2.9), "ending evidence is retained");
+    assert.ok(evidence.shots.length >= 2, "hard color cuts produce multiple temporal intervals");
+    assert.ok(evidence.frames.length <= 18);
+    for (const frame of evidence.frames) assert.equal((await stat(frame.imagePath)).size > 0, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("RV-1 retains low-resolution visual-change evidence for a brief static-shot title", { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-rv1-title-"));
+  const source = path.join(root, "title-reference.mp4");
+  try {
+    await execFileAsync("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=320x180:r=24:d=4", "-vf", "drawtext=text=TITLE:fontcolor=white:fontsize=44:x=(w-text_w)/2:y=(h-text_h)/2:enable='between(t,1,2)'", "-c:v", "libx264", "-pix_fmt", "yuv420p", source]);
+    const evidence = await extractReferenceVideoTemporalEvidence({ inputPath: source, media: { duration: 4 }, scratchDirectory: root });
+    assert.ok(evidence.events.some((event) => event.kind === "visual_change" && event.timestamp >= 0.75 && event.timestamp <= 1.25), "title onset is retained as visual-change evidence when detectable");
+    assert.ok(evidence.frames.some((frame) => frame.timestamp >= 0.75 && frame.timestamp <= 1.25), "allocator retains the nominated title onset");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("RV-1 supplies bounded JPEG bytes and server-owned metadata to its injected interpreter", async () => {
+  const evidence = {
+    version: 1, duration: 2, coverage: { complete: true, reason: "test", unrepresentedShotIds: [] },
+    shots: [{ shotId: "shot-1", start: 0, end: 2 }],
+    frames: [{ frameId: "frame-1", shotId: "shot-1", timestamp: 1, imagePath: "/private/never-exposed.jpg" }], events: []
+  };
+  const valid = { version: 1, observations: [{ observationId: "obs-1", shotId: "shot-1", frameIds: ["frame-1"], start: 0, end: 2, photographic: { palette: "neutral", exposure: "medium", contrast: "medium", saturation: "medium", texture: "clean" }, typography: { state: "absent", role: "unknown", prominence: "unknown", fontCharacter: "unknown", weight: "unknown", position: "unknown", alignment: "unknown", colorCharacter: "unknown" }, composition: { framing: "medium", balance: "centered", titleSafeArea: "none", subjectPlacement: "center", negativeSpace: "low" }, rhythm: { pacing: "medium" }, transition: { type: "unknown" } }] };
+  let received;
+  await interpretReferenceVideoEvidence({ evidence, loadVisualEvidence: async ({ signal }) => {
+    assert.equal(signal.aborted, false);
+    return [{ frameId: "frame-1", shotId: "shot-1", timestamp: 1, mimeType: "image/jpeg", bytes: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) }];
+  }, interpret: async (request) => { received = request; return valid; } });
+  assert.equal(received.frames[0].mimeType, "image/jpeg");
+  assert.deepEqual(received.frames[0].bytes, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+  assert.equal(Object.hasOwn(received.frames[0], "imagePath"), false);
+});
+
+test("RV-1 sampling remains bounded and reports unrepresented fast-cut shots", () => {
+  const shots = Array.from({ length: 30 }, (_, index) => ({ shotId: `shot-${index + 1}`, start: index, end: index + 1 }));
+  const allocation = allocateReferenceVideoFrameTimes({ duration: 30, shots });
+  assert.ok(allocation.timestamps.length <= 18);
+  assert.ok(allocation.timestamps[0] <= 0.1);
+  assert.ok(allocation.timestamps.at(-1) >= 29.9);
+  assert.ok(allocation.unrepresentedShotIds.length > 0);
+});
+
+test("RV-1 classifies typography by repeated equivalent evidence, not middle placement", () => {
+  const evidence = { version: 1, duration: 12, coverage: { complete: true, reason: "bounded_temporal_sampling", unrepresentedShotIds: [] }, shots: [{ shotId: "shot-1", start: 0, end: 4 }, { shotId: "shot-2", start: 4, end: 8 }, { shotId: "shot-3", start: 8, end: 12 }], frames: [{ frameId: "f1", shotId: "shot-1", timestamp: 2, imagePath: "/x/1.jpg" }, { frameId: "f2", shotId: "shot-2", timestamp: 6, imagePath: "/x/2.jpg" }, { frameId: "f3", shotId: "shot-3", timestamp: 10, imagePath: "/x/3.jpg" }], events: [] };
+  const observation = (id, shotId, frameId, start, end, font = "sans") => ({ observationId: id, shotId, frameIds: [frameId], start, end, photographic: { palette: "unknown", exposure: "unknown", contrast: "unknown", saturation: "unknown", texture: "unknown" }, typography: { state: "present", role: "creative_title", prominence: "high", fontCharacter: font, weight: "bold", position: "center", alignment: "center", colorCharacter: "light" }, composition: { framing: "unknown", balance: "unknown", titleSafeArea: "unknown", subjectPlacement: "unknown", negativeSpace: "unknown" }, rhythm: { pacing: "unknown" }, transition: { type: "unknown" } });
+  const oneMiddle = aggregateReferenceVideoCreativeSignature({ evidence, observations: { version: 1, observations: [observation("middle", "shot-2", "f2", 5, 7)] } });
+  assert.equal(oneMiddle.typography.sceneSpecific[0].observationId, "middle");
+  const repeated = aggregateReferenceVideoCreativeSignature({ evidence, observations: { version: 1, observations: [observation("repeat-1", "shot-1", "f1", 1, 3), observation("repeat-2", "shot-3", "f3", 9, 11)] } });
+  assert.equal(repeated.typography.recurring.length, 2);
+  const unrelated = aggregateReferenceVideoCreativeSignature({ evidence, observations: { version: 1, observations: [observation("a", "shot-1", "f1", 1, 3, "sans"), observation("b", "shot-3", "f3", 9, 11, "serif")] } });
+  assert.equal(unrelated.typography.recurring.length, 0);
+  assert.equal(unrelated.typography.opening[0].observationId, "a");
+  assert.equal(unrelated.typography.closing[0].observationId, "b");
+});
+
+test("RV-1 composition and photography require repeated sampled support", () => {
+  const evidence = { version: 1, duration: 10, coverage: { complete: true, reason: "bounded_temporal_sampling", unrepresentedShotIds: [] }, shots: [{ shotId: "shot-1", start: 0, end: 5 }, { shotId: "shot-2", start: 5, end: 10 }], frames: [{ frameId: "f1", shotId: "shot-1", timestamp: 1, imagePath: "/x/1.jpg" }, { frameId: "f2", shotId: "shot-2", timestamp: 6, imagePath: "/x/2.jpg" }], events: [] };
+  const make = (id, shotId, frameId, start, end, palette, framing) => ({ observationId: id, shotId, frameIds: [frameId], start, end, photographic: { palette, exposure: "medium", contrast: "medium", saturation: "medium", texture: "clean" }, typography: { state: "absent", role: "unknown", prominence: "unknown", fontCharacter: "unknown", weight: "unknown", position: "unknown", alignment: "unknown", colorCharacter: "unknown" }, composition: { framing, balance: "unknown", titleSafeArea: "unknown", subjectPlacement: "unknown", negativeSpace: "unknown" }, rhythm: { pacing: "unknown" }, transition: { type: "unknown" } });
+  const one = aggregateReferenceVideoCreativeSignature({ evidence, observations: { version: 1, observations: [make("one", "shot-1", "f1", 0, 5, "cool", "wide"), make("unknown", "shot-2", "f2", 5, 10, "unknown", "unknown")] } });
+  assert.equal(one.photographic.persistent.length, 0, "one sampled frame cannot prove a long-shot global look");
+  assert.equal(one.composition.find((entry) => entry.field === "framing").recurring.length, 0);
+  const repeated = aggregateReferenceVideoCreativeSignature({ evidence, observations: { version: 1, observations: [make("a", "shot-1", "f1", 0, 5, "cool", "wide"), make("b", "shot-2", "f2", 5, 10, "cool", "wide")] } });
+  assert.equal(repeated.photographic.persistent[0].palette, "cool");
+  assert.equal(repeated.composition.find((entry) => entry.field === "framing").recurring[0].value, "wide");
+});
+
+test("RV-1 evidence manifests reject gaps, contradictory completeness, and invalid cut events", async () => {
+  const base = { version: 1, duration: 4, coverage: { complete: true, reason: "bounded_temporal_sampling", unrepresentedShotIds: [] }, shots: [{ shotId: "shot-1", start: 0, end: 2 }, { shotId: "shot-2", start: 2, end: 4 }], frames: [{ frameId: "f1", shotId: "shot-1", timestamp: 1, imagePath: "/x/1.jpg" }], events: [{ eventId: "cut-1", timestamp: 2, kind: "hard_cut" }] };
+  for (const malformed of [{ ...base, shots: [{ ...base.shots[0], end: 1.5 }, base.shots[1]] }, { ...base, coverage: { ...base.coverage, unrepresentedShotIds: ["shot-2"] } }, { ...base, events: [{ eventId: "bad", timestamp: 1, kind: "hard_cut" }] }]) assert.throws(() => validateReferenceVideoEvidence(malformed), ReferenceVideoObservationError);
+  const signal = new AbortController(); signal.abort();
+  await assert.rejects(() => interpretReferenceVideoEvidence({ evidence: base, signal: signal.signal, interpret: async () => ({}) }), (error) => error.reason === "RV1_INTERPRETER_CANCELLED");
+});
+
+test("RV-1 keeps 1080p and 4K portrait/landscape input analysis bounded with adaptive detail frames", () => {
+  assert.equal(referenceVideoAnalysisFrameWidth({ width: 1920, height: 1080 }, { detail: true }), 640);
+  assert.equal(referenceVideoAnalysisFrameWidth({ width: 1080, height: 1920 }, { detail: true }), 640);
+  assert.equal(referenceVideoAnalysisFrameWidth({ width: 3840, height: 2160 }, { detail: true }), 640);
+  assert.equal(referenceVideoAnalysisFrameWidth({ width: 2160, height: 3840 }, { detail: true }), 640);
+  assert.equal(referenceVideoAnalysisFrameWidth({ width: 3840, height: 2160 }), 320);
+});
+
+test("RV-1 preserves distinct photographic characteristics with conservative support", () => {
+  const evidence = { version: 1, duration: 8, coverage: { complete: true, reason: "bounded_temporal_sampling", unrepresentedShotIds: [], eventWindows: [] }, shots: [{ shotId: "s1", start: 0, end: 4 }, { shotId: "s2", start: 4, end: 8 }], frames: [{ frameId: "f1", shotId: "s1", timestamp: 2, imagePath: "/x/1.jpg" }, { frameId: "f2", shotId: "s2", timestamp: 6, imagePath: "/x/2.jpg" }], events: [] };
+  const make = (id, shotId, frameId, start, end, contrast, exposure) => ({ observationId: id, shotId, frameIds: [frameId], start, end, photographic: { palette: "cool", exposure, contrast, saturation: "medium", texture: "clean" }, typography: { state: "absent", role: "unknown", prominence: "unknown", fontCharacter: "unknown", weight: "unknown", position: "unknown", alignment: "unknown", colorCharacter: "unknown" }, composition: { framing: "unknown", balance: "unknown", titleSafeArea: "unknown", subjectPlacement: "unknown", negativeSpace: "unknown" }, rhythm: { pacing: "unknown" }, transition: { type: "unknown" } });
+  const signature = aggregateReferenceVideoCreativeSignature({ evidence, observations: { version: 1, observations: [make("a", "s1", "f1", 0, 4, "high", "low"), make("b", "s2", "f2", 4, 8, "low", "high")] } });
+  assert.equal(signature.photographic.persistent[0].palette, "cool");
+  assert.equal(signature.photographic.characteristics.find((entry) => entry.field === "contrast" && entry.value === "high").state, "provisional");
+  assert.equal(signature.photographic.characteristics.find((entry) => entry.field === "exposure" && entry.value === "high").state, "provisional");
+});
+
+test("RV-1 surfaces saturated event windows and bounds loader/interpreter deadline", async () => {
+  const evidence = { version: 1, duration: 2, coverage: { complete: false, reason: "event_window_budget_reached", unrepresentedShotIds: [], eventWindows: [{ start: 0, end: 1, candidateCount: 2, saturated: true, available: true }] }, shots: [{ shotId: "s1", start: 0, end: 2 }], frames: [{ frameId: "f1", shotId: "s1", timestamp: 1, imagePath: "/x/1.jpg" }], events: [] };
+  const signature = aggregateReferenceVideoCreativeSignature({ evidence, observations: { version: 1, observations: [] } });
+  assert.equal(signature.confidence.eventCoverageComplete, false);
+  await assert.rejects(() => interpretReferenceVideoEvidence({ evidence, timeoutMs: 5, loadVisualEvidence: async ({ signal }) => new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(new EditExecutionCancelledError()), { once: true })), interpret: async () => ({}) }), (error) => error.reason === "RV1_INTERPRETER_TIMEOUT");
 });
