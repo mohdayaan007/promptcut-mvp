@@ -79,6 +79,20 @@ export function buildReferenceVideoGeminiPrompt({ shots, frames }) {
   ].join("\n\n");
 }
 
+/** Builds the one bounded SDK request without sending it; used by local dry-run evaluation. */
+export function prepareReferenceVideoGeminiRequest({ frames, shots, signal } = {}) {
+  if (!Array.isArray(frames) || !frames.length || frames.some((frame) => frame?.mimeType !== "image/jpeg" || !isJpeg(frame.bytes))) throw new ReferenceVideoGeminiError("RV2B_NO_USABLE_EVIDENCE");
+  const contents = [buildReferenceVideoGeminiPrompt({ shots, frames })];
+  for (const frame of frames) {
+    contents.push(`FRAME ${frame.frameId}; shot ${frame.shotId}; timestamp ${frame.timestamp}.`);
+    contents.push(createPartFromBase64(frame.bytes.toString("base64"), frame.mimeType));
+  }
+  return Object.freeze({
+    contents: Object.freeze(contents),
+    config: Object.freeze({ temperature: 0, abortSignal: signal, automaticFunctionCalling: Object.freeze({ disable: true }), responseMimeType: "application/json", responseJsonSchema: referenceVideoGeminiObservationSchema() })
+  });
+}
+
 function parseModelResponse(response) {
   const text = typeof response?.text === "string" ? response.text : "";
   if (Buffer.byteLength(text) > RV1_MAX_MODEL_RESPONSE_BYTES) throw new ReferenceVideoGeminiError("RV2B_RESPONSE_TOO_LARGE");
@@ -95,17 +109,11 @@ export function createGeminiReferenceVideoInterpreter({ aiClient, apiKey = proce
   const ai = aiClient || new GoogleGenAI({ apiKey });
   return async ({ frames, shots, signal, callBudget }) => {
     if (callBudget !== RV1_MAX_INTERPRETER_CALLS || signal?.aborted) throw new ReferenceVideoGeminiError("RV2B_INTERPRETER_CANCELLED");
-    if (!Array.isArray(frames) || !frames.length || frames.some((frame) => frame?.mimeType !== "image/jpeg" || !isJpeg(frame.bytes))) throw new ReferenceVideoGeminiError("RV2B_NO_USABLE_EVIDENCE");
-    const contents = [buildReferenceVideoGeminiPrompt({ shots, frames })];
-    for (const frame of frames) {
-      contents.push(`FRAME ${frame.frameId}; shot ${frame.shotId}; timestamp ${frame.timestamp}.`);
-      contents.push(createPartFromBase64(frame.bytes.toString("base64"), frame.mimeType));
-    }
+    const request = prepareReferenceVideoGeminiRequest({ frames, shots, signal });
     try {
       const response = await ai.models.generateContent({
         model,
-        contents,
-        config: { temperature: 0, abortSignal: signal, automaticFunctionCalling: { disable: true }, responseMimeType: "application/json", responseJsonSchema: referenceVideoGeminiObservationSchema() }
+        ...request
       });
       if (signal?.aborted) throw new ReferenceVideoGeminiError("RV2B_INTERPRETER_CANCELLED");
       return parseModelResponse(response);

@@ -243,3 +243,38 @@ inline request construction, strict validation, signature aggregation, and
 RV-2A consumption. A separately authorized live evaluation with actual creator
 reference videos, approved credentials, and controlled output review is still
 required before claiming real-model creative-match quality.
+
+## RV-3A local real-reference evaluation harness
+
+RV-3A is a developer-only local CLI, not a public upload, worker, or Railway
+path. Its default dry run validates one local MP4/MOV/WebM/MKV reference against
+the existing RV-0 limits (250 MB, 60 seconds, supported 4K portrait/landscape
+envelope, and at most 120 fps), performs real RV-1 FFmpeg extraction, verifies
+the JPEG evidence, and constructs the bounded RV-2B request without sending it
+to Gemini. An optional original-video path is only checked for local
+availability; it is neither analyzed nor sent anywhere in RV-3A.
+
+Use a dry run with an explicitly chosen temporary review directory when frames
+or the sanitized summary need to be retained:
+
+```bash
+npm exec tsx scripts/evaluate-reference-video.js -- \
+  --reference /absolute/path/reference.mp4 \
+  --original /absolute/path/original.mp4 \
+  --output-dir /tmp/cliponaut-rv3a-review
+```
+
+Without `--output-dir`, dry-run scratch JPEGs are cleaned automatically. The
+summary includes only orientation, resolution, duration, frame/shot/event
+counts, evidence completeness, request byte/count budgets, and—only after a
+live run—validated signature confidence and observed characteristics. It never
+contains source paths, raw JPEGs, API keys, signed URLs, or raw model output.
+
+Live evaluation is deliberately disabled unless all of `--live`,
+`--authorize-live-gemini`, `--output-dir`, and a nonempty `GEMINI_API_KEY` are
+present. It uses the existing RV-2B one-request/no-retry adapter and writes
+only the sanitized local summary to the selected directory. RV-3A must not be
+used as evidence of creator-reference fidelity: an authorized live evaluation
+still needs approved local media, deliberate cost approval, inspection of the
+validated signature, RV-2A target treatment/render review, and human visual
+comparison before any production claim.

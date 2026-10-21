@@ -1,6 +1,6 @@
 import path from "path";
 import { readFile, stat, unlink } from "fs/promises";
-import { runReferenceVideoProcess } from "@/lib/editor-core/reference-video-foundation";
+import { ReferenceVideoError, runReferenceVideoProcess } from "@/lib/editor-core/reference-video-foundation";
 import { EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 
 export const REFERENCE_VIDEO_EVIDENCE_VERSION = 1;
@@ -19,6 +19,7 @@ export const RV1_FRAME_TIMEOUT_MS = 4_000;
 export const RV1_MAX_MODEL_RESPONSE_BYTES = 64 * 1024;
 export const RV1_MAX_INTERPRETER_CALLS = 1;
 export const RV1_INTERPRETER_TIMEOUT_MS = 10_000;
+export const RV1_EOF_FALLBACK_MAX_SECONDS = 0.25;
 
 const PALETTES = ["unknown", "neutral", "warm", "cool", "mixed"];
 const LEVELS = ["unknown", "low", "medium", "high"];
@@ -42,6 +43,34 @@ function throwIfAborted(signal, controller) { if (signal?.aborted || controller?
 function parseSceneTimestamps(stderr, duration) { return unique([...String(stderr).matchAll(/pts_time:([0-9.]+)/g)].map((match) => Number(match[1])).filter((value) => Number.isFinite(value) && value > 0.001 && value < duration - 0.001).map(rounded)).sort((a, b) => a - b); }
 function shotForTimestamp(shots, timestamp) { return shots.find((shot, index) => timestamp >= shot.start - EPSILON && (timestamp < shot.end - EPSILON || (index === shots.length - 1 && timestamp <= shot.end + EPSILON))); }
 function boundedTimestamp(value, duration) { return rounded(duration <= 0.1 ? Math.max(0, duration / 2) : Math.max(0.05, Math.min(duration - 0.05, value))); }
+
+function samplingDuration(media) {
+  const videoDuration = Number(media?.videoDuration);
+  return Number.isFinite(videoDuration) && videoDuration > 0 ? videoDuration : Number(media?.duration);
+}
+
+function eofFallbackTimestamp({ timestamp, shot, duration, frameRate, usedTimestamps }) {
+  const frameStep = Number.isFinite(frameRate) && frameRate > 0 ? 2 / frameRate : 0.1;
+  const step = Math.max(0.05, Math.min(RV1_EOF_FALLBACK_MAX_SECONDS, frameStep));
+  const candidate = rounded(Math.max(shot.start + EPSILON, Math.min(shot.end - EPSILON, timestamp - step)));
+  if (candidate >= timestamp - EPSILON || candidate < 0 || candidate > duration || usedTimestamps.some((value) => Math.abs(value - candidate) < EPSILON)) return null;
+  return candidate;
+}
+
+function canRecoverNearEofFrame(error) {
+  if (error instanceof ReferenceVideoObservationError && error.reason === "RV1_FRAME_UNAVAILABLE") return true;
+  return error instanceof ReferenceVideoError && error.reason === "REFERENCE_VIDEO_INVALID_MEDIA" && /before EOF|output file is empty|nothing was encoded|no frame/i.test(error.message || "");
+}
+
+async function extractReferenceVideoJpeg({ inputPath, imagePath, timestamp, width, executionController, run, read, fileStat }) {
+  await run("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-ss", String(timestamp), "-i", inputPath, "-frames:v", "1", "-vf", `scale=${width}:-2`, "-q:v", "3", imagePath], { executionController, timeoutMs: RV1_FRAME_TIMEOUT_MS });
+  try {
+    await assertReadableJpeg(imagePath, { read, fileStat });
+  } catch (error) {
+    if (error?.code === "ENOENT") throw new ReferenceVideoObservationError("RV1_FRAME_UNAVAILABLE");
+    throw error;
+  }
+}
 
 /** 4K/1080p inputs stay bounded: only a few title/event candidates receive 640px inspection. */
 export function referenceVideoAnalysisFrameWidth(media, { detail = false } = {}) {
@@ -67,7 +96,7 @@ async function assertReadableJpeg(filePath, { read = readFile, fileStat = stat }
 
 /** Extracts bounded server-owned temporal evidence. Returned scratch JPEGs belong to the caller on success. */
 export async function extractReferenceVideoTemporalEvidence({ inputPath, media, scratchDirectory, executionController, run = runReferenceVideoProcess, read = readFile, fileStat = stat, remove = unlink, nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }) {
-  const duration = Number(media?.duration); if (!Number.isFinite(duration) || duration <= 0 || !scratchDirectory) throw new ReferenceVideoObservationError("RV1_INVALID_INPUT");
+  const duration = samplingDuration(media); if (!Number.isFinite(duration) || duration <= 0 || !scratchDirectory) throw new ReferenceVideoObservationError("RV1_INVALID_INPUT");
   const framePaths = [];
   try {
     throwIfAborted(null, executionController);
@@ -76,19 +105,39 @@ export async function extractReferenceVideoTemporalEvidence({ inputPath, media, 
     let visualChangeTimestamps = []; let eventScanComplete = true; const eventWindows = [];
     // Four bounded temporal windows prevent early motion from consuming all event evidence.
     for (let bucket = 0; bucket < 4; bucket += 1) {
-      const start = rounded(Math.max(0, duration * bucket / 4 - 0.1)); const end = rounded(Math.min(duration, duration * (bucket + 1) / 4 + 0.1));
+      const start = Math.min(duration, rounded(Math.max(0, duration * bucket / 4 - 0.1))); const end = Math.min(duration, rounded(Math.min(duration, duration * (bucket + 1) / 4 + 0.1)));
       try {
         const events = await run("ffmpeg", ["-hide_banner", "-loglevel", "info", "-i", inputPath, "-vf", `trim=start=${start}:end=${end},setpts=PTS-STARTPTS,scale=64:-2,select='gt(scene,0.001)',showinfo`, "-an", "-frames:v", "2", "-f", "null", "-"], { executionController, timeoutMs: RV1_EVENT_SCAN_TIMEOUT_MS });
-        const candidates = parseSceneTimestamps(events.stderr, end - start).map((timestamp) => rounded(timestamp + start));
+        const candidates = parseSceneTimestamps(events.stderr, end - start).map((timestamp) => rounded(timestamp + start)).slice(0, 2);
         visualChangeTimestamps.push(...candidates);
         eventWindows.push({ start, end, candidateCount: candidates.length, saturated: candidates.length >= 2, available: true });
       } catch (error) { if (error instanceof EditExecutionCancelledError || executionController?.isCancelled()) throw error; eventScanComplete = false; eventWindows.push({ start, end, candidateCount: 0, saturated: false, available: false }); }
     }
     visualChangeTimestamps = unique(visualChangeTimestamps).filter((timestamp) => !hardCutTimestamps.some((cut) => Math.abs(cut - timestamp) < 0.15));
     const edges = [0, ...hardCutTimestamps, duration]; const shots = edges.slice(0, -1).map((start, index) => Object.freeze({ shotId: `shot-${index + 1}`, start: rounded(start), end: rounded(edges[index + 1]) }));
-    const allocation = allocateReferenceVideoFrameTimes({ duration, shots, eventTimestamps: visualChangeTimestamps }); const frames = [];
+    const allocation = allocateReferenceVideoFrameTimes({ duration, shots, eventTimestamps: visualChangeTimestamps }); const frames = []; const usedTimestamps = [];
     const detailTimes = new Set(visualChangeTimestamps.slice(0, RV1_MAX_DETAIL_FRAMES));
-    for (const [index, timestamp] of allocation.timestamps.entries()) { throwIfAborted(null, executionController); const imagePath = path.join(scratchDirectory, `rv1-reference-${nonce}-${index + 1}.jpg`); framePaths.push(imagePath); const width = referenceVideoAnalysisFrameWidth(media, { detail: detailTimes.has(timestamp) }); await run("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-ss", String(timestamp), "-i", inputPath, "-frames:v", "1", "-vf", `scale=${width}:-2`, "-q:v", "3", imagePath], { executionController, timeoutMs: RV1_FRAME_TIMEOUT_MS }); await assertReadableJpeg(imagePath, { read, fileStat }); const shot = shotForTimestamp(shots, timestamp); if (!shot) throw new ReferenceVideoObservationError("RV1_INVALID_EVIDENCE"); frames.push(Object.freeze({ frameId: `frame-${index + 1}`, shotId: shot.shotId, timestamp, imagePath })); }
+    for (const [index, requestedTimestamp] of allocation.timestamps.entries()) {
+      throwIfAborted(null, executionController);
+      const imagePath = path.join(scratchDirectory, `rv1-reference-${nonce}-${index + 1}.jpg`); framePaths.push(imagePath);
+      const width = referenceVideoAnalysisFrameWidth(media, { detail: detailTimes.has(requestedTimestamp) });
+      const requestedShot = shotForTimestamp(shots, requestedTimestamp); if (!requestedShot) throw new ReferenceVideoObservationError("RV1_INVALID_EVIDENCE");
+      let timestamp = requestedTimestamp;
+      try {
+        await extractReferenceVideoJpeg({ inputPath, imagePath, timestamp, width, executionController, run, read, fileStat });
+      } catch (error) {
+        if (error instanceof EditExecutionCancelledError || executionController?.isCancelled()) throw error;
+        const nearEof = requestedTimestamp >= duration - RV1_EOF_FALLBACK_MAX_SECONDS;
+        const fallback = nearEof && canRecoverNearEofFrame(error) ? eofFallbackTimestamp({ timestamp: requestedTimestamp, shot: requestedShot, duration, frameRate: Number(media?.frameRate), usedTimestamps }) : null;
+        if (fallback === null) throw error;
+        throwIfAborted(null, executionController);
+        await extractReferenceVideoJpeg({ inputPath, imagePath, timestamp: fallback, width, executionController, run, read, fileStat });
+        timestamp = fallback;
+      }
+      const shot = shotForTimestamp(shots, timestamp); if (!shot || usedTimestamps.some((value) => Math.abs(value - timestamp) < EPSILON)) throw new ReferenceVideoObservationError("RV1_INVALID_EVIDENCE");
+      usedTimestamps.push(timestamp);
+      frames.push(Object.freeze({ frameId: `frame-${index + 1}`, shotId: shot.shotId, timestamp, imagePath }));
+    }
     const eventCoverageComplete = eventScanComplete && !eventWindows.some((entry) => entry.saturated);
     const complete = eventCoverageComplete && hardCutTimestamps.length < RV1_MAX_SCENE_BOUNDARIES && allocation.unrepresentedShotIds.length === 0;
     const reason = !eventScanComplete ? "event_scan_unavailable" : !eventCoverageComplete ? "event_window_budget_reached" : hardCutTimestamps.length >= RV1_MAX_SCENE_BOUNDARIES ? "scene_boundary_budget_reached" : allocation.unrepresentedShotIds.length ? "frame_budget_unrepresented_shots" : "bounded_temporal_sampling";

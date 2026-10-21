@@ -36,6 +36,13 @@ function finitePositive(value) {
   return Number.isFinite(value) && value > 0;
 }
 
+/** A trailing audio stream may outlast the last decodable video frame. */
+function videoSamplingDuration(stream, containerDuration) {
+  const streamDuration = Number.parseFloat(stream?.duration);
+  if (!finitePositive(streamDuration) || streamDuration > containerDuration + 0.1) return containerDuration;
+  return Math.min(containerDuration, streamDuration);
+}
+
 function parseFrameRate(value) {
   const [numerator, denominator] = String(value || "").split("/").map(Number);
   if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || numerator <= 0 || denominator <= 0) return null;
@@ -83,7 +90,7 @@ export async function probeReferenceVideoFile(inputPath, { executionController, 
   try {
     ({ stdout } = await run("ffprobe", [
       "-v", "error", "-show_entries",
-      "format=duration,format_name:stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate",
+      "format=duration,format_name:stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,duration",
       "-of", "json", inputPath
     ], { executionController, timeoutMs: REFERENCE_VIDEO_PROBE_TIMEOUT_MS }));
   } catch (error) {
@@ -137,6 +144,7 @@ export async function validateReferenceVideoFile({ inputPath, type, executionCon
   if (videoStreams.length !== 1 || streams.length > 4) throw invalidVideo();
   const stream = videoStreams[0];
   const duration = Number.parseFloat(data?.format?.duration);
+  const videoDuration = videoSamplingDuration(stream, duration);
   const width = Number(stream?.width);
   const height = Number(stream?.height);
   const longSide = Math.max(width, height);
@@ -151,10 +159,11 @@ export async function validateReferenceVideoFile({ inputPath, type, executionCon
     !finitePositive(frameRate) || frameRate > REFERENCE_VIDEO_MAX_FRAME_RATE ||
     typeof stream?.codec_name !== "string" || !stream.codec_name || !formats.some((format) => allowedFormats.includes(format))
   ) throw invalidVideo();
-  const decodedFrameTimestamps = await decode({ inputPath, duration, executionController });
+  const decodedFrameTimestamps = await decode({ inputPath, duration: videoDuration, executionController });
   executionController?.throwIfCancelled();
   return Object.freeze({
     duration,
+    videoDuration,
     width,
     height,
     videoCodec: stream.codec_name,

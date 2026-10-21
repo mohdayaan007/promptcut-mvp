@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -38,6 +38,7 @@ import { analyzeTypographyReference, deriveTypographyTitleTreatment, extractTypo
 import { assertReferenceVideoFoundationEnabled, assertReferenceVideoMatchingImplemented, createReferenceVideoSamplingPlan, decodeReferenceVideoFrames, ReferenceVideoError, validateReferenceVideoFile } from "@/lib/editor-core/reference-video-foundation";
 import { aggregateReferenceVideoCreativeSignature, allocateReferenceVideoFrameTimes, buildReferenceVideoVisualEvidence, extractReferenceVideoTemporalEvidence, interpretReferenceVideoEvidence, referenceVideoAnalysisFrameWidth, ReferenceVideoObservationError, validateReferenceVideoEvidence, validateReferenceVideoObservations } from "@/lib/editor-core/reference-video-understanding";
 import { analyzeReferenceVideoWithGemini, createGeminiReferenceVideoInterpreter, ReferenceVideoGeminiError, referenceVideoGeminiObservationSchema } from "@/lib/editor-core/reference-video-gemini";
+import { parseReferenceVideoEvaluationArgs, ReferenceVideoEvaluationError, referenceVideoMimeType, runReferenceVideoEvaluation } from "@/lib/editor-core/reference-video-evaluation";
 import { createReferenceVideoTargetAwareTreatment, ReferenceVideoTransferError, validateReferenceVideoCreativeSignature } from "@/lib/editor-core/reference-video-transfer";
 
 function canonicalStyleRecipe(recipe) {
@@ -582,7 +583,7 @@ test("RV-0 keeps a bounded video reference distinct from editable sources and ga
   const actualMedia = { format: { duration: "12.5", format_name: "mov,mp4,m4a,3gp,3g2,mj2" }, streams: [{ codec_type: "video", codec_name: "h264", width: 1920, height: 1080, avg_frame_rate: "30000/1001" }, { codec_type: "audio", codec_name: "aac" }] };
   const decode = async () => [3.125, 6.25, 9.375];
   const media = await validateReferenceVideoFile({ inputPath: "/private/reference.mov", type: "video/quicktime", probe: async () => actualMedia, decode });
-  assert.deepEqual(media, { duration: 12.5, width: 1920, height: 1080, videoCodec: "h264", frameRate: 30000 / 1001, hasAudio: true, container: "mov", decodedFrameTimestamps: [3.125, 6.25, 9.375] });
+  assert.deepEqual(media, { duration: 12.5, videoDuration: 12.5, width: 1920, height: 1080, videoCodec: "h264", frameRate: 30000 / 1001, hasAudio: true, container: "mov", decodedFrameTimestamps: [3.125, 6.25, 9.375] });
   const sampling = createReferenceVideoSamplingPlan(media);
   assert.equal(sampling.version, 1);
   assert.equal(sampling.moments.length, 2, "future temporal analysis is bounded without running it");
@@ -5232,6 +5233,62 @@ test("RV-1 real FFmpeg extraction finds bounded shot evidence and retains openin
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("RV-1 samples against the bounded video stream when trailing audio extends the container", { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-rv1-video-end-"));
+  const source = path.join(root, "trailing-audio.mp4");
+  try {
+    await execFileAsync("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=2", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=2.2", "-map", "0:v:0", "-map", "1:a:0", "-c:v", "libx264", "-c:a", "aac", source]);
+    const media = await validateReferenceVideoFile({ inputPath: source, type: "video/mp4" });
+    assert.ok(media.duration > media.videoDuration, "container audio tail does not redefine the visual endpoint");
+    assert.ok(media.decodedFrameTimestamps.every((timestamp) => timestamp < media.videoDuration));
+    const evidence = await extractReferenceVideoTemporalEvidence({ inputPath: source, media, scratchDirectory: root });
+    assert.ok(evidence.frames.some((frame) => frame.timestamp >= media.videoDuration - 0.1), "ending video shot remains represented");
+    assert.ok(evidence.frames.every((frame) => frame.timestamp <= media.videoDuration));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("RV-1 uses one accurate near-EOF fallback only for a missing final frame", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-rv1-fallback-"));
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  const requestedEnd = 2.95;
+  const run = async (_command, args) => {
+    if (!args.includes("-ss")) return { stdout: "", stderr: "" };
+    const timestamp = Number(args[args.indexOf("-ss") + 1]);
+    if (Math.abs(timestamp - requestedEnd) < 0.001) return { stdout: "", stderr: "" };
+    await writeFile(args.at(-1), jpeg);
+    return { stdout: "", stderr: "" };
+  };
+  try {
+    const evidence = await extractReferenceVideoTemporalEvidence({ inputPath: "/private/reference.mp4", media: { duration: 3, videoDuration: 3, frameRate: 30 }, scratchDirectory: root, run });
+    const ending = evidence.frames.at(-1);
+    assert.ok(ending.timestamp < requestedEnd && ending.timestamp >= 2.8, "manifest records the actual bounded fallback timestamp");
+    assert.equal(ending.shotId, "shot-1");
+    assert.equal(new Set(evidence.frames.map((frame) => frame.timestamp)).size, evidence.frames.length, "fallback cannot fabricate duplicate evidence");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("RV-1 never masks cancellation or unrelated final-frame failures with EOF fallback", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-rv1-fallback-failure-"));
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+  const run = (mode, controller) => async (_command, args) => {
+    if (!args.includes("-ss")) return { stdout: "", stderr: "" };
+    const timestamp = Number(args[args.indexOf("-ss") + 1]);
+    if (Math.abs(timestamp - 2.95) < 0.001) {
+      if (mode === "cancel") controller.cancel();
+      throw new ReferenceVideoError("REFERENCE_VIDEO_INVALID_MEDIA", mode === "cancel" ? "Could not open encoder before EOF" : "decoder initialization failed");
+    }
+    await writeFile(args.at(-1), jpeg);
+    return { stdout: "", stderr: "" };
+  };
+  try {
+    const controller = createExecutionController();
+    await assert.rejects(() => extractReferenceVideoTemporalEvidence({ inputPath: "/private/reference.mp4", media: { duration: 3, videoDuration: 3, frameRate: 30 }, scratchDirectory: root, executionController: controller, run: run("cancel", controller) }), EditExecutionCancelledError);
+    controller.dispose();
+    await assert.rejects(() => extractReferenceVideoTemporalEvidence({ inputPath: "/private/reference.mp4", media: { duration: 3, videoDuration: 3, frameRate: 30 }, scratchDirectory: root, run: run("fatal", createExecutionController()) }), (error) => error instanceof ReferenceVideoObservationError && error.reason === "RV1_EXTRACTION_FAILED");
+    assert.equal((await (async () => { try { return await stat(root); } catch { return null; } })()).isDirectory(), true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("RV-1 retains low-resolution visual-change evidence for a brief static-shot title", { timeout: 60_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-rv1-title-"));
   const source = path.join(root, "title-reference.mp4");
@@ -5407,7 +5464,49 @@ test("RV-2B rejects unsafe, malformed, invented, provider, cancellation, timeout
   assert.ok(ReferenceVideoGeminiError);
 });
 
-function rv2aSignature({ palette = "cool", characteristics = {}, titleKind = "opening", conflicts = [], complete = true, eventComplete = true, sceneSpecific = [] } = {}) {
+test("RV-3A parses deliberate local modes and performs portrait dry-run extraction without Gemini", { timeout: 60_000 }, async () => {
+  assert.deepEqual(parseReferenceVideoEvaluationArgs(["--reference", "/tmp/look.mov"]), { referencePath: "/tmp/look.mov", originalPath: null, outputDirectory: null, live: false, authorizeLiveGemini: false, help: false });
+  assert.equal(referenceVideoMimeType("/tmp/look.MOV"), "video/quicktime");
+  assert.equal(referenceVideoMimeType("/tmp/look.avi"), null);
+  assert.throws(() => parseReferenceVideoEvaluationArgs(["--reference", "/tmp/look.mov", "--live"]), (error) => error instanceof ReferenceVideoEvaluationError && error.reason === "RV3A_LIVE_AUTHORIZATION_REQUIRED");
+  const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-rv3a-")); const source = path.join(root, "portrait.mp4"); const corrupt = path.join(root, "corrupt.mp4"); const scratch = path.join(root, "temporary-evidence");
+  let analyzeCalls = 0;
+  try {
+    await makeSolidCaptionSource(source, 3, { width: 360, height: 640, color: "teal" });
+    const result = await runReferenceVideoEvaluation({ referencePath: source, dependencies: { mkdtemp: async () => { await mkdir(scratch); return scratch; }, analyze: async () => { analyzeCalls += 1; throw new Error("dry runs must not analyze"); } } });
+    assert.equal(result.summary.mode, "dry-run");
+    assert.equal(result.summary.reference.orientation, "portrait");
+    assert.ok(result.summary.temporalEvidence.sampledFrameCount > 0, "dry-run used real RV-1 FFmpeg extraction");
+    assert.equal(result.summary.temporalEvidence.nearEofFallbackUsed, false, "ordinary final-frame extraction does not fabricate a fallback");
+    assert.ok(result.summary.request.imagePartCount > 0, "dry-run prepared bounded inline JPEG request parts");
+    assert.equal(result.summary.request.sent, false);
+    assert.equal(analyzeCalls, 0, "dry run cannot call Gemini analysis");
+    await assert.rejects(() => stat(scratch), /ENOENT/, "temporary extracted frames are cleaned after dry run");
+    await assert.rejects(() => runReferenceVideoEvaluation({ referencePath: source, live: true, authorizeLiveGemini: true, environment: { GEMINI_API_KEY: "present" } }), (error) => error.reason === "RV3A_OUTPUT_REQUIRED");
+    await assert.rejects(() => runReferenceVideoEvaluation({ referencePath: source, outputDirectory: path.join(process.cwd(), "rv3a-review") }), (error) => error.reason === "RV3A_OUTPUT_DIRECTORY_UNSAFE");
+    await assert.rejects(() => runReferenceVideoEvaluation({ referencePath: source, dependencies: { statFile: async () => ({ size: MAX_REFERENCE_VIDEO_BYTES + 1, isFile: () => true }) } }), (error) => error.reason === "RV3A_REFERENCE_TOO_LARGE");
+    await writeFile(corrupt, "not a video", "utf8");
+    await assert.rejects(() => runReferenceVideoEvaluation({ referencePath: corrupt }), (error) => error instanceof ReferenceVideoError, "corrupt local evidence rejects before request preparation");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("RV-3A saves only sanitized, server-validated mocked live diagnostics after explicit authorization", { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-rv3a-live-")); const source = path.join(root, "reference.mp4"); const outputDirectory = path.join(root, "review");
+  try {
+    await makeSolidCaptionSource(source, 3, { width: 320, height: 180, color: "blue" });
+    const result = await runReferenceVideoEvaluation({
+      referencePath: source, outputDirectory, live: true, authorizeLiveGemini: true, environment: { GEMINI_API_KEY: "present" },
+      dependencies: { analyze: ({ evidence, signal }) => analyzeReferenceVideoWithGemini({ evidence, signal, aiClient: { models: { generateContent: async () => ({ text: JSON.stringify(rv2bModelDocument(evidence)) }) } } }) }
+    });
+    assert.equal(result.summary.mode, "live");
+    assert.ok(result.summary.interpretation.observationCount > 0);
+    assert.equal(result.summary.interpretation.creativeTypographyEstablished, true);
+    const persisted = await readFile(path.join(outputDirectory, "rv3a-evaluation-summary.json"), "utf8");
+    assert.doesNotMatch(persisted, /reference\.mp4|GEMINI_API_KEY|imagePath|inlineData|base64/i, "local diagnostic omits source paths, secrets, and media bytes");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+function rv2aSignature({ palette = "cool", characteristics = {}, titleKind = "opening", conflicts = [], complete = true, eventComplete = true, sceneSpecific = [], shotCount = 0 } = {}) {
   const observedCoverage = complete ? 0.8 : 0.7;
   const supportCoverage = complete ? 0.8 : 0.6;
   const record = (field, value) => ({ field, value, [field]: value, state: "persistent", observationIds: [`${field}-observation-a`, `${field}-observation-b`], frameIds: [`${field}-frame-a`, `${field}-frame-b`], shotIds: [`${field}-shot-a`, `${field}-shot-b`], sampledFrameCount: 2, coverage: supportCoverage, observedCoverage });
@@ -5421,7 +5520,7 @@ function rv2aSignature({ palette = "cool", characteristics = {}, titleKind = "op
       provisional: [], sceneSpecific
     },
     typography: { opening: titleKind === "opening" ? [title] : [], closing: titleKind === "closing" ? [title] : [], sustained: [], recurring: [], sceneSpecific: [] },
-    composition: [], rhythm: { segments: [] }, transitions: []
+    composition: [], rhythm: { segments: Array.from({ length: shotCount }, (_, index) => ({ shotId: `shot-${index + 1}`, start: index, end: index + 1, duration: 1, pacing: "medium" })) }, transitions: []
   };
 }
 
@@ -5461,6 +5560,30 @@ test("RV-2A handles insufficient evidence, title precedence, supported ordinary 
   assert.ok(override.plan.operations.some((entry) => entry.type === "reference_style_treatment"), "explicit warmth adapts only competing thermal reference axes rather than dropping all photographic transfer");
   assert.throws(() => createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature(), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: 'Add the title "Hi" using Comic Sans font', sourceCatalog, reference: rv2aReference }), (error) => error.reason === "RV2A_UNSUPPORTED_TITLE_FONT");
   assert.throws(() => createReferenceVideoTargetAwareTreatment({ signature: rv2aSignature(), targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: "Clone the transition exactly", sourceCatalog, reference: rv2aReference }), (error) => error.reason === "RV2A_UNSUPPORTED_CENTRAL_CHARACTERISTIC");
+});
+
+test("RV-2A separates sufficient photographic support from incomplete bounded event discovery", () => {
+  const sourceCatalog = [{ sourceId: "source-1", duration: 8 }];
+  const options = { targetAnalysis: rv2aAnalysis(), targetMetrics: rv2aMetrics, prompt: "Match the reference photographically", sourceCatalog, reference: rv2aReference };
+  const eventLimited = rv2aSignature({ eventComplete: false });
+  eventLimited.confidence.completeEvidence = false;
+  const applied = createReferenceVideoTargetAwareTreatment({ ...options, signature: eventLimited });
+  assert.ok(applied.plan.operations.some((operation) => operation.type === "reference_style_treatment"), "event-only incompleteness cannot erase independently supported photography");
+  assert.equal(applied.plan.operations.some((operation) => operation.type === "title"), false, "incomplete title/event coverage cannot fabricate a title treatment");
+  assert.deepEqual(applied.diagnostics.find((entry) => entry.kind === "temporal_events"), { kind: "temporal_events", state: "needs_evidence", reason: "incomplete_event_coverage_titles_transitions_and_brief_events_not_established" });
+  assert.ok(applied.limitations.includes("rhythm_is_observational") && applied.limitations.includes("transition_cloning_unsupported"), "no pacing or transition match is claimed from incomplete event evidence");
+
+  const insufficient = rv2aSignature({ eventComplete: false });
+  insufficient.confidence.completeEvidence = false; insufficient.confidence.observedCoverage = 0.7; insufficient.confidence.incompleteObservationCoverage = true;
+  for (const record of [...insufficient.photographic.characteristics, ...insufficient.photographic.persistent]) { record.observedCoverage = 0.7; record.coverage = 0.6; }
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ ...options, signature: insufficient }), (error) => error.reason === "RV2A_NO_SUPPORTED_TREATMENT", "event saturation cannot hide insufficient photographic observation coverage");
+
+  const missingShotCoverage = rv2aSignature({ shotCount: 5 });
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ ...options, signature: missingShotCoverage }), (error) => error.reason === "RV2A_NO_SUPPORTED_TREATMENT", "two photographic support shots do not authorize a five-shot reference-wide treatment");
+
+  const conflicting = rv2aSignature(); const cool = conflicting.photographic.characteristics[0]; const warm = { ...cool, value: "warm", palette: "warm", observationIds: ["warm-observation-a", "warm-observation-b"], frameIds: ["warm-frame-a", "warm-frame-b"], shotIds: ["warm-shot-a", "warm-shot-b"] };
+  conflicting.photographic.characteristics.push(warm); conflicting.photographic.persistent.push(warm); conflicting.confidence.conflicts = ["persistent_palette_conflict"];
+  assert.throws(() => createReferenceVideoTargetAwareTreatment({ ...options, signature: conflicting }), (error) => error.reason === "RV2A_INVALID_SIGNATURE", "conflicting persistent photographic conclusions remain rejected before transfer");
 });
 
 test("RV-2A applies bounded explicit temperature overrides without discarding supported reference treatment", () => {

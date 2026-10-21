@@ -83,11 +83,26 @@ export function validateReferenceVideoCreativeSignature(value, { provenance = nu
 
 function recordsByField(records) { return new Map(records.map((record) => [record.field, record])); }
 
-/** Derives only observed RV-1 characteristics; B2A source facts are checked, never substituted. */
-function referenceAppearanceFromSignature(signature, analysis, rawAnalysis) {
+/** Photographic transfer is separate from bounded discovery of titles/cuts/events. */
+function photographicEligibility(signature) {
   const records = recordsByField(signature.photographic.characteristics.filter((entry) => entry.state === "persistent"));
   const palette = records.get("palette");
-  if (!palette || !["warm", "cool", "neutral"].includes(palette.value) || signature.confidence.conflicts.includes("persistent_palette_conflict") || !signature.confidence.completeEvidence || !signature.confidence.eventCoverageComplete) return null;
+  if (!palette) return Object.freeze({ eligible: false, reason: "no_persistent_palette", records, palette: null, representedShotCoverage: 0 });
+  if (!["warm", "cool", "neutral"].includes(palette.value)) return Object.freeze({ eligible: false, reason: "unsupported_persistent_palette", records, palette, representedShotCoverage: 0 });
+  if (signature.confidence.conflicts.includes("persistent_palette_conflict")) return Object.freeze({ eligible: false, reason: "persistent_palette_conflict", records, palette, representedShotCoverage: 0 });
+  const totalShots = Math.max(1, signature.rhythm.segments.length);
+  const representedShotCoverage = Math.min(1, palette.shotIds.length / totalShots);
+  if (palette.frameIds.length < 2 || palette.observationIds.length < 2) return Object.freeze({ eligible: false, reason: "insufficient_independent_sampled_support", records, palette, representedShotCoverage });
+  if (totalShots > 1 && palette.shotIds.length < 2) return Object.freeze({ eligible: false, reason: "insufficient_independent_shot_support", records, palette, representedShotCoverage });
+  if (representedShotCoverage < 0.5) return Object.freeze({ eligible: false, reason: "insufficient_represented_shot_coverage", records, palette, representedShotCoverage });
+  if (signature.confidence.incompleteObservationCoverage || signature.confidence.observedCoverage < 0.75 || palette.coverage < 0.55) return Object.freeze({ eligible: false, reason: "insufficient_photographic_observation_coverage", records, palette, representedShotCoverage });
+  return Object.freeze({ eligible: true, reason: null, records, palette, representedShotCoverage });
+}
+
+/** Derives only observed RV-1 characteristics; B2A source facts are checked, never substituted. */
+function referenceAppearanceFromSignature(signature, analysis, rawAnalysis, eligibility) {
+  if (!eligibility?.eligible) return null;
+  const { records, palette } = eligibility;
   // Palette establishes only broad warmth. RV-1 does not prove a specific
   // cyan/yellow bias, tonal-band relationship, or highlight character.
   const paletteFacts = { warmth: palette.value };
@@ -228,7 +243,7 @@ export function createReferenceVideoTargetAwareTreatment({ signature, targetAnal
   const target = validSingleTarget(sourceCatalog); const safeSignature = validateReferenceVideoCreativeSignature(signature, { provenance });
   if (hasUnsupportedCentralRequest(prompt)) throw new ReferenceVideoTransferError("RV2A_UNSUPPORTED_CENTRAL_CHARACTERISTIC");
   const safeTargetAnalysis = validateReferenceStyleAnalysis(targetAnalysis); const plan = validateBasePlan(basePlan, sourceCatalog); const diagnostics = [];
-  const photoReference = referenceAppearanceFromSignature(safeSignature, safeTargetAnalysis, targetAnalysis); const explicitTemperature = explicitTemperatureOverride(prompt);
+  const photoEligibility = photographicEligibility(safeSignature); const photoReference = referenceAppearanceFromSignature(safeSignature, safeTargetAnalysis, targetAnalysis, photoEligibility); const explicitTemperature = explicitTemperatureOverride(prompt);
   if (photoReference) {
     const derivedAnalysis = { safe: true, reference: photoReference.reference, target: safeTargetAnalysis.target };
     let treatment = applyObservedReferenceAdjustments(
@@ -240,9 +255,10 @@ export function createReferenceVideoTargetAwareTreatment({ signature, targetAnal
     if (plan.operations.some((operation) => ["style_profile", "color_grade", "reference_style_treatment"].includes(operation.type))) throw new ReferenceVideoTransferError("RV2A_CONFLICTING_VISUAL_TREATMENT");
     plan.operations.push({ type: "reference_style_treatment", treatment });
   } else {
-    diagnostics.push(diagnostic("photography", "needs_evidence", { completion: "incomplete", reason: "no_complete_nonconflicting_persistent_palette" }));
+    diagnostics.push(diagnostic("photography", "needs_evidence", { completion: "incomplete", reason: photoEligibility.reason, representedShotCoverage: photoEligibility.representedShotCoverage }));
     if (requestsPhotographicReferenceMatch(prompt)) throw new ReferenceVideoTransferError("RV2A_NO_SUPPORTED_TREATMENT");
   }
+  if (!safeSignature.confidence.eventCoverageComplete) diagnostics.push(diagnostic("temporal_events", "needs_evidence", { reason: "incomplete_event_coverage_titles_transitions_and_brief_events_not_established" }));
   if (safeSignature.photographic.sceneSpecific.length) diagnostics.push(diagnostic("scene_specific_photography", "needs_evidence", { reason: "global_renderer_cannot_flatten_scene_specific_reference_treatment" }));
   const title = buildTitleOperation({ prompt, signature: safeSignature, duration: target.duration });
   if (title) { if (plan.operations.some((operation) => operation.type === "title")) throw new ReferenceVideoTransferError("RV2A_CONFLICTING_TITLE"); const { referenceEvidence, ...operation } = title; plan.operations.push(operation); diagnostics.push(diagnostic("typography", referenceEvidence ? "adapted" : "applied", referenceEvidence ? { evidence: referenceEvidence } : { reason: "user_authorized_title_without_reference_typography" })); }
