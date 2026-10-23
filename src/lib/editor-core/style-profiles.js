@@ -65,7 +65,7 @@ export const STYLE_PROFILE_CATALOG = Object.freeze({
     1: freezeProfile({ brightness: -0.04, contrast: 0.3, saturation: -0.08, temperature: 0.05, tint: -0.02 }),
     2: freezeProfile({ brightness: 0, contrast: 0.23, saturation: -0.08, temperature: 0.05, tint: -0.02 })
   }) }),
-  soft_nostalgic: Object.freeze({ currentVersion: 3, versions: Object.freeze({
+  soft_nostalgic: Object.freeze({ currentVersion: 4, versions: Object.freeze({
     // Preserve v1 for historical reproducibility; v2 retains the warm, gently
     // faded identity without flattening ordinary shadows and midtones as much.
     1: freezeProfile({ brightness: 0.07, contrast: -0.18, saturation: -0.2, temperature: 0.12, tint: 0.02 }),
@@ -73,7 +73,8 @@ export const STYLE_PROFILE_CATALOG = Object.freeze({
     // v3 keeps the airy, warm memory character while restoring photographic
     // life through gentle tonal opening and selective vibrance instead of a
     // broad faded/desaturated treatment.
-    3: freezeProfile({ brightness: 0.055, contrast: -0.035, saturation: -0.055, temperature: 0.1, tint: 0.015, shadows: 0.1, highlights: 0.08, vibrance: 0.12 })
+    3: freezeProfile({ brightness: 0.055, contrast: -0.035, saturation: -0.055, temperature: 0.1, tint: 0.015, shadows: 0.1, highlights: 0.08, vibrance: 0.12 }),
+    4: freezeProfile({ brightness: 0.018, contrast: 0.045, saturation: -0.025, temperature: 0.055, tint: 0.005, shadows: -0.045, highlights: 0.025, vibrance: 0.1 })
   }) }),
   vibrant_social: Object.freeze({ currentVersion: 2, versions: Object.freeze({
     // Preserve v1 exactly. v2 gets campaign energy from tonal separation and
