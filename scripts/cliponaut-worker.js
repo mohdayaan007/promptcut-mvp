@@ -199,7 +199,7 @@ async function processJob(job) {
     if (typographyTreatment) plan = reconcileTypographyReferenceTitlePlan(plan, parseTitle(job.prompt, { stripQuotedText: true }), typographyTreatment);
     if (requestsCaptions(job.prompt) && !plan.operations.some((operation) => operation.type === "captions")) plan.operations.push({ type: "captions" });
     const editPlan = validateEditPlan(plan, { sourceCatalog });
-    await saveJobPlan(job.id, workerId, editPlan);
+    await saveJobPlan(job.id, workerId, editPlan, sourceCatalog);
     const stylePlanDiagnostic = summarizeStylePlanDiagnostic(planning, editPlan);
     if (stylePlanDiagnostic) console.info("Cliponaut style plan diagnostic:", { jobId: job.id, ...stylePlanDiagnostic });
     const captionOperation = editPlan.operations.find((operation) => operation.type === "captions");

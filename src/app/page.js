@@ -246,7 +246,7 @@ export default function HomePage() {
             const next = persistUndoState(promoteSuccessfulJob(undoStateRef.current || emptyUndoState(), pollingSession, job.sources));
             setUndoAnchor(undoAnchorForCurrent(next.current));
             showCompletedJob(next.current.session, job);
-            setMessages((current) => [...current, { role: "assistant", text: "Your edit is ready." }]);
+            setMessages((current) => [...current, { role: "assistant", text: job.confirmation || "Your edit is ready." }]);
           } else {
             persistUndoState(recordTerminalJob(undoStateRef.current || emptyUndoState(), pollingSession, { ...job, status: "failed", error: "We couldn’t retrieve that edit." }));
             showTerminalAttempt({ ...job, status: "failed", error: "We couldn’t retrieve that edit." });
@@ -352,7 +352,6 @@ export default function HomePage() {
         persistUndoState(setUndoActiveJob(undoStateRef.current || emptyUndoState(), turn.job, submittedPrompt));
         setActiveJob(turn.job);
         setStatus("queued");
-        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: turn.confirmation }]);
         setPrompt("");
         return;
       }

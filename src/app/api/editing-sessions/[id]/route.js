@@ -1,4 +1,4 @@
-import { applyConversationTurn } from "@/lib/editor-core/conversation-state";
+import { applyConversationTurn, validateConversationPlan } from "@/lib/editor-core/conversation-state";
 import { createConversationJob, getAuthorizedSession, getSessionHistory } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
 import { signedDownloadUrl } from "@/lib/jobs/storage";
@@ -32,12 +32,14 @@ export async function POST(req, { params }) {
     if (!session) throw new PublicRequestError("Editing session was not found", 404);
     const { prompt, expectedVersion } = await req.json();
     if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 1000) throw new PublicRequestError("Enter an editing instruction");
-    if (expectedVersion !== session.latest_version) throw new PublicRequestError("A newer edit is already in progress. Refresh the conversation and try again.", 409);
+    if (!Number.isInteger(expectedVersion)) throw new PublicRequestError("The editing session version is invalid.");
     const history = await getSessionHistory(session.id);
-    const current = history.at(-1);
-    if (!current?.plan || current.status !== "completed") throw new PublicRequestError("Wait for the current edit to finish before making another change.", 409);
-    const { plan, confirmation } = applyConversationTurn({ priorPlan: current.plan, prompt: prompt.trim(), sourceCatalog: [] });
-    const next = await createConversationJob(session, { prompt: prompt.trim(), plan, confirmation });
+    const current = [...history].reverse().find((version) => version.status === "completed" && version.plan && Array.isArray(version.source_catalog));
+    if (!current) throw new PublicRequestError("Wait for a successful edit before making another change.", 409);
+    const { plan, confirmation } = applyConversationTurn({ priorPlan: current.plan, prompt: prompt.trim(), sourceCatalog: current.source_catalog });
+    validateConversationPlan(plan, current.source_catalog);
+    const next = await createConversationJob(session, { prompt: prompt.trim(), plan, confirmation, expectedVersion });
+    if (!next) throw new PublicRequestError("A newer edit is already in progress. Refresh the conversation and try again.", 409);
     return Response.json({ id: next.job.id, status: next.job.status, accessToken: next.accessToken, version: next.version, confirmation });
   } catch (error) { return jsonError(error); }
 }
