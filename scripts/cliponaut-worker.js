@@ -18,7 +18,7 @@ import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
 import { jobConfig } from "@/lib/jobs/job-config";
 import {
   claimNextJob, completeJob, expireUploadJob, failJob, getAbandonedUploads, getJobsForCleanup, heartbeatJob, isJobCancelled, markOutputCleaned,
-  markSourcesCleaned, recoverStaleJobs, setJobStatus
+  markSourcesCleaned, recoverStaleJobs, saveJobPlan, setJobStatus, syncVersionStatus
 } from "@/lib/jobs/job-store";
 import { abortMultipartUpload, deleteObjects, downloadObject, outputObjectKey, uploadOutput } from "@/lib/jobs/storage";
 
@@ -169,7 +169,9 @@ async function processJob(job) {
       });
     }
     let planning;
-    try {
+    if (job.editPlan) {
+      planning = { plan: job.editPlan, source: "conversation" };
+    } else try {
       planning = await createAiEditPlan({
         inputPath: inputPaths[0], inputMimeType: sources[0].type,
         sourceInputs: sources.map((source) => ({ inputPath: inputPaths[source.index], inputMimeType: source.type, source: sourceCatalog.find((entry) => entry.index === source.index) })),
@@ -197,6 +199,7 @@ async function processJob(job) {
     if (typographyTreatment) plan = reconcileTypographyReferenceTitlePlan(plan, parseTitle(job.prompt, { stripQuotedText: true }), typographyTreatment);
     if (requestsCaptions(job.prompt) && !plan.operations.some((operation) => operation.type === "captions")) plan.operations.push({ type: "captions" });
     const editPlan = validateEditPlan(plan, { sourceCatalog });
+    await saveJobPlan(job.id, workerId, editPlan, sourceCatalog);
     const stylePlanDiagnostic = summarizeStylePlanDiagnostic(planning, editPlan);
     if (stylePlanDiagnostic) console.info("Cliponaut style plan diagnostic:", { jobId: job.id, ...stylePlanDiagnostic });
     const captionOperation = editPlan.operations.find((operation) => operation.type === "captions");
@@ -220,6 +223,7 @@ async function processJob(job) {
     const captionCorrection = captionOperation ? extractCaptionCorrection(job.prompt) : null;
     await throwIfCancelled(job.id);
     if (!await setJobStatus(job.id, workerId, "rendering")) throw new JobCancelledError();
+    await syncVersionStatus(job.id, "rendering");
     const outputPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality, executionController, captionCues, captionCorrection, jobId: job.id });
     await throwIfCancelled(job.id);
     outputKey = outputObjectKey(job.id);
@@ -227,10 +231,11 @@ async function processJob(job) {
     await throwIfCancelled(job.id);
     if (!await completeJob(job.id, workerId, outputKey)) {
       await deleteObjects([outputKey]);
-    }
+    } else await syncVersionStatus(job.id, "completed");
   } catch (error) {
     if (error instanceof JobCancelledError || error instanceof EditExecutionCancelledError) {
       if (outputKey) await deleteObjects([outputKey]).catch(() => {});
+      await syncVersionStatus(job.id, "cancelled").catch(() => {});
       return;
     }
     if (error instanceof ReferenceStyleError) {
@@ -239,6 +244,7 @@ async function processJob(job) {
       console.error(`Job ${job.id} failed:`, error.message);
     }
     await failJob(job.id, workerId, safeError(error)).catch(() => {});
+    await syncVersionStatus(job.id, "failed").catch(() => {});
   } finally {
     if (heartbeat) clearInterval(heartbeat);
     if (cancellationMonitor) clearInterval(cancellationMonitor);
