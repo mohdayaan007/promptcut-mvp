@@ -28,11 +28,34 @@ CREATE TABLE IF NOT EXISTS edit_jobs (
   heartbeat_at TIMESTAMPTZ,
   source_cleaned_at TIMESTAMPTZ,
   output_cleaned_at TIMESTAMPTZ,
+  session_id UUID,
+  edit_plan JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS edit_jobs_queue_idx ON edit_jobs (status, created_at);
 CREATE INDEX IF NOT EXISTS edit_jobs_cleanup_idx ON edit_jobs (status, updated_at);
+CREATE TABLE IF NOT EXISTS editing_sessions (
+  id UUID PRIMARY KEY,
+  access_token TEXT NOT NULL UNIQUE,
+  source_job_id UUID NOT NULL REFERENCES edit_jobs(id),
+  latest_version INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '7 days'
+);
+CREATE TABLE IF NOT EXISTS editing_versions (
+  session_id UUID NOT NULL REFERENCES editing_sessions(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  job_id UUID NOT NULL REFERENCES edit_jobs(id),
+  prompt TEXT NOT NULL,
+  plan JSONB,
+  confirmation TEXT,
+  status TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (session_id, version)
+);
+CREATE INDEX IF NOT EXISTS editing_sessions_expiry_idx ON editing_sessions (expires_at);
 `;
 
 function newId() { return crypto.randomUUID(); }
@@ -43,16 +66,61 @@ function safeRow(row) {
     sources: row.sources, reference: row.reference, outputKey: row.output_key, errorMessage: row.error_message,
     attemptCount: row.attempt_count, workerId: row.worker_id, claimedAt: row.claimed_at,
     heartbeatAt: row.heartbeat_at, sourceCleanedAt: row.source_cleaned_at,
-    outputCleanedAt: row.output_cleaned_at, createdAt: row.created_at, updatedAt: row.updated_at
+    outputCleanedAt: row.output_cleaned_at, sessionId: row.session_id, editPlan: row.edit_plan,
+    createdAt: row.created_at, updatedAt: row.updated_at
   };
 }
 
 export async function migrateEditJobs() {
   await database().query(EDIT_JOBS_SCHEMA);
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS reference JSONB;");
+  await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS session_id UUID;");
+  await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS edit_plan JSONB;");
   await database().query(`ALTER TABLE edit_jobs DROP CONSTRAINT IF EXISTS edit_jobs_status_check;
     ALTER TABLE edit_jobs ADD CONSTRAINT edit_jobs_status_check
     CHECK (status IN ('uploading','queued','analyzing','rendering','completed','failed','cancelled'));`);
+}
+export async function createEditingSession(jobId, initialPrompt) {
+  const id = newId(); const accessToken = newToken();
+  const { rows } = await database().query(`INSERT INTO editing_sessions (id, access_token, source_job_id, latest_version)
+    VALUES ($1,$2,$3,1) RETURNING *`, [id, accessToken, jobId]);
+  await database().query("UPDATE edit_jobs SET session_id=$2 WHERE id=$1", [jobId, id]);
+  await database().query("INSERT INTO editing_versions (session_id, version, job_id, prompt, status) VALUES ($1,1,$2,$3,'queued')", [id, jobId, initialPrompt]);
+  return { id: rows[0].id, accessToken, version: 1 };
+}
+export async function getAuthorizedSession(id, token) {
+  if (!UUID_PATTERN.test(id) || !token) return null;
+  const { rows } = await database().query("SELECT * FROM editing_sessions WHERE id=$1 AND access_token=$2 AND expires_at > now()", [id, token]);
+  return rows[0] || null;
+}
+export async function getSessionHistory(id) {
+  const { rows } = await database().query(`SELECT v.version,v.job_id,v.prompt,v.plan,v.confirmation,v.status,v.created_at,j.output_key,j.output_cleaned_at
+    FROM editing_versions v JOIN edit_jobs j ON j.id=v.job_id WHERE v.session_id=$1 ORDER BY v.version`, [id]);
+  return rows;
+}
+export async function createConversationJob(session, { prompt, plan, confirmation }) {
+  const client = await database().connect();
+  try {
+    await client.query("BEGIN");
+    const locked = await client.query("SELECT * FROM editing_sessions WHERE id=$1 FOR UPDATE", [session.id]);
+    if (!locked.rows[0] || locked.rows[0].latest_version < 1) throw new Error("Editing session was not found");
+    const source = await client.query("SELECT * FROM edit_jobs WHERE id=$1", [locked.rows[0].source_job_id]);
+    if (!source.rows[0]) throw new Error("Original media is no longer available");
+    const id = newId(); const accessToken = newToken(); const version = locked.rows[0].latest_version + 1;
+    const result = await client.query(`INSERT INTO edit_jobs (id,access_token,status,prompt,export_quality,sources,reference,session_id,edit_plan)
+      VALUES ($1,$2,'queued',$3,$4,$5::jsonb,$6::jsonb,$7,$8::jsonb) RETURNING *`, [id, accessToken, prompt, source.rows[0].export_quality, JSON.stringify(source.rows[0].sources), JSON.stringify(source.rows[0].reference), session.id, JSON.stringify(plan)]);
+    await client.query("INSERT INTO editing_versions (session_id,version,job_id,prompt,plan,confirmation,status) VALUES ($1,$2,$3,$4,$5::jsonb,$6,'queued')", [session.id, version, id, prompt, JSON.stringify(plan), confirmation]);
+    await client.query("UPDATE editing_sessions SET latest_version=$2, updated_at=now() WHERE id=$1", [session.id, version]);
+    await client.query("COMMIT");
+    return { job: safeRow(result.rows[0]), accessToken, version };
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+}
+export async function saveJobPlan(id, workerId, plan) {
+  const { rows } = await database().query("UPDATE edit_jobs SET edit_plan=$3 WHERE id=$1 AND worker_id=$2 RETURNING session_id", [id, workerId, JSON.stringify(plan)]);
+  if (rows[0]?.session_id) await database().query("UPDATE editing_versions SET plan=$3::jsonb WHERE session_id=$1 AND job_id=$2", [rows[0].session_id, id, JSON.stringify(plan)]);
+}
+export async function syncVersionStatus(id, status) {
+  await database().query("UPDATE editing_versions SET status=$2 WHERE job_id=$1", [id, status]);
 }
 export async function createUploadJob(sources, reference = null) {
   const id = newId(); const accessToken = newToken();
@@ -68,7 +136,10 @@ export async function cancelAuthorizedJob(id, token) {
   if (!UUID_PATTERN.test(id) || !token) return null;
   const { rows } = await database().query(`UPDATE edit_jobs SET status='cancelled', error_message=NULL, updated_at=now()
     WHERE id=$1 AND access_token=$2 AND status IN ('uploading','queued','analyzing','rendering') RETURNING *`, [id, token]);
-  if (rows[0]) return { job: safeRow(rows[0]), cancelled: true };
+  if (rows[0]) {
+    await database().query("UPDATE editing_versions SET status='cancelled' WHERE job_id=$1", [id]);
+    return { job: safeRow(rows[0]), cancelled: true };
+  }
   const job = await getAuthorizedJob(id, token);
   return job ? { job, cancelled: false } : null;
 }
@@ -111,7 +182,7 @@ export async function expireUploadJob(id) {
   await database().query("UPDATE edit_jobs SET status='failed', error_message='Upload expired before it was completed', updated_at=now() WHERE id=$1 AND status='uploading'", [id]);
 }
 export async function getJobsForCleanup({ sourceRetentionHours, outputRetentionHours }) {
-  const { rows } = await database().query(`SELECT * FROM edit_jobs WHERE ((status IN ('completed','failed','cancelled') AND source_cleaned_at IS NULL AND updated_at < now() - ($1 * interval '1 hour')) OR (status='completed' AND output_key IS NOT NULL AND output_cleaned_at IS NULL AND updated_at < now() - ($2 * interval '1 hour'))) LIMIT 25`, [sourceRetentionHours, outputRetentionHours]);
+  const { rows } = await database().query(`SELECT j.* FROM edit_jobs j LEFT JOIN editing_sessions s ON s.id=j.session_id WHERE ((j.status IN ('completed','failed','cancelled') AND j.source_cleaned_at IS NULL AND j.updated_at < now() - ($1 * interval '1 hour') AND (j.session_id IS NULL OR s.expires_at <= now())) OR (j.status='completed' AND j.output_key IS NOT NULL AND j.output_cleaned_at IS NULL AND j.updated_at < now() - ($2 * interval '1 hour'))) LIMIT 25`, [sourceRetentionHours, outputRetentionHours]);
   return rows.map(safeRow);
 }
 export async function markSourcesCleaned(id) { await database().query("UPDATE edit_jobs SET source_cleaned_at=now(), updated_at=now() WHERE id=$1", [id]); }

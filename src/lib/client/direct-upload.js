@@ -1,4 +1,5 @@
 const JOB_STORAGE_KEY = "cliponaut-active-job";
+const EDITING_SESSION_STORAGE_KEY = "cliponaut-editing-session";
 export const UNDO_STATE_VERSION = 1;
 export const ACTIVE_JOB_STATUSES = ["uploading", "queued", "analyzing", "rendering"];
 const PART_UPLOAD_MAX_ATTEMPTS = 3;
@@ -361,6 +362,28 @@ export async function cancelJob(session, signal) {
   return requestJson(`/api/jobs/${session.id}/cancel`, {
     method: "POST", headers: jobHeaders(session.accessToken), signal
   });
+}
+
+export function loadEditingSession(storage) {
+  const target = browserStorage(storage);
+  if (!target) return null;
+  try {
+    const value = JSON.parse(target.getItem(EDITING_SESSION_STORAGE_KEY) || "null");
+    return value && typeof value.id === "string" && typeof value.accessToken === "string" && Number.isInteger(value.version) ? value : null;
+  } catch { return null; }
+}
+export function saveEditingSession(session, storage) {
+  const target = browserStorage(storage);
+  if (target && session) target.setItem(EDITING_SESSION_STORAGE_KEY, JSON.stringify(session));
+  return session;
+}
+export function clearEditingSession(storage) { browserStorage(storage)?.removeItem(EDITING_SESSION_STORAGE_KEY); }
+export async function submitConversationTurn(session, prompt, signal) {
+  const response = await requestJson(`/api/editing-sessions/${session.id}`, {
+    method: "POST", headers: { "x-cliponaut-session-token": session.accessToken },
+    body: JSON.stringify({ prompt, expectedVersion: session.version }), signal
+  });
+  return { job: { id: response.id, accessToken: response.accessToken }, session: { ...session, version: response.version }, confirmation: response.confirmation };
 }
 
 export function isActiveJobStatus(status) { return ACTIVE_JOB_STATUSES.includes(status); }

@@ -10,6 +10,7 @@
     "migrate:jobs": "tsx scripts/migrate-jobs.js",
     "configure:bucket-cors": "tsx scripts/configure-bucket-cors.js",
     "test:jobs": "tsx --test tests/jobs.test.js",
+    "test:conversation": "tsx --test tests/conversation-state.test.js",
     "lint": "eslint"
   },
   "dependencies": {

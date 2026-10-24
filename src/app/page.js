@@ -22,11 +22,15 @@ import {
   isCurrentPresentationAttempt,
   isRecoverableJobStatus,
   loadUndoState,
+  loadEditingSession,
   promoteSuccessfulJob,
   recordTerminalJob,
   resolveUndoRestoration,
   saveUndoState,
+  saveEditingSession,
+  clearEditingSession,
   setUndoActiveJob,
+  submitConversationTurn,
   terminalAttemptPresentation,
   shouldScheduleUndoOriginalReveal,
   undoPreviewMode,
@@ -84,6 +88,7 @@ export default function HomePage() {
   const [originalPreviewArmed, setOriginalPreviewArmed] = useState(false);
   const [restoringResultUrl, setRestoringResultUrl] = useState(null);
   const [undoAnchor, setUndoAnchor] = useState(null);
+  const [editingSession, setEditingSession] = useState(null);
 
   const videoInputRef = useRef(null);
   const imageInputRef = useRef(null);
@@ -186,6 +191,7 @@ export default function HomePage() {
   useEffect(() => {
     const hydrationAttempt = presentationAttemptRef.current;
     const saved = loadUndoState();
+    setEditingSession(loadEditingSession());
     undoStateRef.current = saved;
     setUndoState(saved);
     setUndoAnchor(getInitialUndoAnchor(saved));
@@ -322,7 +328,7 @@ export default function HomePage() {
   };
 
   const handleGenerate = async () => {
-    if (!videos.length || !prompt.trim() || isProcessing) return;
+    if ((!videos.length && !editingSession) || !prompt.trim() || isProcessing) return;
 
     const submittedPrompt = prompt;
     const presentationAttempt = beginPresentationAttempt();
@@ -338,6 +344,18 @@ export default function HomePage() {
     setError(null);
 
     try {
+      if (editingSession && undoStateRef.current?.current?.kind === "job") {
+        const turn = await submitConversationTurn(editingSession, submittedPrompt, controller.signal);
+        if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
+        const nextSession = saveEditingSession(turn.session);
+        setEditingSession(nextSession);
+        persistUndoState(setUndoActiveJob(undoStateRef.current || emptyUndoState(), turn.job, submittedPrompt));
+        setActiveJob(turn.job);
+        setStatus("queued");
+        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: turn.confirmation }]);
+        setPrompt("");
+        return;
+      }
       const job = await uploadAndQueueJob({
         videos, referenceImage, prompt: submittedPrompt, exportQuality, signal: controller.signal,
         onProgress: setUploadProgress,
@@ -350,6 +368,10 @@ export default function HomePage() {
         }
       });
       if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
+      if (job.session) {
+        const nextSession = saveEditingSession(job.session);
+        setEditingSession(nextSession);
+      }
       if (["failed", "cancelled"].includes(job.status)) {
           persistUndoState(recordTerminalJob(undoStateRef.current || emptyUndoState(), undoStateRef.current?.active, job));
         showTerminalAttempt(job);
@@ -412,6 +434,8 @@ export default function HomePage() {
     undoStateRef.current = null;
     setUndoState(null);
     clearUndoState();
+    clearEditingSession();
+    setEditingSession(null);
     history.replaceState(null, "", window.location.pathname);
     if (videoInputRef.current) videoInputRef.current.value = "";
     if (imageInputRef.current) imageInputRef.current.value = "";
@@ -597,7 +621,7 @@ export default function HomePage() {
                 onPromptChange={setPrompt}
                 onSubmit={handleGenerate}
                 isProcessing={isProcessing}
-                canGenerate={Boolean(videos.length && prompt.trim())}
+                canGenerate={Boolean((videos.length || editingSession) && prompt.trim())}
                 compact
               />
             </div>

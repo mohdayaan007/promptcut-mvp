@@ -1,5 +1,5 @@
 import { abortMultipartUpload, completeMultipartUpload, headObject } from "@/lib/jobs/storage";
-import { getAuthorizedJob, queueJob } from "@/lib/jobs/job-store";
+import { createEditingSession, getAuthorizedJob, queueJob } from "@/lib/jobs/job-store";
 import { jsonError, jobToken, PublicRequestError, safeJobResponse } from "@/lib/jobs/http";
 import { validateJobRequest, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 
@@ -47,7 +47,8 @@ export async function POST(req, { params }) {
     }
     const queued = await queueJob(id, { prompt: prompt.trim(), exportQuality, sources, reference });
     if (!queued) throw new PublicRequestError("This upload session can no longer be queued");
-    return Response.json(safeJobResponse(queued));
+    const session = await createEditingSession(queued.id, prompt.trim());
+    return Response.json({ ...safeJobResponse(queued), session });
   } catch (error) {
     return jsonError(error);
   }
