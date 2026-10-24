@@ -385,6 +385,11 @@ export async function submitConversationTurn(session, prompt, signal) {
   });
   return { job: { id: response.id, accessToken: response.accessToken }, session: { ...session, version: response.version }, confirmation: response.confirmation };
 }
+export async function getEditingSessionHistory(session, signal) {
+  return requestJson(`/api/editing-sessions/${session.id}`, {
+    headers: { "x-cliponaut-session-token": session.accessToken }, signal
+  });
+}
 
 export function isActiveJobStatus(status) { return ACTIVE_JOB_STATUSES.includes(status); }
 export function isRecoverableJobStatus(status) { return isActiveJobStatus(status) || status === "completed"; }

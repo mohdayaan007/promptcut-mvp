@@ -30,3 +30,8 @@ test("output-relative trim crosses clip boundaries without modifying originals",
 test("unsafe conversational ambiguity does not create a changed plan", () => {
   assert.throws(() => applyConversationTurn({ priorPlan: base, prompt: "Make it amazing somehow", sourceCatalog: catalog }), /couldn’t safely/i);
 });
+
+test("output-relative trim refuses a prior speed change rather than guessing source timing", () => {
+  const withSpeed = { ...base, operations: [...base.operations, { type: "speed", factor: 2 }] };
+  assert.throws(() => applyConversationTurn({ priorPlan: withSpeed, prompt: "Trim the first five seconds", sourceCatalog: catalog }), /speed change is not supported/i);
+});

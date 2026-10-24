@@ -203,9 +203,9 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
           <SourcePreview file={originalVideo} onMediaReady={previewMode === "restoring" ? onRestoredMediaReady : undefined} />
         )}
         {previewMode === "normal" && status === "idle" && <PreviewEmptyState />}
-        {previewMode === "normal" && ["uploading", "queued", "analyzing", "rendering"].includes(status) && <PreviewProcessingState status={status} uploadProgress={uploadProgress} />}
-        {previewMode === "normal" && status === "error" && <PreviewErrorState error={error} canViewPreviousEdit={canViewPreviousEdit} onViewPreviousEdit={onViewPreviousEdit} />}
-        {status === "done" && resultUrl && (
+        {previewMode === "normal" && ["uploading", "queued", "analyzing", "rendering"].includes(status) && !resultUrl && <PreviewProcessingState status={status} uploadProgress={uploadProgress} />}
+        {previewMode === "normal" && status === "error" && !resultUrl && <PreviewErrorState error={error} canViewPreviousEdit={canViewPreviousEdit} onViewPreviousEdit={onViewPreviousEdit} />}
+        {previewMode === "normal" && resultUrl && (
           <video key={resultUrl} ref={videoRef} src={resultUrl} controls playsInline className="cliponaut-result-video" onLoadedData={previewMode === "restoring" && resultUrl === restoringResultUrl ? onRestoredMediaReady : undefined} />
         )}
         {previewMode === "restoring" && <PreviewRestoringState />}

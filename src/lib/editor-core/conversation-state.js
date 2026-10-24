@@ -50,6 +50,9 @@ export function applyConversationTurn({ priorPlan, prompt, sourceCatalog }) {
   }
   const firstTrim = normalized.match(/(?:trim|remove|cut)\s+(?:the\s+)?first\s+(\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\s+seconds?/);
   if (firstTrim) {
+    if (priorPlan.operations.some((operation) => operation.type === "speed")) {
+      throw new Error("Trimming after a speed change is not supported yet. Remove the speed change or make the trim first.");
+    }
     const spelled = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
     const seconds = spelled[firstTrim[1]] || Number(firstTrim[1]);
     const plan = trimOutputStart(priorPlan, seconds, sourceCatalog);
