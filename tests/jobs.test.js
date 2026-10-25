@@ -2837,7 +2837,7 @@ test("single-step Undo only invalidates a previous job after a confirmed unavail
   assert.deepEqual(retry.state, state, "temporary or unexpected retrieval results retain the previous undo target");
 });
 
-test("terminal attempts clear stale output presentation without consuming Undo history", () => {
+test("terminal attempts retain a completed preview without consuming Undo history", () => {
   const sessionA = { id: "job-a", accessToken: "token-a" };
   const sessionB = { id: "job-b", accessToken: "token-b" };
   const sources = [{ index: 0, name: "source.mp4", type: "video/mp4", size: 10 }];
@@ -2847,12 +2847,12 @@ test("terminal attempts clear stale output presentation without consuming Undo h
 
   assert.deepEqual(afterBFailure.current, successfulA.current, "the prior result remains an explicit recovery target");
   assert.deepEqual(afterBFailure.previous, successfulA.previous, "failure does not consume a valid Undo target");
-  assert.deepEqual(terminalAttemptPresentation({ status: "failed", error: "Rendering failed." }), {
-    status: "error", resultUrl: null, error: "Rendering failed."
-  }, "a failed current job cannot present an old MP4 as Ready");
-  assert.deepEqual(terminalAttemptPresentation({ status: "cancelled" }), {
-    status: "error", resultUrl: null, error: "This edit was cancelled."
-  }, "a cancelled current job cannot present an old MP4 as Ready");
+  assert.deepEqual(terminalAttemptPresentation({ status: "failed", error: "Rendering failed." }, "https://signed.example/previous.mp4"), {
+    status: "error", resultUrl: "https://signed.example/previous.mp4", error: "Rendering failed."
+  }, "a failed follow-up retains the previous playable MP4");
+  assert.deepEqual(terminalAttemptPresentation({ status: "cancelled" }, "https://signed.example/previous.mp4"), {
+    status: "error", resultUrl: "https://signed.example/previous.mp4", error: "This edit was cancelled."
+  }, "a cancelled follow-up retains the previous playable MP4");
 
   const terminal = recordTerminalJob(duringB, sessionB, { status: "failed", error: "Rendering failed.", sources });
   assert.deepEqual(terminal.terminal, {

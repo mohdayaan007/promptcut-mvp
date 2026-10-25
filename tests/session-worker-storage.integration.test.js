@@ -31,6 +31,19 @@ function waitForCompleted(getStatus, timeoutMs = 30_000) {
   });
 }
 
+function waitForTerminal(getStatus, timeoutMs = 30_000) {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + timeoutMs;
+    const timer = setInterval(async () => {
+      try {
+        const job = await getStatus();
+        if (["completed", "failed", "cancelled"].includes(job.status)) { clearInterval(timer); resolve(job); }
+        else if (Date.now() > deadline) { clearInterval(timer); reject(new Error(`worker timed out in ${job.status}`)); }
+      } catch (error) { clearInterval(timer); reject(error); }
+    }, 250);
+  });
+}
+
 test("storage upload, worker rendering, signed download, history, rejection, and follow-up render", { timeout: 90_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-storage-worker-"));
   const scratchDirectory = path.join(root, "scratch");
@@ -82,8 +95,31 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     assert.ok(firstOutput.length > 1_000);
 
     const rejected = await sessionRoute.POST(sessionRequest(`http://localhost/api/editing-sessions/${queued.session.id}`, { prompt: "Make it amazing somehow", expectedVersion: 1 }, queued.session.accessToken), { params: Promise.resolve({ id: queued.session.id }) });
-    assert.equal(rejected.status, 500, "unsupported turn is rejected without creating a version");
-    const followup = await sessionRoute.POST(sessionRequest(`http://localhost/api/editing-sessions/${queued.session.id}`, { prompt: "Replace that with the cinematic style.", expectedVersion: 1 }, queued.session.accessToken), { params: Promise.resolve({ id: queued.session.id }) });
+    assert.equal(rejected.status, 422, "unsupported turn is rejected with an actionable client error without creating a version");
+    assert.match((await rejected.json()).error, /couldn’t safely/i);
+
+    // Force a real worker failure after the follow-up is queued. The temporary
+    // source deletion simulates storage loss; the preserved v1 MP4 remains
+    // downloadable and restoring the original object lets v3 continue from it.
+    // Pause rather than terminate the worker so the job remains queued while
+    // the fixture removes the source object. This models a storage failure
+    // after acceptance without racing the worker's next poll.
+    worker.kill("SIGSTOP");
+    const failingFollowup = await sessionRoute.POST(sessionRequest(`http://localhost/api/editing-sessions/${queued.session.id}`, { prompt: "Replace that with the cinematic style.", expectedVersion: 1 }, queued.session.accessToken), { params: Promise.resolve({ id: queued.session.id }) });
+    assert.equal(failingFollowup.status, 200);
+    const failedSession = await failingFollowup.json();
+    const { DeleteObjectCommand, PutObjectCommand } = await import("@aws-sdk/client-s3");
+    const testS3 = new S3Client({ endpoint: process.env.S3_TEST_ENDPOINT, region: "us-east-1", credentials: { accessKeyId: "S3RVER", secretAccessKey: "S3RVER" }, forcePathStyle: true });
+    await testS3.send(new DeleteObjectCommand({ Bucket: bucket, Key: upload.uploads[0].key }));
+    worker.kill("SIGCONT");
+    const failed = await waitForTerminal(() => getJob(failedSession));
+    assert.equal(failed.status, "failed", "a queued worker job can fail after acceptance");
+    const retainedFirst = await fetch(first.outputUrl);
+    assert.equal(retainedFirst.status, 200, "a failed follow-up does not remove the prior signed download");
+    assert.deepEqual(Buffer.from(await retainedFirst.arrayBuffer()), firstOutput, "the prior playable MP4 remains intact after failure");
+    await testS3.send(new PutObjectCommand({ Bucket: bucket, Key: upload.uploads[0].key, Body: source, ContentType: "video/mp4" }));
+
+    const followup = await sessionRoute.POST(sessionRequest(`http://localhost/api/editing-sessions/${queued.session.id}`, { prompt: "Replace that with the cinematic style.", expectedVersion: failedSession.version }, queued.session.accessToken), { params: Promise.resolve({ id: queued.session.id }) });
     assert.equal(followup.status, 200);
     const secondSession = await followup.json();
     const second = await waitForCompleted(() => getJob({ id: secondSession.id, accessToken: secondSession.accessToken }));
@@ -96,8 +132,8 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     const historyResponse = await sessionRoute.GET(new Request(`http://localhost/api/editing-sessions/${queued.session.id}`, { headers: { "x-cliponaut-session-token": queued.session.accessToken } }), { params: Promise.resolve({ id: queued.session.id }) });
     const history = await historyResponse.json();
     assert.equal(historyResponse.status, 200);
-    assert.deepEqual(history.history.map((entry) => entry.status), ["completed", "completed"]);
-    assert.ok(history.history.every((entry) => entry.outputUrl), "refresh history supplies signed completed versions");
+    assert.deepEqual(history.history.map((entry) => entry.status), ["completed", "failed", "completed"]);
+    assert.ok(history.history.filter((entry) => entry.status === "completed").every((entry) => entry.outputUrl), "refresh history supplies signed completed versions");
     const outputPath = path.join(root, "second-signed.mp4");
     await writeFile(outputPath, secondOutput);
     assert.ok((await stat(outputPath)).size > 1_000);

@@ -36,6 +36,23 @@ test("output-relative trim refuses a prior speed change rather than guessing sou
   assert.throws(() => applyConversationTurn({ priorPlan: withSpeed, prompt: "Trim the first five seconds", sourceCatalog: catalog }), /speed change is not supported/i);
 });
 
+test("supported follow-up effects replace incompatible settings while preserving the selected sequence", () => {
+  const vertical = applyConversationTurn({ priorPlan: base, prompt: "Make it vertical and add a fade out.", sourceCatalog: catalog });
+  assert.deepEqual(vertical.plan.operations[0], base.operations[0]);
+  assert.equal(vertical.plan.operations.find((operation) => operation.type === "crop").aspect_ratio, "9:16");
+  assert.equal(vertical.plan.operations.find((operation) => operation.type === "fade").mode, "out");
+
+  const landscape = applyConversationTurn({ priorPlan: vertical.plan, prompt: "Make it landscape.", sourceCatalog: catalog });
+  assert.deepEqual(landscape.plan.operations.filter((operation) => operation.type === "crop"), [{ type: "crop", aspect_ratio: "16:9" }]);
+  assert.doesNotThrow(() => validateConversationPlan(landscape.plan, catalog));
+});
+
+test("unsupported contextual removals and timeline ranges fail without changing the prior plan", () => {
+  assert.throws(() => applyConversationTurn({ priorPlan: base, prompt: "Remove the subtitles.", sourceCatalog: catalog }), /unchanged/i);
+  assert.throws(() => applyConversationTurn({ priorPlan: base, prompt: "Trim 0:05 to 0:20.", sourceCatalog: catalog }), /fresh media understanding/i);
+  assert.deepEqual(base.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 20, end: 50 }] }]);
+});
+
 test("open-ended conversation retains cumulative timing and one active style across 25 turns", () => {
   let plan = { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 10, end: 60 }] }] };
   const turns = Array.from({ length: 25 }, (_, index) => {

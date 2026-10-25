@@ -36,8 +36,21 @@ export async function POST(req, { params }) {
     const history = await getSessionHistory(session.id);
     const current = [...history].reverse().find((version) => version.status === "completed" && version.plan && Array.isArray(version.source_catalog));
     if (!current) throw new PublicRequestError("Wait for a successful edit before making another change.", 409);
-    const { plan, confirmation } = applyConversationTurn({ priorPlan: current.plan, prompt: prompt.trim(), sourceCatalog: current.source_catalog });
-    validateConversationPlan(plan, current.source_catalog);
+    let plan;
+    let confirmation;
+    try {
+      ({ plan, confirmation } = applyConversationTurn({ priorPlan: current.plan, prompt: prompt.trim(), sourceCatalog: current.source_catalog }));
+      validateConversationPlan(plan, current.source_catalog);
+    } catch (error) {
+      // Conversation parsing and plan validation operate only on user input and
+      // persisted plans. They are actionable request errors, not server faults.
+      // Keep the response deliberately bounded so validator internals never
+      // leak to a browser client.
+      const message = typeof error?.message === "string" && error.message.length <= 240
+        ? error.message
+        : "I couldn’t safely apply that change to the current edit.";
+      throw new PublicRequestError(message, 422);
+    }
     const next = await createConversationJob(session, { prompt: prompt.trim(), plan, confirmation, expectedVersion });
     if (!next) throw new PublicRequestError("A newer edit is already in progress. Refresh the conversation and try again.", 409);
     return Response.json({ id: next.job.id, status: next.job.status, accessToken: next.accessToken, version: next.version, confirmation });

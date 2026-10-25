@@ -28,6 +28,11 @@ test("PostgreSQL session API atomically versions concurrent turns, recovers afte
     const session = await store.createEditingSession(created.job.id, "Keep only Ahmed Perfumes.");
     await client.query("UPDATE editing_versions SET status='completed', plan=$2::jsonb WHERE session_id=$1 AND version=1", [session.id, JSON.stringify(plan)]);
 
+    const unsupported = await sessionRoute.POST(routeRequest(session, "Make it amazing somehow", 1), { params: Promise.resolve({ id: session.id }) });
+    assert.equal(unsupported.status, 422, "unsupported instructions are safe client errors, not server failures");
+    assert.match((await unsupported.json()).error, /couldn’t safely/i);
+    assert.equal((await store.getSessionHistory(session.id)).length, 1, "a rejected turn never creates a version");
+
     const [first, second] = await Promise.all([
       sessionRoute.POST(routeRequest(session, "Also add black and white.", 1), { params: Promise.resolve({ id: session.id }) }),
       sessionRoute.POST(routeRequest(session, "Replace that with the cinematic style.", 1), { params: Promise.resolve({ id: session.id }) })

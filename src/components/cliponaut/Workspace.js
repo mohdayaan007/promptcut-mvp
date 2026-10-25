@@ -180,6 +180,7 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
           <h2 id="preview-heading">Preview</h2>
         </div>
         {status === "done" && previewMode === "normal" && <span className="cliponaut-status-badge">Ready</span>}
+        {status === "error" && resultUrl && previewMode === "normal" && <span className="cliponaut-status-badge">Previous version</span>}
       </div>
 
       <fieldset className="cliponaut-export-quality">
@@ -211,7 +212,9 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
         {previewMode === "restoring" && <PreviewRestoringState />}
       </div>
 
-      {previewMode === "normal" && status === "done" && resultUrl && (
+      {previewMode === "normal" && status === "error" && resultUrl && <div className="cliponaut-preview-retained-error" role="alert">{error || "We couldn’t complete the latest edit. Your previous version is still available."}</div>}
+
+      {previewMode === "normal" && ["done", "error"].includes(status) && resultUrl && (
         <div className="cliponaut-preview-actions">
           <label className="cliponaut-speed-control">
             <span>Speed</span>

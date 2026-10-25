@@ -2,6 +2,7 @@ import { createEditPlan } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 
 const STYLE_TYPES = new Set(["color_grade", "style_profile", "visual_adjustment", "reference_style_treatment"]);
+const REPLACE_ON_FOLLOW_UP_TYPES = new Set(["crop", "fade", "speed", "captions"]);
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
@@ -36,6 +37,19 @@ function resetStyle(plan) {
   return { ...clone(plan), operations: plan.operations.filter((operation) => !STYLE_TYPES.has(operation.type)) };
 }
 
+function mergeSupportedFollowUp(priorPlan, operations) {
+  const next = clone(priorPlan);
+  for (const operation of operations) {
+    if (operation.type === "trim" || operation.type === "sequence" || operation.type === "merge") {
+      throw new Error("Use “trim the first N seconds” for a follow-up trim. Other timeline changes need fresh media understanding.");
+    }
+    if (STYLE_TYPES.has(operation.type)) next.operations = next.operations.filter((item) => !STYLE_TYPES.has(item.type));
+    if (REPLACE_ON_FOLLOW_UP_TYPES.has(operation.type)) next.operations = next.operations.filter((item) => item.type !== operation.type);
+    next.operations.push(operation);
+  }
+  return next;
+}
+
 /**
  * Applies only deliberately unambiguous conversational deltas locally. More
  * expressive turns remain on the existing Gemini planner path for the first
@@ -67,11 +81,14 @@ export function applyConversationTurn({ priorPlan, prompt, sourceCatalog }) {
     plan.operations.push(style);
     return { plan, confirmation: style.style === "bw" ? "Applied black and white." : "Replaced the previous look with the cinematic style." };
   }
+  if (/\b(?:remove|delete|turn off)\s+(?:the\s+)?(?:captions?|subtitles?|title|text)\b/.test(normalized)) {
+    throw new Error("Removing captions or titles in a follow-up is not supported yet. Your current edit is unchanged.");
+  }
   // This deterministic fallback is intentionally limited. It preserves prior
   // state for simple known commands; unsupported ambiguity is rejected safely.
   const generated = createEditPlan({ prompt: text, hasMultipleVideos: sourceCatalog.length > 1, sourceCatalog });
   if (!generated.operations?.length) throw new Error("I couldn’t safely apply that change to the current edit.");
-  return { plan: { ...clone(priorPlan), operations: [...priorPlan.operations, ...generated.operations] }, confirmation: "Applied that change to the current edit." };
+  return { plan: mergeSupportedFollowUp(priorPlan, generated.operations), confirmation: "Applied that change to the current edit." };
 }
 
 export function validateConversationPlan(plan, sourceCatalog) {

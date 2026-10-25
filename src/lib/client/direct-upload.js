@@ -395,11 +395,13 @@ export function isActiveJobStatus(status) { return ACTIVE_JOB_STATUSES.includes(
 export function isRecoverableJobStatus(status) { return isActiveJobStatus(status) || status === "completed"; }
 
 /** Terminal attempts are presented independently from retained Undo history. */
-export function terminalAttemptPresentation(job) {
+export function terminalAttemptPresentation(job, retainedResultUrl = null) {
   const cancelled = job?.status === "cancelled";
   return Object.freeze({
     status: "error",
-    resultUrl: null,
+    // A follow-up is an attempted new version, never a reason to hide a
+    // playable completed version that is already on screen.
+    resultUrl: typeof retainedResultUrl === "string" && retainedResultUrl ? retainedResultUrl : null,
     error: cancelled
       ? "This edit was cancelled."
       : job?.error || "We couldn’t complete that edit."

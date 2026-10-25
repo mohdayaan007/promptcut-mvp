@@ -130,14 +130,14 @@ export default function HomePage() {
   }, []);
 
   const showTerminalAttempt = useCallback((job) => {
-    const presentation = terminalAttemptPresentation(job);
+    const presentation = terminalAttemptPresentation(job, resultUrl);
     setActiveJob(null);
     setRestoredSources(job?.sources || []);
     setStatus(presentation.status);
     setResultUrl(presentation.resultUrl);
     setError(presentation.error);
     setUploadProgress(null);
-  }, []);
+  }, [resultUrl]);
 
   const beginPresentationAttempt = useCallback(({ keepResult = false } = {}) => {
     const nextAttempt = presentationAttemptRef.current + 1;
@@ -234,7 +234,8 @@ export default function HomePage() {
         if (!stopped && isCurrentPresentationAttempt(hydrationAttempt, presentationAttemptRef.current)) {
           setActiveJob(saved.active);
           setStatus("error");
-          setResultUrl(null);
+          // A transient status lookup failure must not discard the completed
+          // preview retained while a follow-up was in progress.
           setError("We couldn’t check that edit. Please try again.");
         }
       }
