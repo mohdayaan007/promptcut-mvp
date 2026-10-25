@@ -2,6 +2,7 @@ import { applyConversationTurn, validateConversationPlan } from "@/lib/editor-co
 import { createConversationJob, getAuthorizedSession, getSessionHistory } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
 import { signedDownloadUrl } from "@/lib/jobs/storage";
+import { hasFounderTestAccess } from "@/lib/founder-test-access";
 
 export const runtime = "nodejs";
 
@@ -18,6 +19,7 @@ async function historyResponse(session) {
 
 export async function GET(req, { params }) {
   try {
+    if (!hasFounderTestAccess(req)) throw new PublicRequestError("Editing session was not found", 404);
     const { id } = await params;
     const session = await getAuthorizedSession(id, token(req));
     if (!session) throw new PublicRequestError("Editing session was not found", 404);
@@ -27,6 +29,7 @@ export async function GET(req, { params }) {
 
 export async function POST(req, { params }) {
   try {
+    if (!hasFounderTestAccess(req)) throw new PublicRequestError("Editing session was not found", 404);
     const { id } = await params;
     const session = await getAuthorizedSession(id, token(req));
     if (!session) throw new PublicRequestError("Editing session was not found", 404);

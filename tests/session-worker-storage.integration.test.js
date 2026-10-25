@@ -5,17 +5,18 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { grantFounderTestAccess } from "../src/lib/founder-test-access.js";
 
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required for this integration test");
 if (!process.env.S3_TEST_ENDPOINT) throw new Error("S3_TEST_ENDPOINT is required for this integration test");
 const execFileAsync = promisify(execFile);
 const bucket = "cliponaut-test";
 
-function jsonRequest(url, body, token) {
-  return new Request(url, { method: "POST", headers: { "content-type": "application/json", ...(token ? { "x-cliponaut-job-token": token } : {}) }, body: JSON.stringify(body) });
+function jsonRequest(url, body, token, cookie) {
+  return new Request(url, { method: "POST", headers: { "content-type": "application/json", ...(token ? { "x-cliponaut-job-token": token } : {}), ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
 }
-function sessionRequest(url, body, token) {
-  return new Request(url, { method: "POST", headers: { "content-type": "application/json", "x-cliponaut-session-token": token }, body: JSON.stringify(body) });
+function sessionRequest(url, body, token, cookie) {
+  return new Request(url, { method: "POST", headers: { "content-type": "application/json", "x-cliponaut-session-token": token, cookie }, body: JSON.stringify(body) });
 }
 function waitForCompleted(getStatus, timeoutMs = 30_000) {
   return new Promise((resolve, reject) => {
@@ -53,8 +54,10 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     Object.assign(process.env, {
       STORAGE_BUCKET: bucket, STORAGE_ENDPOINT: process.env.S3_TEST_ENDPOINT,
       STORAGE_REGION: "us-east-1", STORAGE_ACCESS_KEY_ID: "S3RVER", STORAGE_SECRET_ACCESS_KEY: "S3RVER",
-      STORAGE_FORCE_PATH_STYLE: "true", JOB_SCRATCH_DIRECTORY: scratchDirectory, JOB_POLL_INTERVAL_MS: "100", JOB_WORKER_CONCURRENCY: "1"
+      STORAGE_FORCE_PATH_STYLE: "true", JOB_SCRATCH_DIRECTORY: scratchDirectory, JOB_POLL_INTERVAL_MS: "100", JOB_WORKER_CONCURRENCY: "1",
+      FOUNDER_CONVERSATIONAL_EDITING_ENABLED: "true", FOUNDER_TEST_ACCESS_SECRET: "founder-test-secret-that-is-long-enough-for-storage-worker-integration"
     });
+    const founderCookie = grantFounderTestAccess(process.env.FOUNDER_TEST_ACCESS_SECRET).split(";", 1)[0];
     const { CreateBucketCommand, S3Client } = await import("@aws-sdk/client-s3");
     await new S3Client({ endpoint: process.env.S3_TEST_ENDPOINT, region: "us-east-1", credentials: { accessKeyId: "S3RVER", secretAccessKey: "S3RVER" }, forcePathStyle: true }).send(new CreateBucketCommand({ Bucket: bucket }));
     await execFileAsync("ffmpeg", ["-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-t", "3", "-pix_fmt", "yuv420p", sourcePath]);
@@ -66,6 +69,22 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     const complete = await import("@/app/api/uploads/[id]/complete/route");
     const jobRoute = await import("@/app/api/jobs/[id]/route");
     const sessionRoute = await import("@/app/api/editing-sessions/[id]/route");
+
+    // The same deployed web code must leave ordinary customers on the existing
+    // one-shot editing path: their initial job queues normally but no editing
+    // session or session token is returned.
+    const ordinaryStarted = await uploads.POST(jsonRequest("http://localhost/api/uploads", { files: [{ name: "ordinary.mp4", size: source.length, type: "video/mp4" }] }));
+    assert.equal(ordinaryStarted.status, 201);
+    const ordinaryUpload = await ordinaryStarted.json();
+    const ordinaryParts = await parts.POST(jsonRequest(`http://localhost/api/uploads/${ordinaryUpload.id}/parts`, { fileIndex: 0, partNumbers: [1] }, ordinaryUpload.accessToken), { params: Promise.resolve({ id: ordinaryUpload.id }) });
+    const [{ url: ordinaryUrl }] = (await ordinaryParts.json()).parts;
+    const ordinaryPut = await fetch(ordinaryUrl, { method: "PUT", body: source });
+    const ordinaryCompletion = await complete.POST(jsonRequest(`http://localhost/api/uploads/${ordinaryUpload.id}/complete`, {
+      prompt: "Make this video black and white.", exportQuality: "standard",
+      files: [{ key: ordinaryUpload.uploads[0].key, uploadId: ordinaryUpload.uploads[0].uploadId, parts: [{ partNumber: 1, eTag: ordinaryPut.headers.get("etag") }] }]
+    }, ordinaryUpload.accessToken), { params: Promise.resolve({ id: ordinaryUpload.id }) });
+    assert.equal(ordinaryCompletion.status, 200);
+    assert.equal(Object.hasOwn(await ordinaryCompletion.json(), "session"), false, "ordinary uploads retain the original one-shot response shape");
 
     const started = await uploads.POST(jsonRequest("http://localhost/api/uploads", { files: [{ name: "source.mp4", size: source.length, type: "video/mp4" }] }));
     assert.equal(started.status, 201);
@@ -80,7 +99,7 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     const queuedResponse = await complete.POST(jsonRequest(`http://localhost/api/uploads/${upload.id}/complete`, {
       prompt: "Make this video black and white.", exportQuality: "standard",
       files: [{ key: upload.uploads[0].key, uploadId: upload.uploads[0].uploadId, parts: [{ partNumber: 1, eTag }] }]
-    }, upload.accessToken), { params: Promise.resolve({ id: upload.id }) });
+    }, upload.accessToken, founderCookie), { params: Promise.resolve({ id: upload.id }) });
     assert.equal(queuedResponse.status, 200);
     const queued = await queuedResponse.json();
     assert.ok(queued.session?.accessToken, "upload completion creates a private editing session");
@@ -94,7 +113,7 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     const firstOutput = Buffer.from(await firstDownload.arrayBuffer());
     assert.ok(firstOutput.length > 1_000);
 
-    const rejected = await sessionRoute.POST(sessionRequest(`http://localhost/api/editing-sessions/${queued.session.id}`, { prompt: "Make it amazing somehow", expectedVersion: 1 }, queued.session.accessToken), { params: Promise.resolve({ id: queued.session.id }) });
+    const rejected = await sessionRoute.POST(sessionRequest(`http://localhost/api/editing-sessions/${queued.session.id}`, { prompt: "Make it amazing somehow", expectedVersion: 1 }, queued.session.accessToken, founderCookie), { params: Promise.resolve({ id: queued.session.id }) });
     assert.equal(rejected.status, 422, "unsupported turn is rejected with an actionable client error without creating a version");
     assert.match((await rejected.json()).error, /couldn’t safely/i);
 
@@ -105,7 +124,7 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     // the fixture removes the source object. This models a storage failure
     // after acceptance without racing the worker's next poll.
     worker.kill("SIGSTOP");
-    const failingFollowup = await sessionRoute.POST(sessionRequest(`http://localhost/api/editing-sessions/${queued.session.id}`, { prompt: "Replace that with the cinematic style.", expectedVersion: 1 }, queued.session.accessToken), { params: Promise.resolve({ id: queued.session.id }) });
+    const failingFollowup = await sessionRoute.POST(sessionRequest(`http://localhost/api/editing-sessions/${queued.session.id}`, { prompt: "Replace that with the cinematic style.", expectedVersion: 1 }, queued.session.accessToken, founderCookie), { params: Promise.resolve({ id: queued.session.id }) });
     assert.equal(failingFollowup.status, 200);
     const failedSession = await failingFollowup.json();
     const { DeleteObjectCommand, PutObjectCommand } = await import("@aws-sdk/client-s3");
@@ -119,7 +138,7 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     assert.deepEqual(Buffer.from(await retainedFirst.arrayBuffer()), firstOutput, "the prior playable MP4 remains intact after failure");
     await testS3.send(new PutObjectCommand({ Bucket: bucket, Key: upload.uploads[0].key, Body: source, ContentType: "video/mp4" }));
 
-    const followup = await sessionRoute.POST(sessionRequest(`http://localhost/api/editing-sessions/${queued.session.id}`, { prompt: "Replace that with the cinematic style.", expectedVersion: failedSession.version }, queued.session.accessToken), { params: Promise.resolve({ id: queued.session.id }) });
+    const followup = await sessionRoute.POST(sessionRequest(`http://localhost/api/editing-sessions/${queued.session.id}`, { prompt: "Replace that with the cinematic style.", expectedVersion: failedSession.version }, queued.session.accessToken, founderCookie), { params: Promise.resolve({ id: queued.session.id }) });
     assert.equal(followup.status, 200);
     const secondSession = await followup.json();
     const second = await waitForCompleted(() => getJob({ id: secondSession.id, accessToken: secondSession.accessToken }));
@@ -129,7 +148,7 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     assert.ok(secondOutput.length > 1_000);
     assert.notDeepEqual(secondOutput.subarray(0, 512), firstOutput.subarray(0, 512), "follow-up is independently rendered");
 
-    const historyResponse = await sessionRoute.GET(new Request(`http://localhost/api/editing-sessions/${queued.session.id}`, { headers: { "x-cliponaut-session-token": queued.session.accessToken } }), { params: Promise.resolve({ id: queued.session.id }) });
+    const historyResponse = await sessionRoute.GET(new Request(`http://localhost/api/editing-sessions/${queued.session.id}`, { headers: { "x-cliponaut-session-token": queued.session.accessToken, cookie: founderCookie } }), { params: Promise.resolve({ id: queued.session.id }) });
     const history = await historyResponse.json();
     assert.equal(historyResponse.status, 200);
     assert.deepEqual(history.history.map((entry) => entry.status), ["completed", "failed", "completed"]);
