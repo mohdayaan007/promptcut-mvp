@@ -99,6 +99,12 @@ export default function HomePage() {
   const originalRevealScheduledRef = useRef(false);
   const turnIdRef = useRef(0);
   const presentationAttemptRef = useRef(0);
+  // Keep terminal handling stable while retaining the latest completed preview.
+  const resultUrlRef = useRef(null);
+
+  useEffect(() => {
+    resultUrlRef.current = resultUrl;
+  }, [resultUrl]);
 
   const hasWorkspace = Boolean(videos.length || referenceImage || activeJob || undoState?.current);
   const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
@@ -130,14 +136,14 @@ export default function HomePage() {
   }, []);
 
   const showTerminalAttempt = useCallback((job) => {
-    const presentation = terminalAttemptPresentation(job, resultUrl);
+    const presentation = terminalAttemptPresentation(job, resultUrlRef.current);
     setActiveJob(null);
     setRestoredSources(job?.sources || []);
     setStatus(presentation.status);
     setResultUrl(presentation.resultUrl);
     setError(presentation.error);
     setUploadProgress(null);
-  }, [resultUrl]);
+  }, []);
 
   const beginPresentationAttempt = useCallback(({ keepResult = false } = {}) => {
     const nextAttempt = presentationAttemptRef.current + 1;
