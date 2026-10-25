@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyConversationTurn, trimOutputStart } from "../src/lib/editor-core/conversation-state.js";
+import { applyConversationTurn, trimOutputStart, validateConversationPlan } from "../src/lib/editor-core/conversation-state.js";
 
 const catalog = [{ sourceId: "source-1", index: 0, ordinal: 1, filename: "talking.mp4", duration: 60, width: 1280, height: 720, hasAudio: true }];
 const base = { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 20, end: 50 }] }] };
@@ -34,4 +34,21 @@ test("unsafe conversational ambiguity does not create a changed plan", () => {
 test("output-relative trim refuses a prior speed change rather than guessing source timing", () => {
   const withSpeed = { ...base, operations: [...base.operations, { type: "speed", factor: 2 }] };
   assert.throws(() => applyConversationTurn({ priorPlan: withSpeed, prompt: "Trim the first five seconds", sourceCatalog: catalog }), /speed change is not supported/i);
+});
+
+test("open-ended conversation retains cumulative timing and one active style across 25 turns", () => {
+  let plan = { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 10, end: 60 }] }] };
+  const turns = Array.from({ length: 25 }, (_, index) => {
+    if (index % 5 === 0) return "Bring it back to normal.";
+    if (index % 3 === 0) return "Replace that with the cinematic style.";
+    if (index % 3 === 1) return "Also add black and white.";
+    return "Trim the first one second.";
+  });
+  for (const prompt of turns) {
+    plan = applyConversationTurn({ priorPlan: plan, prompt, sourceCatalog: catalog }).plan;
+    assert.doesNotThrow(() => validateConversationPlan(plan, catalog));
+    assert.ok(plan.operations.filter((operation) => operation.type === "color_grade").length <= 1);
+  }
+  const sequence = plan.operations.find((operation) => operation.type === "sequence");
+  assert.deepEqual(sequence.clips, [{ sourceId: "source-1", start: 16, end: 60 }]);
 });

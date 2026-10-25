@@ -12,6 +12,7 @@
     "test:jobs": "tsx --test tests/jobs.test.js",
     "test:conversation": "tsx --test tests/conversation-state.test.js",
     "test:conversation-e2e": "tsx --test tests/conversation-e2e.test.js",
+    "test:session-integration": "tsx --test tests/session-postgres.integration.test.js",
     "lint": "eslint"
   },
   "dependencies": {
