@@ -66,12 +66,20 @@ function normalizeUndoState(value) {
     return { state: { ...emptyUndoState(), active: { id: value.id, accessToken: value.accessToken } }, migrated: true };
   }
   if (!value || value.version !== UNDO_STATE_VERSION) return { state: emptyUndoState(), migrated: false };
+  const current = safeSuccessfulState(value.current);
+  const candidatePrevious = safeSuccessfulState(value.previous);
+  // Earlier clients could persist the duplicate-completion defect. The true
+  // preceding job is not reconstructable from a private job token, so fail
+  // closed instead of offering an Undo action that restores the same output.
+  const previous = current?.kind === "job" && candidatePrevious?.kind === "job" && current.session.id === candidatePrevious.session.id
+    ? null
+    : candidatePrevious;
   return {
     state: {
       version: UNDO_STATE_VERSION,
       active: validSession(value.active) ? withPrompt({ id: value.active.id, accessToken: value.active.accessToken }, value.active.prompt) : null,
-      current: safeSuccessfulState(value.current),
-      previous: safeSuccessfulState(value.previous),
+      current,
+      previous,
       terminal: safeTerminalState(value.terminal)
     },
     migrated: false
@@ -108,6 +116,16 @@ export function discardUndoActiveJob(state) {
 
 export function promoteSuccessfulJob(state, session, sources, prompt) {
   const normalized = normalizeUndoState(state).state;
+  if (!validSession(session)) return normalized;
+  const currentJobId = normalized.current?.kind === "job" ? normalized.current.session.id : null;
+  // A polling interval can observe the terminal response more than once while
+  // React commits the first completion. Never turn a completed job into its
+  // own Undo target. Likewise, an old poll is not allowed to replace a newer
+  // successful presentation once its active job has changed or cleared.
+  if (currentJobId === session.id) {
+    return { ...normalized, active: normalized.active?.id === session.id ? null : normalized.active, terminal: null };
+  }
+  if (!normalized.active || normalized.active.id !== session.id) return normalized;
   const nextCurrent = withPrompt({ kind: "job", session: { id: session.id, accessToken: session.accessToken }, sources: safeSources(sources) }, prompt ?? normalized.active?.prompt);
   return {
     version: UNDO_STATE_VERSION,

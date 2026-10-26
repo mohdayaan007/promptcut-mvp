@@ -2837,6 +2837,51 @@ test("single-step Undo only invalidates a previous job after a confirmed unavail
   assert.deepEqual(retry.state, state, "temporary or unexpected retrieval results retain the previous undo target");
 });
 
+test("refresh, rejected follow-up, and repeated completion polling retain the distinct prior Undo job", () => {
+  const sources = [{ index: 0, name: "fixture.mp4", type: "video/mp4", size: 20 }];
+  const cinematic = { id: "cinematic-job", accessToken: "cinematic-token" };
+  const normal = { id: "normal-job", accessToken: "normal-token" };
+
+  let state = promoteSuccessfulJob(setUndoActiveJob(emptyUndoState(), cinematic, "Replace that with the cinematic style."), cinematic, sources);
+  state = promoteSuccessfulJob(setUndoActiveJob(state, normal, "Bring it back to normal."), normal, sources);
+  assert.equal(state.current.session.id, normal.id);
+  assert.equal(state.previous.session.id, cinematic.id);
+
+  // This models the duplicate terminal poll that occurred around completion.
+  state = promoteSuccessfulJob(state, normal, sources);
+  assert.equal(state.current.session.id, normal.id);
+  assert.equal(state.previous.session.id, cinematic.id, "same-job completion must not become its own Undo target");
+
+  // Refresh serializes this exact state; an unsupported request only clears an
+  // active attempt and must not alter either successful identity.
+  const storage = new Map();
+  const hydrated = loadUndoState({ getItem: (key) => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) });
+  assert.equal(hydrated.current, null, "empty storage does not invent state");
+  const persisted = saveUndoState(state, { getItem: () => null, setItem: (key, value) => storage.set(key, value) });
+  const refreshed = loadUndoState({ getItem: (key) => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) });
+  assert.deepEqual(refreshed, persisted);
+  const rejected = discardUndoActiveJob(setUndoActiveJob(refreshed, { id: "rejected-job", accessToken: "rejected-token" }, "Replace the background with a beach."));
+  assert.equal(rejected.current.session.id, normal.id);
+  assert.equal(rejected.previous.session.id, cinematic.id);
+
+  const restored = resolveUndoRestoration(rejected, { status: "completed", outputUrl: "https://signed.example/cinematic.mp4" });
+  assert.equal(restored.outcome, "restored");
+  assert.equal(restored.state.current.session.id, cinematic.id, "Undo restores the preceding cinematic job identity");
+  assert.notEqual(restored.state.current.session.id, normal.id);
+  assert.equal(restored.state.previous, null);
+
+  const stale = promoteSuccessfulJob(restored.state, normal, sources);
+  assert.equal(stale.current.session.id, cinematic.id, "a late normal poll cannot overwrite the restored cinematic output");
+
+  // A browser already affected by the old defect cannot safely recover the
+  // missing cinematic token from local storage. It must fail closed rather
+  // than claim that undo restored a distinct version.
+  const corruptedStorage = new Map([["cliponaut-active-job", JSON.stringify({ ...state, previous: state.current })]]);
+  const corrupted = loadUndoState({ getItem: (key) => corruptedStorage.get(key) || null, setItem: () => {} });
+  assert.equal(corrupted.current.session.id, normal.id);
+  assert.equal(corrupted.previous, null, "corrupt same-job Undo history is disabled rather than restoring the current output");
+});
+
 test("terminal attempts retain a completed preview without consuming Undo history", () => {
   const sessionA = { id: "job-a", accessToken: "token-a" };
   const sessionB = { id: "job-b", accessToken: "token-b" };
