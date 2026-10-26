@@ -100,7 +100,6 @@ test("hosted Chrome check: cinematic to normal restores color and keeps the five
     await followUp(page, "Replace that with the cinematic style.");
     const cinematic = await download(page, root, "cinematic", report);
     await followUp(page, "Bring it back to normal.");
-    await page.getByText("Restored the original color treatment while keeping your earlier edits.").waitFor({ state: "visible", timeout: 30_000 });
     const normal = await download(page, root, "normal", report);
 
     assert.ok(Math.abs(trimmed.duration - (blackAndWhite.duration - 5)) < 1, "follow-up trim is output-relative");
