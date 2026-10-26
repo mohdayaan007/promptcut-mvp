@@ -16,6 +16,7 @@
     "test:session-integration": "tsx --test tests/session-postgres.integration.test.js",
     "test:session-worker-storage": "tsx --test tests/session-worker-storage.integration.test.js",
     "test:browser-phase4": "tsx --test tests/browser-phase4.acceptance.test.js",
+    "test:hosted-phase4": "tsx --test tests/hosted-phase4.acceptance.test.js",
     "lint": "eslint"
   },
   "dependencies": {
