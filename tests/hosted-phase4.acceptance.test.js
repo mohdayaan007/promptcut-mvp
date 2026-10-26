@@ -13,6 +13,7 @@ const sourceVideo = process.env.PHASE4_HOSTED_VIDEO;
 const reportPath = path.resolve(process.env.PHASE4_HOSTED_REPORT_PATH || path.join(os.tmpdir(), "cliponaut-phase4-hosted-report.json"));
 const reviewDirectory = process.env.PHASE4_HOSTED_REVIEW_DIR ? path.resolve(process.env.PHASE4_HOSTED_REVIEW_DIR) : null;
 const reviewRunPrefix = `phase4-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+const hostedBrowser = process.env.PHASE4_HOSTED_BROWSER || "chrome";
 
 function safeFailure(error) {
   // Never put a signed URL, cookie, access code, session token, or media path in
@@ -35,6 +36,36 @@ function watchBrowserMedia(page, report) {
     const seen = report.diagnostics.browserMedia;
     if (!seen.some((entry) => entry.hostname === sample.hostname && entry.status === sample.status && entry.mimeType === sample.mimeType)) seen.push(sample);
   });
+}
+
+function watchSessionTraffic(page, report) {
+  page.on("request", (request) => {
+    let pathname = "";
+    try { pathname = new URL(request.url()).pathname; } catch { return; }
+    if (request.method() === "POST" && pathname.startsWith("/api/editing-sessions/")) report.diagnostics.sessionApi.push({ kind: "follow-up submitted" });
+  });
+  page.on("response", (response) => {
+    let pathname = "";
+    try { pathname = new URL(response.url()).pathname; } catch { return; }
+    if (response.request().method() === "POST" && pathname.startsWith("/api/editing-sessions/")) report.diagnostics.sessionApi.push({ kind: "follow-up response", status: response.status() });
+    if (response.request().method() === "GET" && pathname.startsWith("/api/jobs/")) report.diagnostics.jobPolls.push({ status: response.status() });
+  });
+}
+
+function sanitizeVisibleText(value) {
+  return String(value || "")
+    .replace(/https?:\/\/\S+/gi, "[url]")
+    .replace(/\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b/gi, "[id]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240) || null;
+}
+
+async function visibleTerminalState(page) {
+  const error = page.locator(".cliponaut-preview-retained-error");
+  const errorText = await error.isVisible().then((visible) => visible ? error.textContent() : null);
+  const assistantMessages = await page.locator(".cliponaut-conversation-message.is-assistant p").allTextContents();
+  return { errorMessage: sanitizeVisibleText(errorText), latestAssistantMessage: sanitizeVisibleText(assistantMessages.at(-1)) };
 }
 
 async function probeMp4(file) {
@@ -169,6 +200,30 @@ async function submitTurn(page, prompt) {
   await page.getByRole("button", { name: "Generate" }).click();
 }
 
+async function submitFollowUpAndWaitForTerminal(page, prompt, report, previousHref) {
+  const sessionStart = report.diagnostics.sessionApi.length;
+  const jobPollStart = report.diagnostics.jobPolls.length;
+  const responsePromise = page.waitForResponse((response) => {
+    try {
+      const pathname = new URL(response.url()).pathname;
+      return response.request().method() === "POST" && pathname.startsWith("/api/editing-sessions/");
+    } catch { return false; }
+  }, { timeout: 30_000 }).catch(() => null);
+  await submitTurn(page, prompt);
+  const response = await responsePromise;
+  if (!response) return { terminal: "not submitted", sessionEvents: report.diagnostics.sessionApi.slice(sessionStart), jobPollObserved: false, ui: await visibleTerminalState(page) };
+
+  const sessionStatus = response.status();
+  if (sessionStatus >= 400) return { terminal: "rejected", sessionStatus, sessionEvents: report.diagnostics.sessionApi.slice(sessionStart), jobPollObserved: false, ui: await visibleTerminalState(page) };
+  const terminal = await page.waitForFunction((oldHref) => {
+    const error = document.querySelector(".cliponaut-preview-retained-error");
+    if (error && error.textContent?.trim()) return "error";
+    const download = document.querySelector("a.cliponaut-download-button");
+    return download?.href && download.href !== oldHref ? "completed" : false;
+  }, previousHref, { timeout: 180_000 }).catch(() => "timed out");
+  return { terminal, sessionStatus, sessionEvents: report.diagnostics.sessionApi.slice(sessionStart), jobPollObserved: report.diagnostics.jobPolls.length > jobPollStart, ui: await visibleTerminalState(page) };
+}
+
 async function downloadAndProbe(page, scratchDirectory, label, report, { retainForReview = false } = {}) {
   const href = await page.getByRole("link", { name: "Download MP4" }).getAttribute("href");
   assert.ok(href && href.startsWith("https://"), "download uses an HTTPS signed URL");
@@ -196,7 +251,7 @@ test("hosted Phase 4 founder acceptance against cliponaut.com", { timeout: 12 * 
   await mkdir(path.dirname(reportPath), { recursive: true });
   if (reviewDirectory) await mkdir(reviewDirectory, { recursive: true });
 
-  const report = { suite: "hosted-phase4", target: PRODUCTION_URL, generatedAt: new Date().toISOString(), checks: [], diagnostics: { downloads: [], browserMedia: [], previews: [] } };
+  const report = { suite: "hosted-phase4", target: PRODUCTION_URL, generatedAt: new Date().toISOString(), checks: [], diagnostics: { downloads: [], browserMedia: [], previews: [], sessionApi: [], jobPolls: [] } };
   const scratch = await mkdtemp(path.join(os.tmpdir(), "cliponaut-hosted-phase4-"));
   let browser;
   let desktop;
@@ -207,10 +262,15 @@ test("hosted Phase 4 founder acceptance against cliponaut.com", { timeout: 12 * 
 
     // Deliberately headed: the only human step is entering the founder access
     // code in this browser. It is never read by this runner or written to disk.
-    browser = await chromium.launch({ headless: false });
+    // Google Chrome is the official hosted acceptance browser after the local
+    // media comparison. It includes licensed H.264/AAC support that Playwright's
+    // bundled Chromium may not provide on every platform.
+    assert.ok(["chrome", "chromium"].includes(hostedBrowser), "PHASE4_HOSTED_BROWSER must be chrome or chromium");
+    browser = await chromium.launch(hostedBrowser === "chrome" ? { channel: "chrome", headless: false } : { headless: false });
     desktop = await browser.newContext({ viewport: { width: 1440, height: 960 }, acceptDownloads: true });
     const page = await desktop.newPage();
     watchBrowserMedia(page, report);
+    watchSessionTraffic(page, report);
 
     await page.goto(`${PRODUCTION_URL}/founder-test`, { waitUntil: "domcontentloaded", timeout: 60_000 });
     await page.getByLabel("Access code").waitFor({ state: "visible", timeout: 30_000 });
@@ -262,8 +322,10 @@ test("hosted Phase 4 founder acceptance against cliponaut.com", { timeout: 12 * 
     assert.ok(Math.abs(cinematicOutput.duration - trimOutput.duration) < 0.75, "cinematic replacement retains trims");
     result(report, "Cinematic style replacement", "PASS", { durationSeconds: Number(cinematicOutput.duration.toFixed(3)) });
 
-    await submitTurn(page, "Bring it back to normal.");
-    await page.getByText("Restored the original color treatment while keeping your earlier edits.").waitFor({ state: "visible", timeout: 180_000 });
+    const preNormalHref = await page.getByRole("link", { name: "Download MP4" }).getAttribute("href");
+    const normalTurn = await submitFollowUpAndWaitForTerminal(page, "Bring it back to normal.", report, preNormalHref);
+    result(report, "Normal prompt submission", normalTurn.terminal === "completed" ? "PASS" : "FAIL", { terminal: normalTurn.terminal, sessionStatus: normalTurn.sessionStatus || null, jobPollObserved: normalTurn.jobPollObserved, latestAssistantMessage: normalTurn.ui.latestAssistantMessage, errorMessage: normalTurn.ui.errorMessage });
+    assert.equal(normalTurn.terminal, "completed", "normal follow-up creates and completes a new output");
     await waitForCompletedOutput(page);
     const normalOutput = await downloadAndProbe(page, scratch, "normal", report, { retainForReview: true });
     recordPreview(report, "Normal", await inspectPreviewPlayback(page));

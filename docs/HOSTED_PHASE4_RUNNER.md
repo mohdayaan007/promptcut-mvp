@@ -31,6 +31,19 @@ PHASE4_HOSTED_REPORT_PATH="$HOME/Desktop/cliponaut-hosted-phase4-report.json" \
 npm run test:hosted-phase4
 ```
 
+Before another hosted render, compare the already retained review MP4s locally:
+
+```bash
+PHASE4_HOSTED_REVIEW_DIR="$HOME/Desktop/cliponaut-phase4-review" \
+PHASE4_HOSTED_MEDIA_REPORT_PATH="$HOME/Desktop/cliponaut-hosted-phase4-media-report.json" \
+npm run test:hosted-phase4-media
+```
+
+This command makes no network request and creates no render. It checks the
+same local MP4s in Playwright's bundled Chromium and installed stable Google
+Chrome. The hosted suite defaults to `channel: "chrome"`; use
+`PHASE4_HOSTED_BROWSER=chromium` only to reproduce a bundled-browser issue.
+
 To retain the five final-state review MP4s locally (selection, trim,
 black-and-white, cinematic, and normal), add a folder you control:
 
