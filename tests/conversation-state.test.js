@@ -18,6 +18,16 @@ test("five-turn conversation keeps the selected source segment and replaces styl
   assert.deepEqual(normal.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 25, end: 50 }] }]);
 });
 
+test("normal restoration accepts the supported contextual wording and preserves non-style edits", () => {
+  const cinematic = applyConversationTurn({
+    priorPlan: { ...base, operations: [...base.operations, { type: "color_grade", style: "cinematic" }] },
+    prompt: "Please bring it back to normal.",
+    sourceCatalog: catalog
+  });
+  assert.equal(cinematic.confirmation, "Restored the original color treatment while keeping your earlier edits.");
+  assert.deepEqual(cinematic.plan.operations, base.operations);
+});
+
 test("output-relative trim crosses clip boundaries without modifying originals", () => {
   const plan = { version: "2", operations: [{ type: "sequence", clips: [
     { sourceId: "source-1", start: 0, end: 3 }, { sourceId: "source-1", start: 10, end: 20 }

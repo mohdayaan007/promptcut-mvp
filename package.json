@@ -17,6 +17,7 @@
     "test:session-worker-storage": "tsx --test tests/session-worker-storage.integration.test.js",
     "test:browser-phase4": "tsx --test tests/browser-phase4.acceptance.test.js",
     "test:hosted-phase4": "tsx --test tests/hosted-phase4.acceptance.test.js",
+    "test:hosted-phase4-normal": "tsx --test tests/hosted-phase4-normal.acceptance.test.js",
     "test:hosted-phase4-media": "tsx --test tests/hosted-phase4-media-playback.test.js",
     "lint": "eslint"
   },

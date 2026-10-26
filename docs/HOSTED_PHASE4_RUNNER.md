@@ -48,6 +48,28 @@ Its report separates browser launch, navigation, local HTTP/range, metadata,
 and playback failures without recording private paths. The hosted suite defaults to `channel: "chrome"`; use
 `PHASE4_HOSTED_BROWSER=chromium` only to reproduce a bundled-browser issue.
 
+## Minimal cinematic → normal verification
+
+After the Ahmed journey has already reached the cinematic turn, use this
+separate bounded check for the remaining normal-restoration gate. It uses the
+tracked small `public/demo.mp4` fixture (not the Ahmed source), opens stable
+Google Chrome, and performs four small renders: black-and-white seed,
+output-relative five-second trim, cinematic replacement, and normal
+restoration. It validates the downloaded MP4 containers and compares decoded
+opening/ending video and audio against the original at the expected five-second
+offset. The report contains no URLs, credentials, cookies, identifiers, or
+local paths; downloaded outputs are deleted after the check.
+
+```bash
+PHASE4_HOSTED_NORMAL_VERIFY=1 \
+PHASE4_HOSTED_NORMAL_REPORT_PATH="$HOME/Desktop/cliponaut-phase4-normal-report.json" \
+npm run test:hosted-phase4-normal
+```
+
+The command is skipped unless `PHASE4_HOSTED_NORMAL_VERIFY=1` is set, avoiding
+an accidental hosted render in ordinary test runs. Set
+`PHASE4_HOSTED_NORMAL_VIDEO` only to use another small local fixture.
+
 To retain the five final-state review MP4s locally (selection, trim,
 black-and-white, cinematic, and normal), add a folder you control:
 
