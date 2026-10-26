@@ -15,6 +15,7 @@
     "test:founder-access": "tsx --test tests/founder-test-access.test.js",
     "test:session-integration": "tsx --test tests/session-postgres.integration.test.js",
     "test:session-worker-storage": "tsx --test tests/session-worker-storage.integration.test.js",
+    "test:browser-phase4": "tsx --test tests/browser-phase4.acceptance.test.js",
     "lint": "eslint"
   },
   "dependencies": {
@@ -30,6 +31,7 @@
     "react-dom": "19.2.3"
   },
   "devDependencies": {
+    "@playwright/test": "1.51.1",
     "@tailwindcss/postcss": "^4",
     "@types/react": "19.3.0",
     "eslint": "^9",
