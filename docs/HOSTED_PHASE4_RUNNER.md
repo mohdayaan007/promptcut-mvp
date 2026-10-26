@@ -49,6 +49,12 @@ FFprobe/FFmpeg validation and deleted at completion unless
 outputs remain in the supplied local folder; the Undo-only verification output
 is still deleted.
 
+The report also contains sanitized preview diagnostics: HTML media ready/network
+state, media error code, observed metadata/error/stalled events, and only the
+signed-media hostname, HTTP status, and MIME type. A valid downloadable MP4
+does not mark a failed browser preview as passing; preview failures are recorded
+separately and the suite continues with the remaining safe checks.
+
 ## Coverage
 
 The runner uses the real Ahmed video to exercise upload, spoken-selection

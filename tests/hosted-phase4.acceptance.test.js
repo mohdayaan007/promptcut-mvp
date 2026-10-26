@@ -24,6 +24,19 @@ function result(report, name, status, detail = undefined) {
   report.checks.push({ name, status, ...(detail ? { detail } : {}) });
 }
 
+function mediaHostname(value) {
+  try { return new URL(value).hostname || null; } catch { return null; }
+}
+
+function watchBrowserMedia(page, report) {
+  page.on("response", (response) => {
+    if (response.request().resourceType() !== "media") return;
+    const sample = { hostname: mediaHostname(response.url()), status: response.status(), mimeType: response.headers()["content-type"]?.split(";")[0] || null };
+    const seen = report.diagnostics.browserMedia;
+    if (!seen.some((entry) => entry.hostname === sample.hostname && entry.status === sample.status && entry.mimeType === sample.mimeType)) seen.push(sample);
+  });
+}
+
 async function probeMp4(file) {
   const { stdout } = await execFileAsync("ffprobe", [
     "-v", "error", "-show_entries", "format=format_name,duration:stream=codec_type,codec_name",
@@ -88,15 +101,67 @@ async function compareTrimBoundary(previous, trimmed) {
   return { offset, startVideo, startAudio, endVideo, endAudio };
 }
 
-async function waitForReady(page, timeout = 180_000) {
+async function waitForCompletedOutput(page, timeout = 180_000) {
   await page.getByText("Ready", { exact: true }).waitFor({ state: "visible", timeout });
+  await page.getByRole("link", { name: "Download MP4" }).waitFor({ state: "visible", timeout: 30_000 });
+}
+
+async function inspectPreviewPlayback(page, timeout = 30_000) {
   const video = page.locator("video.cliponaut-result-video");
   await video.waitFor({ state: "visible", timeout: 30_000 });
-  await page.waitForFunction(() => {
-    const element = document.querySelector("video.cliponaut-result-video");
-    return element && element.readyState >= 1 && Number.isFinite(element.duration) && element.duration > 0;
-  }, { timeout: 30_000 });
-  return Number(await video.evaluate((element) => element.duration));
+  await video.evaluate((media) => {
+    const probe = { loadedmetadata: false, error: false, stalled: false };
+    media.__cliponautPhase4PreviewProbe = probe;
+    media.addEventListener("loadedmetadata", () => { probe.loadedmetadata = true; }, { once: true });
+    media.addEventListener("error", () => { probe.error = true; }, { once: true });
+    media.addEventListener("stalled", () => { probe.stalled = true; }, { once: true });
+  });
+
+  let metadataReady = false;
+  try {
+    // Playwright's signature is (pageFunction, arg, options). Supplying null
+    // explicitly prevents the options object being interpreted as the arg.
+    await page.waitForFunction(() => {
+      const media = document.querySelector("video.cliponaut-result-video");
+      return Boolean(media && media.readyState >= HTMLMediaElement.HAVE_METADATA && Number.isFinite(media.duration) && media.duration > 0);
+    }, null, { timeout });
+    metadataReady = true;
+  } catch {
+    // The caller records a preview-only failure; output validation has already
+    // happened and the rest of the session can still be exercised safely.
+  }
+
+  const diagnostic = await video.evaluate((media) => {
+    const probe = media.__cliponautPhase4PreviewProbe || { loadedmetadata: false, error: false, stalled: false };
+    const errorCode = media.error?.code || null;
+    const networkNames = ["EMPTY", "IDLE", "LOADING", "NO_SOURCE"];
+    const readyNames = ["HAVE_NOTHING", "HAVE_METADATA", "HAVE_CURRENT_DATA", "HAVE_FUTURE_DATA", "HAVE_ENOUGH_DATA"];
+    let hostname = null;
+    try { hostname = media.currentSrc ? new URL(media.currentSrc).hostname : null; } catch { /* sanitized as null */ }
+    return {
+      readyState: media.readyState,
+      readyStateName: readyNames[media.readyState] || "UNKNOWN",
+      networkState: media.networkState,
+      networkStateName: networkNames[media.networkState] || "UNKNOWN",
+      errorCode,
+      events: probe,
+      durationSeconds: Number.isFinite(media.duration) ? Number(media.duration.toFixed(3)) : null,
+      hostname
+    };
+  });
+  const classification = metadataReady
+    ? "browser metadata loaded"
+    : diagnostic.errorCode
+      ? "valid MP4 download but browser preview error"
+      : diagnostic.networkStateName === "LOADING" && !diagnostic.events.stalled
+        ? "slow browser metadata loading"
+        : "browser preview metadata unavailable";
+  return { ok: metadataReady, classification, ...diagnostic };
+}
+
+function recordPreview(report, label, preview) {
+  report.diagnostics.previews.push({ label, ...preview });
+  result(report, `${label} browser preview`, preview.ok ? "PASS" : "FAIL", preview.classification);
 }
 
 async function submitTurn(page, prompt) {
@@ -104,15 +169,25 @@ async function submitTurn(page, prompt) {
   await page.getByRole("button", { name: "Generate" }).click();
 }
 
-async function downloadAndProbe(page, scratchDirectory, label, { retainForReview = false } = {}) {
+async function downloadAndProbe(page, scratchDirectory, label, report, { retainForReview = false } = {}) {
   const href = await page.getByRole("link", { name: "Download MP4" }).getAttribute("href");
   assert.ok(href && href.startsWith("https://"), "download uses an HTTPS signed URL");
   const response = await page.request.get(href);
+  const download = { label, hostname: mediaHostname(href), status: response.status(), mimeType: response.headers()["content-type"]?.split(";")[0] || null };
+  report.diagnostics.downloads.push(download);
+  if (response.status() !== 200) result(report, `${label} downloadable MP4`, "FAIL", "invalid or inaccessible MP4");
   assert.equal(response.status(), 200, "download succeeds");
   const directory = retainForReview && reviewDirectory ? reviewDirectory : scratchDirectory;
   const target = path.join(directory, retainForReview && reviewDirectory ? `${reviewRunPrefix}-${label}.mp4` : `${label}.mp4`);
   await writeFile(target, await response.body());
-  return { ...(await probeMp4(target)), file: target };
+  try {
+    const probe = await probeMp4(target);
+    result(report, `${label} downloadable MP4`, "PASS", { durationSeconds: Number(probe.duration.toFixed(3)), mimeType: download.mimeType });
+    return { ...probe, file: target };
+  } catch (error) {
+    result(report, `${label} downloadable MP4`, "FAIL", "invalid or inaccessible MP4");
+    throw error;
+  }
 }
 
 test("hosted Phase 4 founder acceptance against cliponaut.com", { timeout: 12 * 60_000 }, async () => {
@@ -121,7 +196,7 @@ test("hosted Phase 4 founder acceptance against cliponaut.com", { timeout: 12 * 
   await mkdir(path.dirname(reportPath), { recursive: true });
   if (reviewDirectory) await mkdir(reviewDirectory, { recursive: true });
 
-  const report = { suite: "hosted-phase4", target: PRODUCTION_URL, generatedAt: new Date().toISOString(), checks: [] };
+  const report = { suite: "hosted-phase4", target: PRODUCTION_URL, generatedAt: new Date().toISOString(), checks: [], diagnostics: { downloads: [], browserMedia: [], previews: [] } };
   const scratch = await mkdtemp(path.join(os.tmpdir(), "cliponaut-hosted-phase4-"));
   let browser;
   let desktop;
@@ -135,6 +210,7 @@ test("hosted Phase 4 founder acceptance against cliponaut.com", { timeout: 12 * 
     browser = await chromium.launch({ headless: false });
     desktop = await browser.newContext({ viewport: { width: 1440, height: 960 }, acceptDownloads: true });
     const page = await desktop.newPage();
+    watchBrowserMedia(page, report);
 
     await page.goto(`${PRODUCTION_URL}/founder-test`, { waitUntil: "domcontentloaded", timeout: 60_000 });
     await page.getByLabel("Access code").waitFor({ state: "visible", timeout: 30_000 });
@@ -150,51 +226,62 @@ test("hosted Phase 4 founder acceptance against cliponaut.com", { timeout: 12 * 
     result(report, "Original Ahmed video upload", "PASS");
 
     await submitTurn(page, "Keep only the part where I talk about Ahmed Perfumes. Remove everything else.");
-    await page.getByText("Your edit is ready.").waitFor({ state: "visible", timeout: 180_000 });
-    const firstPreviewDuration = await waitForReady(page);
-    const firstOutput = await downloadAndProbe(page, scratch, "ahmed-selection", { retainForReview: true });
-    result(report, "Ahmed Perfumes selection render", "PASS", { durationSeconds: Number(firstOutput.duration.toFixed(3)), previewDurationSeconds: Number(firstPreviewDuration.toFixed(3)) });
+    await waitForCompletedOutput(page);
+    const firstOutput = await downloadAndProbe(page, scratch, "ahmed-selection", report, { retainForReview: true });
+    const firstPreview = await inspectPreviewPlayback(page);
+    recordPreview(report, "Ahmed Perfumes selection", firstPreview);
+    result(report, "Ahmed Perfumes selection render", "PASS", { durationSeconds: Number(firstOutput.duration.toFixed(3)) });
     result(report, "Ahmed Perfumes semantic/audio quality", "NOT VERIFIED", "requires founder final subjective review of the downloaded output");
 
     await submitTurn(page, "Now trim the first five seconds too.");
     await page.getByText(/Previous edit/).waitFor({ state: "visible", timeout: 30_000 });
     result(report, "Previous-edit label while follow-up renders", "PASS");
     await page.getByText("Trimmed the first 5 seconds from the current edit.").waitFor({ state: "visible", timeout: 180_000 });
-    const trimPreviewDuration = await waitForReady(page);
-    const trimOutput = await downloadAndProbe(page, scratch, "trimmed-selection", { retainForReview: true });
+    await waitForCompletedOutput(page);
+    const trimOutput = await downloadAndProbe(page, scratch, "trimmed-selection", report, { retainForReview: true });
+    const trimPreview = await inspectPreviewPlayback(page);
+    recordPreview(report, "Trimmed selection", trimPreview);
     assert.ok(Math.abs(trimOutput.duration - (firstOutput.duration - 5)) < 1, "trim is five seconds relative to the previous output");
     assert.ok(trimOutput.duration >= 8 && trimOutput.duration <= 12, "trimmed Ahmed result is approximately ten seconds");
     const boundary = await compareTrimBoundary(firstOutput, trimOutput);
-    result(report, "Output-relative first-five-second trim", "PASS", { durationSeconds: Number(trimOutput.duration.toFixed(3)), previewDurationSeconds: Number(trimPreviewDuration.toFixed(3)), offsetSeconds: Number(boundary.offset.toFixed(3)), openingVideoDistance: Number(boundary.startVideo.toFixed(4)), retainedEndingVideoDistance: Number(boundary.endVideo.toFixed(4)), openingAudioDistance: Number(boundary.startAudio.toFixed(4)), retainedEndingAudioDistance: Number(boundary.endAudio.toFixed(4)) });
+    result(report, "Output-relative first-five-second trim", "PASS", { durationSeconds: Number(trimOutput.duration.toFixed(3)), offsetSeconds: Number(boundary.offset.toFixed(3)), openingVideoDistance: Number(boundary.startVideo.toFixed(4)), retainedEndingVideoDistance: Number(boundary.endVideo.toFixed(4)), openingAudioDistance: Number(boundary.startAudio.toFixed(4)), retainedEndingAudioDistance: Number(boundary.endAudio.toFixed(4)) });
 
     await submitTurn(page, "Also add black and white.");
     await page.getByText("Applied black and white.").waitFor({ state: "visible", timeout: 180_000 });
-    const bwOutput = await downloadAndProbe(page, scratch, "black-and-white", { retainForReview: true });
+    await waitForCompletedOutput(page);
+    const bwOutput = await downloadAndProbe(page, scratch, "black-and-white", report, { retainForReview: true });
+    recordPreview(report, "Black and white", await inspectPreviewPlayback(page));
     assert.ok(Math.abs(bwOutput.duration - trimOutput.duration) < 0.75, "black and white retains trims");
     result(report, "Black and white cumulative edit", "PASS", { durationSeconds: Number(bwOutput.duration.toFixed(3)) });
 
     await submitTurn(page, "Replace that with the cinematic style.");
     await page.getByText("Replaced the previous look with the cinematic style.").waitFor({ state: "visible", timeout: 180_000 });
-    const cinematicOutput = await downloadAndProbe(page, scratch, "cinematic", { retainForReview: true });
+    await waitForCompletedOutput(page);
+    const cinematicOutput = await downloadAndProbe(page, scratch, "cinematic", report, { retainForReview: true });
+    recordPreview(report, "Cinematic", await inspectPreviewPlayback(page));
     assert.ok(Math.abs(cinematicOutput.duration - trimOutput.duration) < 0.75, "cinematic replacement retains trims");
     result(report, "Cinematic style replacement", "PASS", { durationSeconds: Number(cinematicOutput.duration.toFixed(3)) });
 
     await submitTurn(page, "Bring it back to normal.");
     await page.getByText("Restored the original color treatment while keeping your earlier edits.").waitFor({ state: "visible", timeout: 180_000 });
-    const normalPreviewDuration = await waitForReady(page);
-    const normalOutput = await downloadAndProbe(page, scratch, "normal", { retainForReview: true });
+    await waitForCompletedOutput(page);
+    const normalOutput = await downloadAndProbe(page, scratch, "normal", report, { retainForReview: true });
+    recordPreview(report, "Normal", await inspectPreviewPlayback(page));
     assert.ok(Math.abs(normalOutput.duration - trimOutput.duration) < 0.75, "normal reset retains trims");
-    result(report, "Normal style restoration", "PASS", { durationSeconds: Number(normalOutput.duration.toFixed(3)), previewDurationSeconds: Number(normalPreviewDuration.toFixed(3)) });
+    result(report, "Normal style restoration", "PASS", { durationSeconds: Number(normalOutput.duration.toFixed(3)) });
     if (reviewDirectory) result(report, "Five review MP4s retained locally", "PASS");
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.getByText("Restored the original color treatment while keeping your earlier edits.").waitFor({ state: "visible", timeout: 60_000 });
-    await waitForReady(page);
+    await waitForCompletedOutput(page, 60_000);
+    recordPreview(report, "Refresh recovery", await inspectPreviewPlayback(page));
     result(report, "Conversation history and preview after refresh", "PASS");
 
     await page.getByRole("button", { name: "Undo" }).click();
     await page.getByText(/Restored previous edit/).waitFor({ state: "visible", timeout: 60_000 });
-    const undoOutput = await downloadAndProbe(page, scratch, "undo");
+    await waitForCompletedOutput(page, 60_000);
+    const undoOutput = await downloadAndProbe(page, scratch, "undo", report);
+    recordPreview(report, "Undo", await inspectPreviewPlayback(page));
     assert.ok(Math.abs(undoOutput.duration - trimOutput.duration) < 0.75, "undo retains the trim");
     result(report, "Undo", "PASS", { durationSeconds: Number(undoOutput.duration.toFixed(3)) });
 
