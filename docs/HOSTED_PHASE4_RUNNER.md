@@ -41,7 +41,11 @@ npm run test:hosted-phase4-media
 
 This command makes no network request and creates no render. It checks the
 same local MP4s in Playwright's bundled Chromium and installed stable Google
-Chrome. The hosted suite defaults to `channel: "chrome"`; use
+Chrome through a temporary loopback MP4 server with `video/mp4` MIME and byte
+range support, avoiding macOS `file://` restrictions. Stable Chrome runs headed
+by default; set `PHASE4_HOSTED_MEDIA_HEADED=0` only for unattended local runs.
+Its report separates browser launch, navigation, local HTTP/range, metadata,
+and playback failures without recording private paths. The hosted suite defaults to `channel: "chrome"`; use
 `PHASE4_HOSTED_BROWSER=chromium` only to reproduce a bundled-browser issue.
 
 To retain the five final-state review MP4s locally (selection, trim,
