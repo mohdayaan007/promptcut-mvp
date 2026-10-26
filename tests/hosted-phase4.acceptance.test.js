@@ -11,6 +11,8 @@ const execFileAsync = promisify(execFile);
 const PRODUCTION_URL = "https://cliponaut.com";
 const sourceVideo = process.env.PHASE4_HOSTED_VIDEO;
 const reportPath = path.resolve(process.env.PHASE4_HOSTED_REPORT_PATH || path.join(os.tmpdir(), "cliponaut-phase4-hosted-report.json"));
+const reviewDirectory = process.env.PHASE4_HOSTED_REVIEW_DIR ? path.resolve(process.env.PHASE4_HOSTED_REVIEW_DIR) : null;
+const reviewRunPrefix = `phase4-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 
 function safeFailure(error) {
   // Never put a signed URL, cookie, access code, session token, or media path in
@@ -36,9 +38,54 @@ async function probeMp4(file) {
   return { duration, videoCodec: probe.streams.find((stream) => stream.codec_type === "video")?.codec_name || null, audioCodec: probe.streams.find((stream) => stream.codec_type === "audio")?.codec_name || null };
 }
 
-async function firstFrameHash(file) {
-  const { stdout } = await execFileAsync("ffmpeg", ["-v", "error", "-i", file, "-frames:v", "1", "-f", "framemd5", "-"]);
-  return stdout.trim().split("\n").filter((line) => line && !line.startsWith("#")).at(-1) || "";
+async function rawFfmpeg(args) {
+  const { stdout } = await execFileAsync("ffmpeg", args, { encoding: "buffer", maxBuffer: 8 * 1024 * 1024 });
+  return Buffer.from(stdout);
+}
+
+async function videoSample(file, seconds) {
+  return rawFfmpeg(["-v", "error", "-i", file, "-ss", String(seconds), "-frames:v", "1", "-vf", "scale=160:90:flags=bilinear", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]);
+}
+
+async function audioSample(file, seconds) {
+  return rawFfmpeg(["-v", "error", "-i", file, "-ss", String(seconds), "-t", "0.5", "-vn", "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"]);
+}
+
+function byteDistance(left, right) {
+  const length = Math.min(left.length, right.length);
+  assert.ok(length >= 160 * 90 * 3, "decoded video sample is complete");
+  let difference = 0;
+  for (let index = 0; index < length; index += 1) difference += Math.abs(left[index] - right[index]);
+  return difference / (length * 255);
+}
+
+function pcmDistance(left, right) {
+  const length = Math.min(left.length, right.length) - (Math.min(left.length, right.length) % 2);
+  assert.ok(length >= 4_000, "decoded audio sample is complete");
+  let difference = 0;
+  for (let index = 0; index < length; index += 2) difference += Math.abs(left.readInt16LE(index) - right.readInt16LE(index));
+  return difference / ((length / 2) * 65_535);
+}
+
+async function compareTrimBoundary(previous, trimmed) {
+  const offset = previous.duration - trimmed.duration;
+  assert.ok(Math.abs(offset - 5) < 1, "trim offset is approximately five seconds");
+  const startProbe = 0.5;
+  const endProbe = Math.max(0.5, trimmed.duration - 0.75);
+  const [startVideo, startAudio, endVideo, endAudio] = await Promise.all([
+    Promise.all([videoSample(previous.file, offset + startProbe), videoSample(trimmed.file, startProbe)]).then(([left, right]) => byteDistance(left, right)),
+    Promise.all([audioSample(previous.file, offset + startProbe), audioSample(trimmed.file, startProbe)]).then(([left, right]) => pcmDistance(left, right)),
+    Promise.all([videoSample(previous.file, previous.duration - 0.75), videoSample(trimmed.file, endProbe)]).then(([left, right]) => byteDistance(left, right)),
+    Promise.all([audioSample(previous.file, previous.duration - 0.75), audioSample(trimmed.file, endProbe)]).then(([left, right]) => pcmDistance(left, right))
+  ]);
+  // Independently rendered H.264/AAC outputs need a tolerance, but matching
+  // decoded samples at both boundaries proves this is a start trim rather than
+  // an end trim or a restart from the original input.
+  assert.ok(startVideo < 0.15, `trimmed opening video matches prior output at +${offset.toFixed(2)}s`);
+  assert.ok(endVideo < 0.15, "trimmed ending video retains the prior ending");
+  assert.ok(startAudio < 0.12, `trimmed opening audio matches prior output at +${offset.toFixed(2)}s`);
+  assert.ok(endAudio < 0.12, "trimmed ending audio retains the prior ending");
+  return { offset, startVideo, startAudio, endVideo, endAudio };
 }
 
 async function waitForReady(page, timeout = 180_000) {
@@ -57,20 +104,22 @@ async function submitTurn(page, prompt) {
   await page.getByRole("button", { name: "Generate" }).click();
 }
 
-async function downloadAndProbe(page, directory, label) {
+async function downloadAndProbe(page, scratchDirectory, label, { retainForReview = false } = {}) {
   const href = await page.getByRole("link", { name: "Download MP4" }).getAttribute("href");
   assert.ok(href && href.startsWith("https://"), "download uses an HTTPS signed URL");
   const response = await page.request.get(href);
   assert.equal(response.status(), 200, "download succeeds");
-  const target = path.join(directory, `${label}.mp4`);
+  const directory = retainForReview && reviewDirectory ? reviewDirectory : scratchDirectory;
+  const target = path.join(directory, retainForReview && reviewDirectory ? `${reviewRunPrefix}-${label}.mp4` : `${label}.mp4`);
   await writeFile(target, await response.body());
-  return { ...(await probeMp4(target)), firstFrame: await firstFrameHash(target) };
+  return { ...(await probeMp4(target)), file: target };
 }
 
 test("hosted Phase 4 founder acceptance against cliponaut.com", { timeout: 12 * 60_000 }, async () => {
   assert.ok(sourceVideo, "PHASE4_HOSTED_VIDEO must point to Ahmed Perfumes Testing.mp4");
   await access(sourceVideo);
   await mkdir(path.dirname(reportPath), { recursive: true });
+  if (reviewDirectory) await mkdir(reviewDirectory, { recursive: true });
 
   const report = { suite: "hosted-phase4", target: PRODUCTION_URL, generatedAt: new Date().toISOString(), checks: [] };
   const scratch = await mkdtemp(path.join(os.tmpdir(), "cliponaut-hosted-phase4-"));
@@ -103,7 +152,7 @@ test("hosted Phase 4 founder acceptance against cliponaut.com", { timeout: 12 * 
     await submitTurn(page, "Keep only the part where I talk about Ahmed Perfumes. Remove everything else.");
     await page.getByText("Your edit is ready.").waitFor({ state: "visible", timeout: 180_000 });
     const firstPreviewDuration = await waitForReady(page);
-    const firstOutput = await downloadAndProbe(page, scratch, "ahmed-selection");
+    const firstOutput = await downloadAndProbe(page, scratch, "ahmed-selection", { retainForReview: true });
     result(report, "Ahmed Perfumes selection render", "PASS", { durationSeconds: Number(firstOutput.duration.toFixed(3)), previewDurationSeconds: Number(firstPreviewDuration.toFixed(3)) });
     result(report, "Ahmed Perfumes semantic/audio quality", "NOT VERIFIED", "requires founder final subjective review of the downloaded output");
 
@@ -112,30 +161,31 @@ test("hosted Phase 4 founder acceptance against cliponaut.com", { timeout: 12 * 
     result(report, "Previous-edit label while follow-up renders", "PASS");
     await page.getByText("Trimmed the first 5 seconds from the current edit.").waitFor({ state: "visible", timeout: 180_000 });
     const trimPreviewDuration = await waitForReady(page);
-    const trimOutput = await downloadAndProbe(page, scratch, "trimmed-selection");
+    const trimOutput = await downloadAndProbe(page, scratch, "trimmed-selection", { retainForReview: true });
     assert.ok(Math.abs(trimOutput.duration - (firstOutput.duration - 5)) < 1, "trim is five seconds relative to the previous output");
     assert.ok(trimOutput.duration >= 8 && trimOutput.duration <= 12, "trimmed Ahmed result is approximately ten seconds");
-    assert.notEqual(trimOutput.firstFrame, firstOutput.firstFrame, "trimmed output begins at a different video frame");
-    result(report, "Output-relative first-five-second trim", "PASS", { durationSeconds: Number(trimOutput.duration.toFixed(3)), previewDurationSeconds: Number(trimPreviewDuration.toFixed(3)) });
+    const boundary = await compareTrimBoundary(firstOutput, trimOutput);
+    result(report, "Output-relative first-five-second trim", "PASS", { durationSeconds: Number(trimOutput.duration.toFixed(3)), previewDurationSeconds: Number(trimPreviewDuration.toFixed(3)), offsetSeconds: Number(boundary.offset.toFixed(3)), openingVideoDistance: Number(boundary.startVideo.toFixed(4)), retainedEndingVideoDistance: Number(boundary.endVideo.toFixed(4)), openingAudioDistance: Number(boundary.startAudio.toFixed(4)), retainedEndingAudioDistance: Number(boundary.endAudio.toFixed(4)) });
 
     await submitTurn(page, "Also add black and white.");
     await page.getByText("Applied black and white.").waitFor({ state: "visible", timeout: 180_000 });
-    const bwOutput = await downloadAndProbe(page, scratch, "black-and-white");
+    const bwOutput = await downloadAndProbe(page, scratch, "black-and-white", { retainForReview: true });
     assert.ok(Math.abs(bwOutput.duration - trimOutput.duration) < 0.75, "black and white retains trims");
     result(report, "Black and white cumulative edit", "PASS", { durationSeconds: Number(bwOutput.duration.toFixed(3)) });
 
     await submitTurn(page, "Replace that with the cinematic style.");
     await page.getByText("Replaced the previous look with the cinematic style.").waitFor({ state: "visible", timeout: 180_000 });
-    const cinematicOutput = await downloadAndProbe(page, scratch, "cinematic");
+    const cinematicOutput = await downloadAndProbe(page, scratch, "cinematic", { retainForReview: true });
     assert.ok(Math.abs(cinematicOutput.duration - trimOutput.duration) < 0.75, "cinematic replacement retains trims");
     result(report, "Cinematic style replacement", "PASS", { durationSeconds: Number(cinematicOutput.duration.toFixed(3)) });
 
     await submitTurn(page, "Bring it back to normal.");
     await page.getByText("Restored the original color treatment while keeping your earlier edits.").waitFor({ state: "visible", timeout: 180_000 });
     const normalPreviewDuration = await waitForReady(page);
-    const normalOutput = await downloadAndProbe(page, scratch, "normal");
+    const normalOutput = await downloadAndProbe(page, scratch, "normal", { retainForReview: true });
     assert.ok(Math.abs(normalOutput.duration - trimOutput.duration) < 0.75, "normal reset retains trims");
     result(report, "Normal style restoration", "PASS", { durationSeconds: Number(normalOutput.duration.toFixed(3)), previewDurationSeconds: Number(normalPreviewDuration.toFixed(3)) });
+    if (reviewDirectory) result(report, "Five review MP4s retained locally", "PASS");
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.getByText("Restored the original color treatment while keeping your earlier edits.").waitFor({ state: "visible", timeout: 60_000 });
