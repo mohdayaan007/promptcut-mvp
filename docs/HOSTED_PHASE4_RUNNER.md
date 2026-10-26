@@ -58,17 +58,26 @@ output-relative five-second trim, cinematic replacement, and normal
 restoration. It validates the downloaded MP4 containers and compares decoded
 opening/ending video and audio against the original at the expected five-second
 offset. The report contains no URLs, credentials, cookies, identifiers, or
-local paths; downloaded outputs are deleted after the check.
+local paths; downloaded outputs are retained only in the explicitly supplied
+local review directory.
 
 ```bash
 PHASE4_HOSTED_NORMAL_VERIFY=1 \
+PHASE4_HOSTED_NORMAL_REVIEW_DIR="$HOME/Library/Application Support/Cliponaut/phase4-normal-review" \
 PHASE4_HOSTED_NORMAL_REPORT_PATH="$HOME/Desktop/cliponaut-phase4-normal-report.json" \
 npm run test:hosted-phase4-normal
 ```
 
 The command is skipped unless `PHASE4_HOSTED_NORMAL_VERIFY=1` is set, avoiding
-an accidental hosted render in ordinary test runs. Set
-`PHASE4_HOSTED_NORMAL_VIDEO` only to use another small local fixture.
+an accidental hosted render in ordinary test runs. The review directory is
+required for enabled hosted checks and must be outside the repository. Every
+downloaded MP4 is written there as it completes, so it remains available for
+offline analysis if a later assertion fails. It contains media only—never
+credentials, cookies, session identifiers, or signed URLs—and must not be
+committed. Before the browser or any hosted request opens, the runner extracts
+and compares local fixture audio with FFmpeg; a failed preflight prevents all
+renders. Set `PHASE4_HOSTED_NORMAL_VIDEO` only to use another small local
+fixture.
 
 To retain the five final-state review MP4s locally (selection, trim,
 black-and-white, cinematic, and normal), add a folder you control:

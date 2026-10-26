@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -14,6 +14,8 @@ const target = "https://cliponaut.com";
 const enabled = process.env.PHASE4_HOSTED_NORMAL_VERIFY === "1";
 const fixture = path.resolve(process.env.PHASE4_HOSTED_NORMAL_VIDEO || "public/demo.mp4");
 const reportPath = path.resolve(process.env.PHASE4_HOSTED_NORMAL_REPORT_PATH || path.join(os.tmpdir(), "cliponaut-phase4-normal-report.json"));
+const reviewDirectory = process.env.PHASE4_HOSTED_NORMAL_REVIEW_DIR ? path.resolve(process.env.PHASE4_HOSTED_NORMAL_REVIEW_DIR) : null;
+const reviewPrefix = `phase4-normal-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 
 function safeError(error) { return error?.name === "AssertionError" ? "assertion failed" : (error?.name || "unknown error"); }
 function result(report, name, status, detail = undefined) { report.checks.push({ name, status, ...(detail ? { detail } : {}) }); }
@@ -30,7 +32,7 @@ async function ffprobe(file) {
 }
 async function rawFfmpeg(args) { const { stdout } = await run("ffmpeg", args, { encoding: "buffer", maxBuffer: 8 * 1024 * 1024 }); return Buffer.from(stdout); }
 async function videoSample(file, second) { return rawFfmpeg(["-v", "error", "-ss", String(second), "-i", file, "-frames:v", "1", "-vf", "scale=160:90:flags=bilinear", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]); }
-async function audioSample(file, second) { return rawFfmpeg(["-v", "error", "-ss", String(second), "-t", "0.5", "-vn", "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"]); }
+async function audioSample(file, second) { return rawFfmpeg(["-v", "error", "-ss", String(second), "-i", file, "-t", "0.5", "-vn", "-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"]); }
 
 function distance(left, right, audio = false) {
   const size = audio ? Math.min(left.length, right.length) - (Math.min(left.length, right.length) % 2) : Math.min(left.length, right.length);
@@ -41,13 +43,23 @@ function distance(left, right, audio = false) {
   return total / (audio ? (size / 2) * 65_535 : size * 255);
 }
 
+async function offlineMediaPreflight(file) {
+  // Run before a browser or network connection is opened. This catches broken
+  // local FFmpeg invocation changes before they can consume a hosted render.
+  const [first, repeated] = await Promise.all([audioSample(file, 1), audioSample(file, 1)]);
+  const audioDistance = distance(first, repeated, true);
+  assert.ok(audioDistance < 0.000001, "offline fixture audio extraction is deterministic");
+  return { sampleBytes: first.length, audioDistance };
+}
+
 async function download(page, root, label, report) {
   const href = await page.getByRole("link", { name: "Download MP4" }).getAttribute("href");
   assert.ok(href?.startsWith("https://"));
   const response = await page.request.get(href);
   report.downloads.push({ label, hostname: hostname(href), status: response.status(), mimeType: response.headers()["content-type"]?.split(";")[0] || null });
   assert.equal(response.status(), 200);
-  const file = path.join(root, `${label}.mp4`);
+  const directory = reviewDirectory || root;
+  const file = path.join(directory, reviewDirectory ? `${reviewPrefix}-${label}.mp4` : `${label}.mp4`);
   await writeFile(file, await response.body());
   return { file, ...(await ffprobe(file)) };
 }
@@ -73,13 +85,24 @@ async function followUp(page, prompt) {
   await waitForOutput(page, oldHref);
 }
 
+test("offline media preflight extracts and compares audio from the tracked fixture", async () => {
+  const result = await offlineMediaPreflight(fixture);
+  assert.ok(result.sampleBytes >= 4_000);
+});
+
 test("hosted Chrome check: cinematic to normal restores color and keeps the five-second trim", { timeout: 10 * 60_000, skip: !enabled }, async () => {
   const report = { suite: "hosted-phase4-normal", target, generatedAt: new Date().toISOString(), checks: [], downloads: [] };
   const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-phase4-normal-"));
   let browser; let context;
   try {
+    assert.ok(reviewDirectory, "PHASE4_HOSTED_NORMAL_REVIEW_DIR is required so completed hosted artifacts survive assertion failures");
+    const relativeReviewDirectory = path.relative(process.cwd(), reviewDirectory);
+    assert.ok(relativeReviewDirectory.startsWith("..") || path.isAbsolute(relativeReviewDirectory), "PHASE4_HOSTED_NORMAL_REVIEW_DIR must be outside the repository");
+    await mkdir(reviewDirectory, { recursive: true });
     const original = await ffprobe(fixture);
     result(report, "Small local fixture", "PASS", { durationSeconds: Number(original.duration.toFixed(3)) });
+    const preflight = await offlineMediaPreflight(fixture);
+    result(report, "Offline FFmpeg audio preflight", "PASS", { sampleBytes: preflight.sampleBytes, audioDistance: Number(preflight.audioDistance.toFixed(8)) });
     browser = await chromium.launch({ channel: "chrome", headless: false });
     context = await browser.newContext({ viewport: { width: 1440, height: 960 } });
     const page = await context.newPage();
