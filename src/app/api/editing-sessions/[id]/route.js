@@ -33,11 +33,12 @@ export async function POST(req, { params }) {
     const { id } = await params;
     const session = await getAuthorizedSession(id, token(req));
     if (!session) throw new PublicRequestError("Editing session was not found", 404);
-    const { prompt, expectedVersion } = await req.json();
+    const { prompt, expectedVersion, baseJobId } = await req.json();
     if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 1000) throw new PublicRequestError("Enter an editing instruction");
     if (!Number.isInteger(expectedVersion)) throw new PublicRequestError("The editing session version is invalid.");
     const history = await getSessionHistory(session.id);
-    const current = [...history].reverse().find((version) => version.status === "completed" && version.plan && Array.isArray(version.source_catalog));
+    if (baseJobId !== undefined && typeof baseJobId !== "string") throw new PublicRequestError("The selected edit is invalid.", 422);
+    const current = [...history].reverse().find((version) => (!baseJobId || version.job_id === baseJobId) && version.status === "completed" && version.plan && Array.isArray(version.source_catalog));
     if (!current) throw new PublicRequestError("Wait for a successful edit before making another change.", 409);
     let plan;
     let confirmation;

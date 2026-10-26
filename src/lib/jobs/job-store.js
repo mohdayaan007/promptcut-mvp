@@ -109,6 +109,15 @@ export async function createConversationJob(session, { prompt, plan, confirmatio
       await client.query("ROLLBACK");
       return null;
     }
+    // Check the authoritative job status while holding the same session lock.
+    // A caller knowing the new version must not queue another delta on an
+    // unfinished edit, even while the worker's version mirror is catching up.
+    const pending = await client.query(`SELECT j.status FROM editing_versions v JOIN edit_jobs j ON j.id=v.job_id
+      WHERE v.session_id=$1 AND j.status IN ('uploading','queued','analyzing','rendering') LIMIT 1`, [session.id]);
+    if (pending.rows.length) {
+      await client.query("ROLLBACK");
+      return null;
+    }
     const source = await client.query("SELECT * FROM edit_jobs WHERE id=$1", [locked.rows[0].source_job_id]);
     if (!source.rows[0]) throw new Error("Original media is no longer available");
     const id = newId(); const accessToken = newToken(); const version = locked.rows[0].latest_version + 1;

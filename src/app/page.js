@@ -8,6 +8,7 @@ import { PromptComposer } from "@/components/cliponaut/PromptComposer";
 import { PromptSuggestions } from "@/components/cliponaut/PromptSuggestions";
 import { Workspace } from "@/components/cliponaut/Workspace";
 import { JobRecoveryModal } from "@/components/cliponaut/JobRecoveryModal";
+import { recordConversationCompletion } from "@/lib/client/conversation-presentation";
 import {
   cancelJob,
   clearTerminalJob,
@@ -120,6 +121,7 @@ export default function HomePage() {
   }, []);
 
   const showOriginal = useCallback((sources) => {
+    resultUrlRef.current = null;
     setActiveJob(null);
     setRestoredSources(sources || []);
     setStatus("idle");
@@ -128,6 +130,7 @@ export default function HomePage() {
   }, []);
 
   const showCompletedJob = useCallback((session, job) => {
+    resultUrlRef.current = job.outputUrl;
     setActiveJob(session);
     setRestoredSources(job.sources || []);
     setStatus("done");
@@ -210,11 +213,14 @@ export default function HomePage() {
       showTerminalAttempt(saved.terminal);
     }
     if (!saved.active?.id || !saved.active?.accessToken) {
-      if (saved.current) restoreCurrentVersion(saved.current, hydrationAttempt);
+      if (saved.current) restoreCurrentVersion(saved.current, hydrationAttempt).then(() => {
+        if (!stopped && saved.terminal && isCurrentPresentationAttempt(hydrationAttempt, presentationAttemptRef.current)) showTerminalAttempt(saved.terminal);
+      });
     }
     if (savedSession) {
       getEditingSessionHistory(savedSession).then((sessionHistory) => {
         if (stopped || !isCurrentPresentationAttempt(hydrationAttempt, presentationAttemptRef.current)) return;
+        setEditingSession(saveEditingSession({ ...savedSession, version: sessionHistory.latestVersion }));
         setMessages(sessionHistory.history.flatMap((entry) => {
           const turns = [{ role: "user", text: entry.prompt, jobId: entry.jobId }];
           if (entry.status === "completed") turns.push({ role: "assistant", text: entry.confirmation || "Your edit is ready.", jobId: entry.jobId });
@@ -255,7 +261,10 @@ export default function HomePage() {
     let stopped = false;
     const pollingAttempt = presentationAttemptRef.current;
     const pollingSession = activeJob;
+    let checking = false;
     const check = async () => {
+      if (stopped || checking) return;
+      checking = true;
       try {
         const job = await getJobStatus(pollingSession);
         if (stopped || !isCurrentPresentationAttempt(pollingAttempt, presentationAttemptRef.current)) return;
@@ -266,7 +275,7 @@ export default function HomePage() {
             const next = persistUndoState(promoteSuccessfulJob(undoStateRef.current || emptyUndoState(), pollingSession, job.sources));
             setUndoAnchor(undoAnchorForCurrent(next.current));
             showCompletedJob(next.current.session, job);
-            setMessages((current) => [...current, { role: "assistant", text: job.confirmation || "Your edit is ready." }]);
+            setMessages((current) => recordConversationCompletion(current, pollingSession.id, job.confirmation));
           } else {
             persistUndoState(recordTerminalJob(undoStateRef.current || emptyUndoState(), pollingSession, { ...job, status: "failed", error: "We couldn’t retrieve that edit." }));
             showTerminalAttempt({ ...job, status: "failed", error: "We couldn’t retrieve that edit." });
@@ -279,6 +288,8 @@ export default function HomePage() {
         }
       } catch (statusError) {
         if (!stopped && isCurrentPresentationAttempt(pollingAttempt, presentationAttemptRef.current)) setError(statusError.message);
+      } finally {
+        checking = false;
       }
     };
     check();
@@ -366,10 +377,11 @@ export default function HomePage() {
 
     try {
       if (editingSession && undoStateRef.current?.current?.kind === "job") {
-        const turn = await submitConversationTurn(editingSession, submittedPrompt, controller.signal);
+        const turn = await submitConversationTurn(editingSession, submittedPrompt, controller.signal, undoStateRef.current.current.session.id);
         if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
         const nextSession = saveEditingSession(turn.session);
         setEditingSession(nextSession);
+        setMessages((currentMessages) => currentMessages.map((message) => message.turnId === turnId ? { ...message, jobId: turn.job.id } : message));
         persistUndoState(setUndoActiveJob(undoStateRef.current || emptyUndoState(), turn.job, submittedPrompt));
         setActiveJob(turn.job);
         setStatus("queued");
@@ -475,15 +487,24 @@ export default function HomePage() {
     }
   };
 
-  const restoreJob = (session, job) => {
+  const restoreJob = async (session, job) => {
+    const attempt = presentationAttemptRef.current;
+    const current = undoStateRef.current?.current;
     if (job.status === "completed" && job.outputUrl) showCompletedJob(session, job);
     else {
+      let retainedUrl = null;
+      if (editingSession && current?.kind === "job") {
+        try {
+          const previous = await getJobStatus(current.session);
+          if (previous.status === "completed") retainedUrl = previous.outputUrl || null;
+        } catch { /* Recovery of the active job remains available if its prior output expired. */ }
+      }
+      if (!isCurrentPresentationAttempt(attempt, presentationAttemptRef.current)) return;
       setActiveJob(session);
       setRestoredSources(job.sources || []);
       setStatus(job.status);
-      setResultUrl(null);
+      setResultUrl(retainedUrl);
     }
-    const current = undoStateRef.current?.current;
     if (current?.kind === "job" && undoStateRef.current?.previous) setUndoAnchor(undoAnchorForCurrent(current));
     setRecovery(null);
     setRecoveryError(null);

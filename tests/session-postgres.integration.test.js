@@ -44,6 +44,8 @@ test("PostgreSQL session API atomically versions concurrent turns, recovers afte
     assert.deepEqual([first.status, second.status].sort(), [200, 409], "only one same-version prompt is accepted");
     const accepted = await (first.status === 200 ? first : second).json();
     assert.equal(accepted.version, 2);
+    const whilePending = await sessionRoute.POST(routeRequest(session, "Trim the first five seconds.", 2), { params: Promise.resolve({ id: session.id }) });
+    assert.equal(whilePending.status, 409, "knowing the pending version does not permit another queued delta");
     await client.query("UPDATE edit_jobs SET status='failed' WHERE id=$1", [accepted.id]);
     await client.query("UPDATE editing_versions SET status='failed' WHERE job_id=$1", [accepted.id]);
 
@@ -53,6 +55,16 @@ test("PostgreSQL session API atomically versions concurrent turns, recovers afte
     assert.equal(recoveredBody.version, 3);
     const stored = await store.getSessionHistory(session.id);
     assert.deepEqual(stored.map((entry) => entry.status), ["completed", "failed", "queued"]);
+
+    await client.query("UPDATE edit_jobs SET status='completed',source_catalog=$2::jsonb WHERE id=$1", [recoveredBody.id, JSON.stringify(catalog)]);
+    await client.query("UPDATE editing_versions SET status='completed' WHERE job_id=$1", [recoveredBody.id]);
+    const undoneRequest = routeRequest(session, "Bring it back to normal.", 3);
+    const undoneBody = await undoneRequest.json();
+    const resumedUndo = await sessionRoute.POST(new Request(undoneRequest.url, { method: "POST", headers: undoneRequest.headers, body: JSON.stringify({ ...undoneBody, baseJobId: created.job.id }) }), { params: Promise.resolve({ id: session.id }) });
+    assert.equal(resumedUndo.status, 200, "new edit may continue from the successful version restored by browser Undo");
+    const undoVersion = await resumedUndo.json();
+    const undoJob = await store.getAuthorizedJob(undoVersion.id, undoVersion.accessToken);
+    assert.deepEqual(undoJob.editPlan.operations, plan.operations, "the post-Undo edit must not restore a removed later trim");
 
     let cleanup = await store.getJobsForCleanup({ sourceRetentionHours: 1, outputRetentionHours: 1 });
     assert.equal(cleanup.some((job) => job.id === created.job.id), false, "active session retains original media");

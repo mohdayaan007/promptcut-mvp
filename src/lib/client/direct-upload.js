@@ -378,10 +378,10 @@ export function saveEditingSession(session, storage) {
   return session;
 }
 export function clearEditingSession(storage) { browserStorage(storage)?.removeItem(EDITING_SESSION_STORAGE_KEY); }
-export async function submitConversationTurn(session, prompt, signal) {
+export async function submitConversationTurn(session, prompt, signal, baseJobId) {
   const response = await requestJson(`/api/editing-sessions/${session.id}`, {
     method: "POST", headers: { "x-cliponaut-session-token": session.accessToken },
-    body: JSON.stringify({ prompt, expectedVersion: session.version }), signal
+    body: JSON.stringify({ prompt, expectedVersion: session.version, ...(baseJobId ? { baseJobId } : {}) }), signal
   });
   return { job: { id: response.id, accessToken: response.accessToken }, session: { ...session, version: response.version }, confirmation: response.confirmation };
 }

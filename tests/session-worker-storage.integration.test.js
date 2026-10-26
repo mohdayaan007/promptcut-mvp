@@ -146,7 +146,9 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     const secondOutput = Buffer.from(await secondDownload.arrayBuffer());
     assert.equal(secondDownload.status, 200);
     assert.ok(secondOutput.length > 1_000);
-    assert.notDeepEqual(secondOutput.subarray(0, 512), firstOutput.subarray(0, 512), "follow-up is independently rendered");
+    // MP4 headers can be identical for two different rendered videos. Compare
+    // the complete artifacts, then probe the actual downloaded media below.
+    assert.notDeepEqual(secondOutput, firstOutput, "follow-up is independently rendered");
 
     const historyResponse = await sessionRoute.GET(new Request(`http://localhost/api/editing-sessions/${queued.session.id}`, { headers: { "x-cliponaut-session-token": queued.session.accessToken, cookie: founderCookie } }), { params: Promise.resolve({ id: queued.session.id }) });
     const history = await historyResponse.json();

@@ -27,6 +27,29 @@ test("output-relative trim crosses clip boundaries without modifying originals",
   assert.deepEqual(plan.operations[0].clips[0], { sourceId: "source-1", start: 0, end: 3 });
 });
 
+test("follow-up trim canonicalizes a legacy selected window instead of trimming the original again", () => {
+  const priorPlan = { version: "1", operations: [{ type: "trim", start: 10, end: 25 }] };
+  const result = applyConversationTurn({ priorPlan, prompt: "Now trim the first five seconds too.", sourceCatalog: catalog });
+  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 15, end: 25 }] }]);
+  assert.doesNotThrow(() => validateConversationPlan(result.plan, catalog));
+  assert.deepEqual(priorPlan.operations, [{ type: "trim", start: 10, end: 25 }]);
+});
+
+test("legacy assembled trim and merge canonicalize across source clip boundaries", () => {
+  const priorPlan = { version: "1", operations: [{ type: "merge" }, { type: "trim", start: 55, end: 70 }] };
+  const sources = [...catalog, { ...catalog[0], sourceId: "source-2", index: 1, ordinal: 2 }];
+  const result = applyConversationTurn({ priorPlan, prompt: "Trim the first five seconds.", sourceCatalog: sources });
+  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-2", start: 0, end: 10 }] }]);
+  assert.doesNotThrow(() => validateConversationPlan(result.plan, sources));
+});
+
+test("special follow-ups reject compound, negated, and scoped requests atomically", () => {
+  for (const prompt of ["Also add black and white and mute it.", "Do not make it cinematic.", "Make only video 2 black and white.", "Trim the first five seconds and add subtitles.", "Bring it back to normal and remove the last second."]) {
+    assert.throws(() => applyConversationTurn({ priorPlan: base, prompt, sourceCatalog: catalog }), /unchanged/i, prompt);
+  }
+  assert.deepEqual(base.operations[0].clips, [{ sourceId: "source-1", start: 20, end: 50 }]);
+});
+
 test("unsafe conversational ambiguity does not create a changed plan", () => {
   assert.throws(() => applyConversationTurn({ priorPlan: base, prompt: "Make it amazing somehow", sourceCatalog: catalog }), /couldn’t safely/i);
 });
