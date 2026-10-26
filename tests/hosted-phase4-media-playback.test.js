@@ -32,7 +32,7 @@ async function startMediaServer(media, report) {
     if (player && byId.has(player[1])) {
       const id = player[1];
       response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      response.end(`<!doctype html><video id="player" muted playsinline controls src="/media/${id}"></video><script>const v=document.querySelector('video');window.phase4Events={loadedmetadata:false,error:false,stalled:false,canplay:false};for(const e of Object.keys(window.phase4Events))v.addEventListener(e,()=>window.phase4Events[e]=true);</script>`);
+      response.end(`<!doctype html><video id="player" muted playsinline controls src="/media/${id}"></video><script>const v=document.querySelector('video');window.phase4Events={loadedmetadata:false,error:false,stalled:false,canplay:false,seeked:false};for(const e of Object.keys(window.phase4Events))v.addEventListener(e,()=>window.phase4Events[e]=true);</script>`);
       return;
     }
     const mediaRequest = pathname.match(/^\/media\/(review-\d+)$/);
@@ -95,6 +95,19 @@ async function inspectMedia(page, url) {
   } catch (error) {
     const state = await video.evaluate((media) => ({ readyState: media.readyState, networkState: media.networkState, errorCode: media.error?.code || null, durationSeconds: Number(media.duration.toFixed(3)), events: window.phase4Events }));
     return { ok: false, stage: "media-playback", ...state, error: safeError(error) };
+  }
+  try {
+    const seekTarget = await video.evaluate((media) => Math.min(Math.max(0.5, media.duration / 2), Math.max(0.5, media.duration - 0.5)));
+    await video.evaluate((media, target) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("seek timed out")), 5_000);
+      media.addEventListener("seeked", () => { clearTimeout(timer); resolve(); }, { once: true });
+      media.currentTime = target;
+    }), seekTarget);
+    await video.evaluate((media) => media.play());
+    await page.waitForFunction((target) => document.querySelector("video#player")?.currentTime > target + 0.05, seekTarget, { timeout: 10_000 });
+  } catch (error) {
+    const state = await video.evaluate((media) => ({ readyState: media.readyState, networkState: media.networkState, errorCode: media.error?.code || null, durationSeconds: Number(media.duration.toFixed(3)), events: window.phase4Events }));
+    return { ok: false, stage: "media-seek", ...state, error: safeError(error) };
   }
   return video.evaluate((media) => ({ ok: true, stage: "playback", readyState: media.readyState, networkState: media.networkState, errorCode: media.error?.code || null, durationSeconds: Number(media.duration.toFixed(3)), events: window.phase4Events, canPlayH264: media.canPlayType('video/mp4; codecs="avc1.42E01E"'), canPlayAac: media.canPlayType('audio/mp4; codecs="mp4a.40.2"') }));
 }

@@ -45,8 +45,32 @@ Chrome through a temporary loopback MP4 server with `video/mp4` MIME and byte
 range support, avoiding macOS `file://` restrictions. Stable Chrome runs headed
 by default; set `PHASE4_HOSTED_MEDIA_HEADED=0` only for unattended local runs.
 Its report separates browser launch, navigation, local HTTP/range, metadata,
-and playback failures without recording private paths. The hosted suite defaults to `channel: "chrome"`; use
+initial playback, and seek/resumed-playback failures without recording private
+paths. The hosted suite defaults to `channel: "chrome"`; use
 `PHASE4_HOSTED_BROWSER=chromium` only to reproduce a bundled-browser issue.
+
+For the no-network final remaining-gates regression set (conversation state,
+history presentation, Undo UI, failure recovery, founder access gate, and the
+normal-runner FFmpeg preflight), run:
+
+```bash
+npm run test:phase4-final-offline
+```
+
+When a normal Mac with stable Google Chrome is available, this separate
+read-only check verifies the deployed ordinary desktop/mobile shell and that
+the founder gate is not present on the ordinary page. It does not authenticate,
+upload, submit a prompt, create a job, download media, or render video:
+
+```bash
+PHASE4_HOSTED_READONLY=1 \
+PHASE4_HOSTED_READONLY_REPORT_PATH="$HOME/Desktop/cliponaut-phase4-readonly-report.json" \
+npm run test:hosted-phase4-readonly
+```
+
+It cannot inspect a prior private editing session or its preview: those require
+that session's private, non-persisted browser credential. It is therefore a
+gate/layout check, not a substitute for authenticated hosted preview testing.
 
 ## Minimal cinematic → normal verification
 
