@@ -361,6 +361,14 @@ body {
   text-align: center;
 }
 
+.cliponaut-empty-editor-error {
+  margin: 12px 0 0;
+  color: #9d3b36;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  text-align: center;
+}
+
 .cliponaut-workspace {
   width: min(100%, 1440px);
   margin: 0 auto;

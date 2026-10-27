@@ -689,6 +689,7 @@ export default function HomePage() {
           onSelectImages={() => imageInputRef.current?.click()}
           onSelectSuggestion={setPrompt}
           imageCount={referenceImage ? 1 : 0}
+          error={error}
         />
       )}
       {recovery ? (
