@@ -1,5 +1,6 @@
 const JOB_STORAGE_KEY = "cliponaut-active-job";
 const EDITING_SESSION_STORAGE_KEY = "cliponaut-editing-session";
+const PENDING_PARTIAL_EDIT_STORAGE_KEY = "cliponaut-pending-partial-edit";
 export const UNDO_STATE_VERSION = 1;
 export const ACTIVE_JOB_STATUSES = ["uploading", "queued", "analyzing", "rendering"];
 const PART_UPLOAD_MAX_ATTEMPTS = 3;
@@ -8,7 +9,11 @@ const PART_UPLOAD_RETRY_DELAYS_MS = [500, 1_000];
 async function requestJson(url, options = {}, fetchFn = fetch) {
   const response = await fetchFn(url, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || "Request failed");
+  if (!response.ok) {
+    const error = new Error(body.error || "Request failed");
+    if (body.partial) error.partial = body.partial;
+    throw error;
+  }
   return body;
 }
 
@@ -399,12 +404,34 @@ export function saveEditingSession(session, storage) {
   return session;
 }
 export function clearEditingSession(storage) { browserStorage(storage)?.removeItem(EDITING_SESSION_STORAGE_KEY); }
+export function loadPendingPartialEdit(storage) {
+  const target = browserStorage(storage);
+  if (!target) return null;
+  try {
+    const pending = JSON.parse(target.getItem(PENDING_PARTIAL_EDIT_STORAGE_KEY) || "null");
+    return pending && typeof pending.sessionId === "string" && typeof pending.supportedPrompt === "string" && typeof pending.message === "string"
+      ? { sessionId: pending.sessionId, supportedPrompt: pending.supportedPrompt, message: pending.message }
+      : null;
+  } catch { return null; }
+}
+export function savePendingPartialEdit(pending, storage) {
+  const target = browserStorage(storage);
+  if (!target || !pending?.sessionId || !pending?.supportedPrompt || !pending?.message) return null;
+  const safe = { sessionId: pending.sessionId, supportedPrompt: String(pending.supportedPrompt).slice(0, 1000), message: String(pending.message).slice(0, 2000) };
+  target.setItem(PENDING_PARTIAL_EDIT_STORAGE_KEY, JSON.stringify(safe));
+  return safe;
+}
+export function clearPendingPartialEdit(storage) { browserStorage(storage)?.removeItem(PENDING_PARTIAL_EDIT_STORAGE_KEY); }
 export async function submitConversationTurn(session, prompt, signal, baseJobId) {
   const response = await requestJson(`/api/editing-sessions/${session.id}`, {
     method: "POST", headers: { "x-cliponaut-session-token": session.accessToken },
     body: JSON.stringify({ prompt, expectedVersion: session.version, ...(baseJobId ? { baseJobId } : {}) }), signal
   });
+  if (response.pendingConfirmation) return { pendingConfirmation: response.pendingConfirmation };
   return { job: { id: response.id, accessToken: response.accessToken }, session: { ...session, version: response.version }, confirmation: response.confirmation };
+}
+export async function preflightEditingCapabilities(prompt, signal) {
+  return requestJson("/api/editing-capabilities", { method: "POST", body: JSON.stringify({ prompt }), signal });
 }
 export async function getEditingSessionHistory(session, signal) {
   return requestJson(`/api/editing-sessions/${session.id}`, {

@@ -1,5 +1,5 @@
 import { GoogleGenAI, createPartFromUri } from "@google/genai";
-import { analyzeSpokenRequestCoverage, createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { analyzeEditRequestCapabilities, analyzeSpokenRequestCoverage, createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { createDelegatedStyleDecisionJsonSchema, createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { buildAiEditorPrompt, buildDelegatedStyleDecisionPrompt, buildSemanticSourceClassificationPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { findPhraseOccurrences, pairPhraseOccurrences } from "@/lib/editor-core/spoken-transcript";
@@ -17,6 +17,12 @@ const MAX_PLANNING_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 300;
 
 export class UnsupportedEditRequestError extends Error {}
+export class PartialEditRequestError extends UnsupportedEditRequestError {
+  constructor(capability) {
+    super(capability.message);
+    this.capability = capability;
+  }
+}
 export class GeminiSourceUploadError extends UnsupportedEditRequestError {}
 
 function hasExplicitReferenceStyleConflict(prompt, sourceCatalog) {
@@ -1039,6 +1045,9 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
     : inputPath ? [{ inputPath, inputMimeType, source: sourceCatalog[0] }] : [];
   const requiresVisualUnderstanding = requiresVisualSourceUnderstanding(prompt, sourceCatalog) || requiresMomentCompositionUnderstanding(prompt, sourceCatalog) || requiresVisualMomentUnderstanding(prompt, sourceCatalog) || requiresSpokenMomentUnderstanding(prompt, sourceCatalog);
   const deterministicStyleRequest = !referenceStyleActive && isDeterministicallySafeStyleRequest(prompt, { sourceCatalog });
+  const capability = analyzeEditRequestCapabilities(prompt, sourceCatalog);
+  if (capability.kind === "partial") throw new PartialEditRequestError(capability);
+  if (capability.kind === "unsupported" || capability.kind === "ambiguous") throw new UnsupportedEditRequestError(capability.message);
   const spokenCoverage = analyzeSpokenRequestCoverage(prompt, sourceCatalog);
   if (spokenCoverage?.kind === "unsupported_compound") {
     throw new UnsupportedEditRequestError("This compound speech edit is not supported yet. Submit the speech selection first, then make the additional edit.");

@@ -10,14 +10,14 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, MAX_REFERENCE_IMAGE_BYTES, 
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, hasWorkspacePresentation, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, sourcesForTerminalAttempt, terminalAttemptConversation, terminalAttemptMessage, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearPendingPartialEdit, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, hasWorkspacePresentation, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadPendingPartialEdit, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, savePendingPartialEdit, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, sourcesForTerminalAttempt, terminalAttemptConversation, terminalAttemptMessage, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
 import { browserVideoPreflightError } from "@/lib/client/media-preflight";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
-import { analyzeSpokenRequestCoverage, createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { analyzeEditRequestCapabilities, analyzeSpokenRequestCoverage, createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createDelegatedStyleDecisionJsonSchema, createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { buildDelegatedStyleContents, createAiEditPlan, createStylePlanningDiagnostics, reconcileReferenceStylePlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, summarizeStylePlanDiagnostic, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
+import { buildDelegatedStyleContents, createAiEditPlan, createStylePlanningDiagnostics, PartialEditRequestError, reconcileReferenceStylePlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, summarizeStylePlanDiagnostic, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt, buildDelegatedStyleDecisionPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { buildReferenceStyleTreatmentFilters, buildReferenceToneCurveFilter, buildReferenceToneCurvePoints, buildStyleProfileFilters, buildStyleRecipeFilters, buildToneCurveFilter, buildToneCurvePoints, buildVibranceFilter, buildVisualAdjustmentFilters, compileStyleProfileForExecution, createExecutionController, createStyleProfileExecutionDiagnostic, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, titleReadabilityForLuma, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
 import { CAPABILITY_REGISTRY } from "@/lib/editor-core/capability-registry";
@@ -2372,7 +2372,7 @@ test("speech fast path accounts for every compound clause before execution", asy
     await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
       prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
       scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
-    }), (error) => error instanceof UnsupportedEditRequestError && /compound speech edit/i.test(error.message)));
+    }), (error) => error instanceof PartialEditRequestError && error.capability?.kind === "partial"));
     assert.equal(aiClient.uploads.length, 0, "unsupported compound request must be rejected before media activation");
   }
 
@@ -2448,6 +2448,32 @@ test("speech coverage accounts for prefix clauses without rejecting natural topi
     assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 4, end: 4.5 }] }]);
     assert.deepEqual(aiClient.uploads.map((file) => file.uri), ["gemini:///scratch/source-1-speech.m4a"], "natural topic conjunction retains audio-only planning");
   }
+});
+
+test("capability preflight offers a supported subset without silently dropping an edit", () => {
+  const catalog = speechCatalog([{ ...sourceCatalog[0], duration: 30 }]);
+  const cinematic = analyzeEditRequestCapabilities("Make my video cinematic and blur the face.", catalog);
+  assert.equal(cinematic.kind, "partial");
+  assert.match(cinematic.supportedPrompt, /cinematic/i);
+  assert.doesNotMatch(cinematic.supportedPrompt, /blur/i);
+
+  const translated = analyzeEditRequestCapabilities("Keep only the part where I talk about Cliponaut and translate the speech to Hindi.", catalog);
+  assert.equal(translated.kind, "partial");
+  assert.match(translated.supportedPrompt, /Cliponaut/i);
+  assert.doesNotMatch(translated.supportedPrompt, /translate/i);
+
+  assert.equal(analyzeEditRequestCapabilities("Blur the face.", catalog).kind, "unsupported");
+  assert.equal(analyzeEditRequestCapabilities("From video 1, use the part where I explain pricing and make it black and white.", catalog).kind, "complete");
+  assert.equal(analyzeEditRequestCapabilities("Keep only the part where I discuss designing and building Cliponaut.", catalog).kind, "complete");
+});
+
+test("a pending partial confirmation is safe to restore and clear without a job", () => {
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
+  const saved = savePendingPartialEdit({ sessionId: "session-1", supportedPrompt: "Make it cinematic", message: "I can apply cinematic." }, storage);
+  assert.deepEqual(loadPendingPartialEdit(storage), saved);
+  clearPendingPartialEdit(storage);
+  assert.equal(loadPendingPartialEdit(storage), null, "cancellation or a replacement instruction leaves no stale action to queue");
 });
 
 test("semantic spoken ranges override final timestamps and reject conflicting source operations", async () => {

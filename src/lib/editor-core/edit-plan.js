@@ -312,6 +312,11 @@ function quotedSpeechTail(prompt, request) {
  * selection itself (plus its explicit "remove everything else" wording).
  */
 export function analyzeSpokenRequestCoverage(prompt = "", sourceCatalog = []) {
+  // Composition owns the boundaries of each individual moment. Applying the
+  // single-moment coverage guard to the whole sentence mistakes an earlier
+  // valid moment for an unaccounted prefix (and rejects the composition).
+  const composition = extractMomentCompositionRequests(prompt, sourceCatalog);
+  if (composition?.requests?.length) return { kind: "composition", requests: composition.requests };
   const request = extractSpokenMomentRequest(prompt, sourceCatalog);
   if (!request) return null;
 
@@ -350,6 +355,114 @@ export function analyzeSpokenRequestCoverage(prompt = "", sourceCatalog = []) {
   if (allowedSpeechSelectionTail(tail)) return { kind: "pure", request };
   const operations = meaningfulOperations(tail, sourceCatalog);
   return operations.length ? { kind: "supported_compound", request } : { kind: "unsupported_compound", request };
+}
+
+function editClausesOutsideQuotedSpeech(prompt = "", spokenRequest = null) {
+  const protectedRanges = quotedRanges(prompt);
+  // A semantic topic is prose, not an editing clause. In particular, “building
+  // and testing Cliponaut” must never be split merely because it contains an
+  // ordinary conjunction.
+  const topic = spokenRequest?.startTopicDescription || spokenRequest?.endTopicDescription;
+  if (topic) {
+    const start = prompt.toLowerCase().indexOf(topic.toLowerCase());
+    if (start >= 0) protectedRanges.push({ start, end: start + topic.length });
+  }
+  const separator = /(?:[.;]\s*|\s+\b(?:and|then|also)\b\s+)/gi;
+  const clauses = [];
+  let start = 0;
+  for (const match of prompt.matchAll(separator)) {
+    if (overlapsQuotedRange(match, protectedRanges)) continue;
+    clauses.push({ text: prompt.slice(start, match.index).trim(), start, end: match.index });
+    start = (match.index || 0) + match[0].length;
+  }
+  clauses.push({ text: prompt.slice(start).trim(), start, end: prompt.length });
+  return clauses.filter((clause) => clause.text);
+}
+
+function isEditingClause(clause = "") {
+  // This is grammatical routing, not an effect denylist. Unknown imperative
+  // editing clauses are deliberately surfaced as unsupported instead of being
+  // silently absorbed by an otherwise supported request.
+  return /^(?:please\s+)?(?:make|turn|change|apply|use|add|remove|keep|show|trim|cut|start|begin|end|stop|blur|reverse|stabili[sz]e|translate|replace|crop|zoom|fade|mute|speed|slow|increase|decrease|reduce|lower)\b/i.test(clause.trim());
+}
+
+function hasKnownDeterministicEdit(clause = "") {
+  // These phrases are the public, deterministic capability definitions. This
+  // is deliberately an allow-list of shipped operations, not a list of things
+  // to reject.
+  return /\b(?:black\s*(?:and|&)\s*white|grayscale|cinematic|warm|cool|portrait|vertical|landscape|square|fade|slow(?:\s+motion)?|speed\s+up|zoom\s+in|mute)\b/i.test(clause);
+}
+
+function normalizeSupportedPrompt(clauses) {
+  return clauses.map((clause) => clause.text.replace(/[\s,.!?;:]+$/g, "").trim()).filter(Boolean).join(". ");
+}
+
+/**
+ * Deterministically accounts for all requested operations before media work.
+ * It intentionally returns a pending partial action rather than guessing how
+ * to execute text that no shipped capability owns.
+ */
+export function analyzeEditRequestCapabilities(prompt = "", sourceCatalog = []) {
+  const text = String(prompt || "").trim();
+  if (!text) return { kind: "unsupported", message: "Enter an editing instruction." };
+  const composition = extractMomentCompositionRequests(text, sourceCatalog);
+  if (composition?.error) return { kind: "ambiguous", message: "Please clarify the sequence of moments you want to use." };
+  const spokenCoverage = analyzeSpokenRequestCoverage(text, sourceCatalog);
+  const originalSpoken = extractSpokenMomentRequest(text, sourceCatalog);
+  const originalTopic = originalSpoken?.startTopicDescription || originalSpoken?.endTopicDescription;
+  const imperativeInOriginalTopic = originalTopic && new RegExp(`\\s+(?:and|then|also)\\s+(?=(?:make|turn|change|apply|use|add|remove|blur|reverse|stabili[sz]e|translate|replace|crop|zoom|fade|mute|speed|slow|increase|decrease|reduce|lower)\\b)`, "i").exec(originalTopic);
+  // Visual localization and semantic source routing are already server-owned
+  // Gemini paths. Their clauses cannot be decomposed safely by a text-only
+  // preflight, so preserve that established authoritative planner route.
+  if (!originalSpoken && (requiresVisualMomentUnderstanding(text, sourceCatalog) || requiresVisualSourceUnderstanding(text, sourceCatalog))) return { kind: "complete" };
+  // These routes already prove that every grammatical clause is owned by a
+  // shipped planner path. Do not re-split their selection wording below.
+  if (["composition", "supported_compound"].includes(spokenCoverage?.kind) || (spokenCoverage?.kind === "pure" && !imperativeInOriginalTopic)) return { kind: "complete" };
+  if (imperativeInOriginalTopic && hasKnownDeterministicEdit(originalTopic.slice(imperativeInOriginalTopic.index))) return { kind: "complete" };
+  // Some safe style intents are recognized on the complete sentence (where
+  // their wording is contextual) rather than the isolated suffix. Preserve
+  // that established supported path before treating a remaining clause as
+  // unowned.
+  if (spokenCoverage?.kind === "unsupported_compound" && meaningfulOperations(text, sourceCatalog).length) return { kind: "complete" };
+  const spoken = originalSpoken;
+  // The broad semantic-topic grammar intentionally consumes natural prose.
+  // Split it only when a conjunction introduces a new imperative edit clause;
+  // this leaves “designing and building Cliponaut” untouched.
+  const topic = originalTopic;
+  const imperativeInTopic = imperativeInOriginalTopic;
+  const coverageText = imperativeInTopic
+    ? text.replace(topic, `${topic.slice(0, imperativeInTopic.index).trim()}. ${topic.slice(imperativeInTopic.index + imperativeInTopic[0].length).trim()}`)
+    : text;
+  const coverageSpoken = extractSpokenMomentRequest(coverageText, sourceCatalog);
+  const clauses = editClausesOutsideQuotedSpeech(coverageText, coverageSpoken);
+  const supported = [];
+  const unsupported = [];
+  for (const clause of clauses) {
+    const plan = createEditPlan({ prompt: clause.text, sourceCatalog });
+    const hasOperation = plan.operations.some((operation) => !["merge"].includes(operation.type));
+    // A spoken selection is represented later by transcript/semantic planning,
+    // so it is a supported operation even though the deterministic plan has no
+    // clip until evidence is resolved.
+    const hasSelection = Boolean(extractSpokenMomentRequest(clause.text, sourceCatalog) || extractVisualMomentRequest(clause.text, sourceCatalog));
+    if (hasOperation || hasSelection || hasKnownDeterministicEdit(clause.text)) supported.push(clause);
+    else if (isEditingClause(clause.text)) unsupported.push(clause);
+  }
+  if (!unsupported.length) return { kind: "complete" };
+  if (!supported.length) {
+    return { kind: "unsupported", message: "I can’t do that edit yet, so I haven’t changed your video." };
+  }
+  const supportedPrompt = normalizeSupportedPrompt(supported);
+  if (!supportedPrompt) return { kind: "ambiguous", message: "Please clarify which edit you want me to make." };
+  const unsupportedPrompt = normalizeSupportedPrompt(unsupported);
+  const supportedDescription = `“${supportedPrompt}”`;
+  const unsupportedDescription = `“${unsupportedPrompt}”`;
+  return {
+    kind: "partial",
+    supportedPrompt,
+    supportedDescription,
+    unsupportedDescription,
+    message: `I can apply ${supportedDescription}, but ${unsupportedDescription} isn’t supported yet. Would you like me to proceed?`
+  };
 }
 
 function cleanMomentDescription(description = "") {

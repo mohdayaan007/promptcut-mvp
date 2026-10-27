@@ -1,4 +1,5 @@
 import { applyConversationTurn, validateConversationPlan } from "@/lib/editor-core/conversation-state";
+import { analyzeEditRequestCapabilities } from "@/lib/editor-core/edit-plan";
 import { createConversationJob, getAuthorizedSession, getSessionHistory } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
 import { signedDownloadUrl } from "@/lib/jobs/storage";
@@ -40,6 +41,11 @@ export async function POST(req, { params }) {
     if (baseJobId !== undefined && typeof baseJobId !== "string") throw new PublicRequestError("The selected edit is invalid.", 422);
     const current = [...history].reverse().find((version) => (!baseJobId || version.job_id === baseJobId) && version.status === "completed" && version.plan && Array.isArray(version.source_catalog));
     if (!current) throw new PublicRequestError("Wait for a successful edit before making another change.", 409);
+    const capability = analyzeEditRequestCapabilities(prompt.trim(), current.source_catalog);
+    if (capability.kind === "partial") {
+      return Response.json({ pendingConfirmation: capability }, { status: 200 });
+    }
+    if (capability.kind === "unsupported" || capability.kind === "ambiguous") throw new PublicRequestError(capability.message, 422);
     let plan;
     let confirmation;
     try {

@@ -31,8 +31,12 @@ import {
   saveUndoState,
   saveEditingSession,
   clearEditingSession,
+  clearPendingPartialEdit,
+  loadPendingPartialEdit,
+  savePendingPartialEdit,
   setUndoActiveJob,
   submitConversationTurn,
+  preflightEditingCapabilities,
   terminalAttemptPresentation,
   terminalAttemptMessage,
   terminalAttemptConversation,
@@ -96,6 +100,7 @@ export default function HomePage() {
   const [restoringResultUrl, setRestoringResultUrl] = useState(null);
   const [undoAnchor, setUndoAnchor] = useState(null);
   const [editingSession, setEditingSession] = useState(null);
+  const [pendingPartialEdit, setPendingPartialEdit] = useState(null);
 
   const videoInputRef = useRef(null);
   const imageInputRef = useRef(null);
@@ -210,6 +215,9 @@ export default function HomePage() {
     const saved = loadUndoState();
     const savedSession = loadEditingSession();
     setEditingSession(savedSession);
+    const savedPending = loadPendingPartialEdit();
+    if (savedPending?.sessionId === savedSession?.id) setPendingPartialEdit(savedPending);
+    else clearPendingPartialEdit();
     undoStateRef.current = saved;
     setUndoState(saved);
     setUndoAnchor(getInitialUndoAnchor(saved));
@@ -228,7 +236,7 @@ export default function HomePage() {
         if (stopped || !isCurrentPresentationAttempt(hydrationAttempt, presentationAttemptRef.current)) return;
         setEditingSession(saveEditingSession({ ...savedSession, version: sessionHistory.latestVersion }));
         let hasPreviousSuccessfulEdit = false;
-        setMessages(sessionHistory.history.flatMap((entry) => {
+        const restoredMessages = sessionHistory.history.flatMap((entry) => {
           const turns = [{ role: "user", text: entry.prompt, jobId: entry.jobId }];
           if (entry.status === "completed") {
             turns.push({ role: "assistant", text: entry.confirmation || "Your edit is ready.", jobId: entry.jobId });
@@ -237,7 +245,9 @@ export default function HomePage() {
             turns.push({ role: "assistant", text: terminalAttemptMessage(entry, hasPreviousSuccessfulEdit), jobId: entry.jobId });
           }
           return turns;
-        }));
+        });
+        if (savedPending?.sessionId === savedSession.id) restoredMessages.push({ role: "assistant", text: savedPending.message, pending: true });
+        setMessages(restoredMessages);
       }).catch(() => {});
     }
     const discover = async () => {
@@ -377,7 +387,28 @@ export default function HomePage() {
   const handleGenerate = async () => {
     if ((!videos.length && !editingSession) || !prompt.trim() || isProcessing) return;
 
-    const submittedPrompt = prompt;
+    let submittedPrompt = prompt;
+    const confirmation = /^(?:yes|yes\s*,?\s*proceed|proceed|continue|go ahead|okay|ok)$/i.test(submittedPrompt.trim());
+    const cancellation = /^(?:no|cancel|don't|do not|stop)$/i.test(submittedPrompt.trim());
+    if (pendingPartialEdit) {
+      if (cancellation) {
+        setPendingPartialEdit(null);
+        clearPendingPartialEdit();
+        setPrompt("");
+        setMessages((current) => [...current, { role: "user", text: submittedPrompt }, { role: "assistant", text: "Okay — I haven’t changed your video." }]);
+        return;
+      }
+      if (confirmation) {
+        submittedPrompt = pendingPartialEdit.supportedPrompt;
+        setPendingPartialEdit(null);
+        clearPendingPartialEdit();
+      } else {
+        // A new instruction supersedes the pending subset; it is never queued
+        // accidentally after the user changes direction.
+        setPendingPartialEdit(null);
+        clearPendingPartialEdit();
+      }
+    }
     const retainingPreview = Boolean(editingSession && undoStateRef.current?.current?.kind === "job" && resultUrl);
     const presentationAttempt = beginPresentationAttempt({ keepResult: retainingPreview });
     const turnId = `turn-${Date.now()}-${++turnIdRef.current}`;
@@ -395,6 +426,14 @@ export default function HomePage() {
       if (editingSession && undoStateRef.current?.current?.kind === "job") {
         const turn = await submitConversationTurn(editingSession, submittedPrompt, controller.signal, undoStateRef.current.current.session.id);
         if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
+        if (turn.pendingConfirmation) {
+          const pending = savePendingPartialEdit({ ...turn.pendingConfirmation, sessionId: editingSession.id });
+          setPendingPartialEdit(pending || turn.pendingConfirmation);
+          setStatus("done");
+          setPrompt("");
+          setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: turn.pendingConfirmation.message }]);
+          return;
+        }
         const nextSession = saveEditingSession(turn.session);
         setEditingSession(nextSession);
         setMessages((currentMessages) => currentMessages.map((message) => message.turnId === turnId ? { ...message, jobId: turn.job.id } : message));
@@ -404,6 +443,15 @@ export default function HomePage() {
         setPrompt("");
         return;
       }
+      const capability = await preflightEditingCapabilities(submittedPrompt, controller.signal);
+      if (capability.kind === "partial") {
+        setPendingPartialEdit(capability);
+        setStatus("idle");
+        setPrompt("");
+        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: capability.message }]);
+        return;
+      }
+      if (capability.kind === "unsupported" || capability.kind === "ambiguous") throw new Error(capability.message);
       const job = await uploadAndQueueJob({
         videos, referenceImage, prompt: submittedPrompt, exportQuality, signal: controller.signal,
         onProgress: setUploadProgress,
@@ -484,6 +532,8 @@ export default function HomePage() {
     clearUndoState();
     clearEditingSession();
     setEditingSession(null);
+    setPendingPartialEdit(null);
+    clearPendingPartialEdit();
     history.replaceState(null, "", window.location.pathname);
     if (videoInputRef.current) videoInputRef.current.value = "";
     if (imageInputRef.current) imageInputRef.current.value = "";
