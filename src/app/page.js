@@ -34,12 +34,15 @@ import {
   setUndoActiveJob,
   submitConversationTurn,
   terminalAttemptPresentation,
+  terminalAttemptMessage,
+  sourcesForTerminalAttempt,
   shouldScheduleUndoOriginalReveal,
   undoPreviewMode,
   uploadAndQueueJob,
   undoMediaReadyAction,
   waitForBrowserPaint,
 } from "@/lib/client/direct-upload";
+import { browserVideoPreflightError } from "@/lib/client/media-preflight";
 
 const MAX_VIDEO_COUNT = 5;
 
@@ -57,7 +60,7 @@ function getBrowserVideoMetadata(file) {
       resolve(metadata);
     };
     video.preload = "metadata";
-    video.onloadedmetadata = () => finish({ width: video.videoWidth, height: video.videoHeight });
+    video.onloadedmetadata = () => finish({ width: video.videoWidth, height: video.videoHeight, duration: video.duration });
     video.onerror = () => finish(null);
     video.src = url;
   });
@@ -141,7 +144,7 @@ export default function HomePage() {
   const showTerminalAttempt = useCallback((job) => {
     const presentation = terminalAttemptPresentation(job, resultUrlRef.current);
     setActiveJob(null);
-    setRestoredSources(job?.sources || []);
+    setRestoredSources((current) => sourcesForTerminalAttempt(job, current));
     setStatus(presentation.status);
     setResultUrl(presentation.resultUrl);
     setError(presentation.error);
@@ -221,10 +224,15 @@ export default function HomePage() {
       getEditingSessionHistory(savedSession).then((sessionHistory) => {
         if (stopped || !isCurrentPresentationAttempt(hydrationAttempt, presentationAttemptRef.current)) return;
         setEditingSession(saveEditingSession({ ...savedSession, version: sessionHistory.latestVersion }));
+        let hasPreviousSuccessfulEdit = false;
         setMessages(sessionHistory.history.flatMap((entry) => {
           const turns = [{ role: "user", text: entry.prompt, jobId: entry.jobId }];
-          if (entry.status === "completed") turns.push({ role: "assistant", text: entry.confirmation || "Your edit is ready.", jobId: entry.jobId });
-          else if (["failed", "cancelled"].includes(entry.status)) turns.push({ role: "assistant", text: entry.status === "cancelled" ? "This edit was cancelled. Your previous version is still available." : "We couldn’t complete that edit. Your previous version is still available.", jobId: entry.jobId });
+          if (entry.status === "completed") {
+            turns.push({ role: "assistant", text: entry.confirmation || "Your edit is ready.", jobId: entry.jobId });
+            hasPreviousSuccessfulEdit = true;
+          } else if (["failed", "cancelled"].includes(entry.status)) {
+            turns.push({ role: "assistant", text: terminalAttemptMessage(entry, hasPreviousSuccessfulEdit), jobId: entry.jobId });
+          }
           return turns;
         }));
       }).catch(() => {});
@@ -279,12 +287,12 @@ export default function HomePage() {
           } else {
             persistUndoState(recordTerminalJob(undoStateRef.current || emptyUndoState(), pollingSession, { ...job, status: "failed", error: "We couldn’t retrieve that edit." }));
             showTerminalAttempt({ ...job, status: "failed", error: "We couldn’t retrieve that edit." });
-            setMessages((current) => [...current, { role: "assistant", text: "We couldn’t retrieve that edit. Your previous version is still available." }]);
+            setMessages((current) => [...current, { role: "assistant", text: terminalAttemptMessage({ status: "failed", error: "We couldn’t retrieve that edit." }, Boolean(undoStateRef.current?.current)) }]);
           }
         } else if (["failed", "cancelled"].includes(job.status)) {
           persistUndoState(recordTerminalJob(undoStateRef.current || emptyUndoState(), pollingSession, job));
           showTerminalAttempt(job);
-          setMessages((current) => [...current, { role: "assistant", text: job.status === "cancelled" ? "This edit was cancelled. Your previous version is still available." : "We couldn’t complete that edit. Your previous version is still available." }]);
+          setMessages((current) => [...current, { role: "assistant", text: terminalAttemptMessage(job, Boolean(undoStateRef.current?.current)) }]);
         }
       } catch (statusError) {
         if (!stopped && isCurrentPresentationAttempt(pollingAttempt, presentationAttemptRef.current)) setError(statusError.message);
@@ -335,8 +343,13 @@ export default function HomePage() {
       return;
     }
     if (addedVideos.length > acceptedVideos.length) setError(`Only the first ${MAX_VIDEO_COUNT} videos can be added.`);
-    setVideos((currentVideos) => [...currentVideos, ...acceptedVideos]);
     const metadata = await Promise.all(acceptedVideos.map(getBrowserVideoMetadata));
+    const preflightError = metadata.map(browserVideoPreflightError).find(Boolean);
+    if (preflightError) {
+      setError(preflightError);
+      return;
+    }
+    setVideos((currentVideos) => [...currentVideos, ...acceptedVideos]);
     setVideoMetadata((currentMetadata) => [...currentMetadata, ...metadata]);
   };
 
@@ -407,7 +420,7 @@ export default function HomePage() {
       if (["failed", "cancelled"].includes(job.status)) {
           persistUndoState(recordTerminalJob(undoStateRef.current || emptyUndoState(), undoStateRef.current?.active, job));
         showTerminalAttempt(job);
-        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: job.status === "cancelled" ? "This edit was cancelled. Your previous version is still available." : "We couldn’t complete that edit. Your previous version is still available." }]);
+        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: terminalAttemptMessage(job, Boolean(undoStateRef.current?.current)) }]);
         return;
       }
       setStatus(job.status);
@@ -417,7 +430,7 @@ export default function HomePage() {
       if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
       persistUndoState(discardUndoActiveJob(undoStateRef.current || emptyUndoState()));
       showTerminalAttempt({ status: "failed", error: processingError.message });
-      setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: "We couldn’t complete that edit. Your previous version is still available." }]);
+      setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: terminalAttemptMessage({ status: "failed" }, Boolean(undoStateRef.current?.current)) }]);
     } finally {
       if (requestControllerRef.current === controller) requestControllerRef.current = null;
     }

@@ -796,6 +796,49 @@ async function waitForActiveFile(ai, uploadedFile) {
   return file;
 }
 
+/**
+ * Speech selection is intentionally transcript-owned.  A full video file is
+ * neither stronger evidence nor a prerequisite for selecting words that we
+ * already transcribe with timestamps.  Keeping this predicate conservative is
+ * important: anything that needs visual inspection (including semantic source
+ * references or delegated visual taste) stays on the full-video path.
+ */
+function canPlanFromTranscriptOnly({ spokenMomentRequest, semanticReferences, referenceStyleActive, prompt }) {
+  // A selection combined with another edit still needs the ordinary planner so
+  // that no requested operation is silently discarded.  The transcript-only
+  // fast path is deliberately limited to selecting speech (plus harmless
+  // selection wording such as "remove everything else").
+  const includesAdditionalEdit = /\b(?:make|turn|change|add|apply|replace|black\s*(?:and|&)\s*white|cinematic|crop|fade|zoom|speed|mute|caption|title|background|transition)\b/i.test(prompt);
+  return Boolean(spokenMomentRequest) &&
+    semanticReferences.length === 0 &&
+    !referenceStyleActive &&
+    !includesAdditionalEdit &&
+    !requiresDelegatedStyleJudgment(prompt);
+}
+
+function createTranscriptOwnedSpokenPlan({ prompt, hasMultipleVideos, sourceCatalog, localizedMoments, textStyleIntent }) {
+  const resolvedTextStyle = resolveTextStyleScope(textStyleIntent, prompt);
+  let plan = createEditPlan({ prompt, hasMultipleVideos, sourceCatalog, resolvedStyleIntent: resolvedTextStyle });
+  plan = applyAuthoritativeMomentSequence(plan, localizedMoments, { reject: spokenMomentError, mismatchReason: "SPEECH_SOURCE_MISMATCH" });
+  plan = reconcileCaptionOperation(plan, prompt);
+  plan = reconcileAudioControls(plan, prompt);
+  plan = reconcileVisualAdjustments(plan, prompt, { sourceCatalog, resolvedSemanticSources: [] });
+  if (resolvedTextStyle ? plan.operations.length : true) {
+    plan = resolvedTextStyle
+      ? reconcileResolvedStyleProfile(plan, resolvedTextStyle)
+      : reconcileStyleProfile(plan, prompt, { sourceCatalog, resolvedSemanticSources: [] });
+  }
+  if (!plan.operations.length) throw new UnsupportedEditRequestError("This edit is not supported yet");
+  return {
+    plan: addAutomaticMerge(collapseGlobalSourceColorGrades(plan), hasMultipleVideos),
+    styleDiagnostics: createStylePlanningDiagnostics({
+      styleIntent: textStyleIntent,
+      resolvedStyle: resolvedTextStyle,
+      planningPath: "transcript_owned_spoken"
+    })
+  };
+}
+
 async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions, textStyleIntent = null, referenceStyleActive = false }) {
   const ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const uploadedFiles = [];
@@ -807,13 +850,16 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
   const semanticReferences = compositionRequests ? [] : extractSemanticSourceReferences(prompt, sourceCatalog);
   const spokenMomentRequest = compositionRequests ? null : extractSpokenMomentRequest(prompt, sourceCatalog);
   const momentRequest = compositionRequests ? null : extractVisualMomentRequest(prompt, sourceCatalog);
+  const transcriptOwnedSpokenRequest = canPlanFromTranscriptOnly({ spokenMomentRequest, semanticReferences, referenceStyleActive, prompt });
   const requiresVisualUnderstanding = semanticReferences.length > 0;
   if (requiresVisualUnderstanding) {
     console.info("Gemini semantic source references extracted:", { semanticReferences });
   }
   try {
     const activeSources = [];
-    for (const input of sourceInputs) {
+    // Do not activate a complete source merely to localize spoken content.
+    // transcribeSource uploads a short-lived extracted audio track instead.
+    for (const input of transcriptOwnedSpokenRequest ? [] : sourceInputs) {
       try {
         const uploadedFile = await ai.files.upload({
           file: input.inputPath,
@@ -884,6 +930,13 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
         ? await localizeSpokenMoment({ momentRequest: request, sourceCatalog, resolvedSemanticSources, sourceInputs, ai, retryOptions, scratchDirectory, executionController, transcriptionOptions, transcripts })
         : await localizeVisualMoment({ momentRequest: request, sourceCatalog, resolvedSemanticSources, activeSources, ai, retryOptions });
       localizedMoments.push(localizedMoment);
+    }
+
+    if (transcriptOwnedSpokenRequest) {
+      const direct = createTranscriptOwnedSpokenPlan({
+        prompt, hasMultipleVideos, sourceCatalog, localizedMoments, textStyleIntent
+      });
+      return { ...direct, transcripts };
     }
 
     const delegatedDecision = textStyleIntent?.mode === "delegated_taste"

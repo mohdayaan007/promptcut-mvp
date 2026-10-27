@@ -10,7 +10,8 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, MAX_REFERENCE_IMAGE_BYTES, 
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, sourcesForTerminalAttempt, terminalAttemptMessage, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
+import { browserVideoPreflightError } from "@/lib/client/media-preflight";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
@@ -2306,18 +2307,54 @@ test("keep only the part where I talk about a topic uses speech boundaries and e
     { text: "Anyway", start_offset: "14.32s", end_offset: "14.4s" }
   ];
   const aiClient = createMockGemini({ responses: [
-    semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]),
-    JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] })
+    semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }])
   ], transcriptionInteractions: [interaction(words)] });
   const result = await withGeminiKey(() => createAiEditPlan({
     prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
     scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
   }));
-  assert.deepEqual(result.plan.operations, [
-    { type: "sequence", clips: [{ sourceId: "source-1", start: 10, end: 13.96 }] },
-    { type: "color_grade", style: "bw" }
-  ]);
-  assert.equal(aiClient.requests.length, 2, "semantic transcript matching, not visual timestamp planning, owns the boundary");
+  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 10, end: 13.96 }] }]);
+  assert.equal(aiClient.requests.length, 1, "semantic transcript matching, not visual timestamp planning, owns the boundary");
+  assert.deepEqual(aiClient.uploads.map((file) => file.uri), ["gemini:///scratch/source-1-speech.m4a"], "the full source is never activated for transcript-owned speech selection");
+});
+
+test("large pure spoken selection uses transcript evidence without full-video activation and rejects ambiguity", async () => {
+  const catalog = speechCatalog([{ ...sourceCatalog[0], duration: 216 }]);
+  const words = [
+    { text: "Gutter", start_offset: "100s", end_offset: "100.25s" },
+    { text: "Capital", start_offset: "100.25s", end_offset: "100.6s" },
+    { text: "is", start_offset: "100.6s", end_offset: "100.72s" },
+    { text: "our", start_offset: "100.72s", end_offset: "100.9s" },
+    { text: "partner.", start_offset: "100.9s", end_offset: "101.3s" },
+    { text: "Gutter", start_offset: "103s", end_offset: "103.25s" },
+    { text: "Capital", start_offset: "103.25s", end_offset: "103.6s" },
+    { text: "returns.", start_offset: "103.6s", end_offset: "104s" }
+  ];
+  const client = createMockGemini({
+    responses: [semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }])],
+    transcriptionInteractions: [interaction(words)]
+  });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Keep only the part where I talk about Gutter Capital.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: client,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 100, end: 101.8 }] }]);
+  assert.equal(client.requests.length, 1, "only the transcript segment matcher receives a model request");
+  assert.equal(client.uploads.length, 1, "only extracted speech audio is uploaded");
+  assert.match(client.uploads[0].uri, /source-1-speech\.m4a$/);
+
+  const ambiguous = createMockGemini({
+    responses: [semanticTranscriptResponse("source-1", [
+      { startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" },
+      { startSegmentId: "source-1-seg-2", endSegmentId: "source-1-seg-2" }
+    ])],
+    transcriptionInteractions: [interaction(words)]
+  });
+  await withGeminiKey(() => assertSpokenRejection(() => createAiEditPlan({
+    prompt: "Keep only the part where I talk about Gutter Capital.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: ambiguous,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }), "SPEECH_AMBIGUOUS"));
+  assert.equal(ambiguous.uploads.length, 1, "an ambiguous transcript result must not fall back to a full-video guess");
 });
 
 test("semantic spoken ranges override final timestamps and reject conflicting source operations", async () => {
@@ -2343,10 +2380,12 @@ test("semantic spoken ranges override final timestamps and reject conflicting so
     semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]),
     JSON.stringify({ version: "2", operations: [{ type: "color_grade", sourceId: "source-2", style: "bw" }] })
   ], transcriptionInteractions: [interaction(words)] });
-  await withGeminiKey(() => assertSpokenRejection(() => createAiEditPlan({
+  const transcriptOwned = await withGeminiKey(() => createAiEditPlan({
     prompt: "From video 1, use the part where I explain pricing.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: conflict,
     scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
-  }), "SPEECH_SOURCE_MISMATCH"));
+  }));
+  assert.deepEqual(transcriptOwned.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 2, end: 2.5 }] }]);
+  assert.equal(conflict.requests.length, 1, "a pure speech selection does not accept an unrelated full-video planner operation");
 });
 
 test("semantic spoken response rejects malformed, unknown, and reversed segment references", async () => {
@@ -2415,7 +2454,7 @@ test("semantic matcher retry and failure matrix preserves its one canonical tran
     const { aiClient, promise } = run({ failures: [error], responses: [undefined, semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]), JSON.stringify(fullSequence(catalog))] });
     await promise;
     assert.equal(aiClient.interactionRequests.length, 1);
-    assert.equal(aiClient.requests.length, 3);
+    assert.equal(aiClient.requests.length, 2, "the recovered transcript matcher does not need a second full-video planning request");
   }
   const exhausted = run({ failures: [503, 503, 503].map((status) => Object.assign(new Error("busy"), { status })) });
   await assert.rejects(exhausted.promise, UnsupportedEditRequestError);
@@ -2438,6 +2477,7 @@ test("ordinary visual moments remain on the visual path without speech transcrip
   assert.ok(requiresVisualMomentUnderstanding("Use the part where the car enters the frame.", catalog));
   await withGeminiKey(() => createAiEditPlan({ prompt: "Use the part where the car enters the frame.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient }));
   assert.equal(aiClient.interactionRequests.length, 0);
+  assert.equal(aiClient.uploads.length, 1, "visual localization still requires an active full-video source");
 });
 
 test("exact spoken modes create server-authoritative V2 ranges without visual localization", async () => {
@@ -2452,8 +2492,8 @@ test("exact spoken modes create server-authoritative V2 ranges without visual lo
     const aiClient = createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] }), transcriptionInteractions: [interaction(transcriptWords.map((word) => ({ text: word.text, start_offset: `${word.start}s`, end_offset: `${word.end}s` })))] });
     const result = await withGeminiKey(() => createAiEditPlan({ prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient, scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} } }));
     assert.deepEqual(result.plan.operations[0], { type: "sequence", clips: [{ sourceId: "source-1", ...range }] });
-    assert.deepEqual(result.plan.operations[1], { type: "color_grade", style: "bw" });
-    assert.equal(aiClient.requests.length, 1);
+    assert.equal(result.plan.operations.length, 1, "an unsolicited model color grade cannot alter a transcript-owned request");
+    assert.equal(aiClient.requests.length, 0, "exact speech matching needs no full-video planner call");
   }
 });
 
@@ -2637,11 +2677,12 @@ test("spoken no-match, paired ambiguity, and final source mismatch reject safely
     aiClient: createMockGemini({ transcriptionInteractions: [interaction(repeatedPairs)] }), scratchDirectory: "/scratch",
     transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
   }), UnsupportedEditRequestError));
-  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+  const sourceAuthoritative = await withGeminiKey(() => createAiEditPlan({
     prompt: 'Use the part where I say "Welcome".', sourceCatalog: catalog, sourceInputs: plannerSources(catalog), scratchDirectory: "/scratch",
     aiClient: createMockGemini({ responseText: JSON.stringify({ version: "2", operations: [{ type: "color_grade", sourceId: "source-2", style: "bw" }] }), transcriptionInteractions: [interaction([{ text: "Welcome", start_offset: "1s", end_offset: "1.2s" }])] }),
     transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
-  }), UnsupportedEditRequestError));
+  }));
+  assert.deepEqual(sourceAuthoritative.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 1.2 }] }], "a transcript-owned request never accepts an unsolicited conflicting source operation");
 });
 
 test("a source without an audio stream rejects speech selection without transcription", async () => {
@@ -2943,12 +2984,22 @@ test("terminal attempts retain a completed preview without consuming Undo histor
   assert.deepEqual(terminalAttemptPresentation({ status: "cancelled" }, "https://signed.example/previous.mp4"), {
     status: "error", resultUrl: "https://signed.example/previous.mp4", error: "This edit was cancelled."
   }, "a cancelled follow-up retains the previous playable MP4");
+  assert.deepEqual(sourcesForTerminalAttempt({ status: "failed" }, sources), sources, "a rejected follow-up retains restored source cards");
+  assert.equal(terminalAttemptMessage({ status: "failed" }, false), "We couldn’t complete that edit. No previous edit was created.");
+  assert.equal(terminalAttemptMessage({ status: "cancelled" }, true), "This edit was cancelled. Your previous version is still available.");
 
   const terminal = recordTerminalJob(duringB, sessionB, { status: "failed", error: "Rendering failed.", sources });
   assert.deepEqual(terminal.terminal, {
     session: sessionB, status: "failed", error: "Rendering failed.", sources
   }, "an authoritative terminal job survives refresh without altering successful history");
   assert.equal(clearTerminalJob(terminal).terminal, null, "explicitly restoring the previous result clears only terminal presentation state");
+});
+
+test("browser media preflight rejects invalid duration and resolution before upload", () => {
+  assert.equal(browserVideoPreflightError({ width: 1920, height: 1080, duration: 12 }), null);
+  assert.match(browserVideoPreflightError({ width: 1920, height: 1080, duration: 601 }), /10 minutes/);
+  assert.match(browserVideoPreflightError({ width: 7680, height: 4320, duration: 12 }), /resolution/);
+  assert.match(browserVideoPreflightError({ width: 0, height: 0, duration: NaN }), /readable video/);
 });
 
 test("client presentation generation rejects late polling and restoration responses", () => {

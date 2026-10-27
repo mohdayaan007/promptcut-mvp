@@ -426,6 +426,18 @@ export function terminalAttemptPresentation(job, retainedResultUrl = null) {
   });
 }
 
+/** Preserve source cards after a rejected follow-up that has no job payload. */
+export function sourcesForTerminalAttempt(job, priorSources = []) {
+  return Array.isArray(job?.sources) && job.sources.length ? job.sources : Array.isArray(priorSources) ? priorSources : [];
+}
+
+export function terminalAttemptMessage(job, hasPreviousSuccessfulEdit = false) {
+  const suffix = hasPreviousSuccessfulEdit ? " Your previous version is still available." : " No previous edit was created.";
+  return job?.status === "cancelled"
+    ? `This edit was cancelled.${suffix}`
+    : `We couldn’t complete that edit.${suffix}`;
+}
+
 /** Prevents an older polling or restoration response from replacing a newer attempt. */
 export function isCurrentPresentationAttempt(attempt, currentAttempt) {
   return Number.isInteger(attempt) && attempt === currentAttempt;
