@@ -2149,6 +2149,21 @@ test("spoken transcript segmentation is stable and uses sentence/pause boundarie
   ]);
 });
 
+test("speech segmentation keeps short intra-thought pauses but exposes a later topic-transition pause", () => {
+  const boundary = createCanonicalTranscript({ sourceId: "source-1", duration: 30, words: [
+    { text: "Ahmed", start: 10, end: 10.3 }, { text: "Perfumes", start: 10.3, end: 10.7 },
+    { text: "has", start: 10.7, end: 10.9 }, { text: "lasting", start: 11.35, end: 11.7 },
+    { text: "scents", start: 11.7, end: 12.1 }, { text: "for", start: 12.1, end: 12.25 },
+    { text: "everyday", start: 12.5, end: 12.8 }, { text: "wear", start: 12.8, end: 13.05 },
+    { text: "with", start: 13.05, end: 13.2 }, { text: "confidence", start: 13.2, end: 13.6 },
+    { text: "Anyway", start: 14.32, end: 14.4 }
+  ] });
+  assert.deepEqual(boundary.segments.map(({ start, end, text }) => ({ start, end, text })), [
+    { start: 10, end: 13.6, text: "Ahmed Perfumes has lasting scents for everyday wear with confidence" },
+    { start: 14.32, end: 14.4, text: "Anyway" }
+  ]);
+});
+
 test("spoken phrase normalization covers punctuation, contractions, numbers, and currency", () => {
   assert.equal(normalizePhrase(" Welcome   to Kerala! "), "welcome to kerala");
   assert.equal(normalizePhrase("I'm here"), "i am here");
@@ -2271,8 +2286,38 @@ test("semantic spoken matching derives coherent ranges and validates segment IDs
     prompt: "Use the part where I explain pricing and make it black and white.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
     scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
   }));
-  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 5.3 }] }, { type: "color_grade", style: "bw" }]);
+  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 5.8 }] }, { type: "color_grade", style: "bw" }]);
   assert.equal(aiClient.requests.length, 2);
+});
+
+test("keep only the part where I talk about a topic uses speech boundaries and excludes the next utterance", async () => {
+  const catalog = speechCatalog([{ ...sourceCatalog[0], duration: 30 }]);
+  const prompt = "Keep only the part where I talk about Ahmed Perfumes. Remove everything else.";
+  const request = extractSpokenMomentRequest(prompt, catalog);
+  assert.equal(requiresSpokenMomentUnderstanding(prompt, catalog), true);
+  assert.equal(request?.type, "semantic");
+  assert.equal(request?.mode, "EVENT_SEGMENT");
+  const words = [
+    { text: "Ahmed", start_offset: "10s", end_offset: "10.3s" }, { text: "Perfumes", start_offset: "10.3s", end_offset: "10.7s" },
+    { text: "has", start_offset: "10.7s", end_offset: "10.9s" }, { text: "lasting", start_offset: "11.35s", end_offset: "11.7s" },
+    { text: "scents", start_offset: "11.7s", end_offset: "12.1s" }, { text: "for", start_offset: "12.1s", end_offset: "12.25s" },
+    { text: "everyday", start_offset: "12.5s", end_offset: "12.8s" }, { text: "wear", start_offset: "12.8s", end_offset: "13.05s" },
+    { text: "with", start_offset: "13.05s", end_offset: "13.2s" }, { text: "confidence", start_offset: "13.2s", end_offset: "13.6s" },
+    { text: "Anyway", start_offset: "14.32s", end_offset: "14.4s" }
+  ];
+  const aiClient = createMockGemini({ responses: [
+    semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]),
+    JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] })
+  ], transcriptionInteractions: [interaction(words)] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 10, end: 13.96 }] },
+    { type: "color_grade", style: "bw" }
+  ]);
+  assert.equal(aiClient.requests.length, 2, "semantic transcript matching, not visual timestamp planning, owns the boundary");
 });
 
 test("semantic spoken ranges override final timestamps and reject conflicting source operations", async () => {

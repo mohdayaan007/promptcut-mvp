@@ -559,6 +559,25 @@ function exactSpokenCandidates(transcript, momentRequest, source) {
   return candidates.map((candidate) => ({ sourceId: source.sourceId, ...candidate }));
 }
 
+const MAX_SEMANTIC_TRAILING_SILENCE_SECONDS = 0.5;
+
+function semanticSegmentRange({ momentRequest, startSegment, endSegment, nextSegment, source }) {
+  const range = momentRequest.mode === "START_BOUNDARY"
+    ? { start: startSegment.start, end: source.duration }
+    : momentRequest.mode === "END_BOUNDARY"
+      ? { start: 0, end: endSegment.end }
+      : { start: startSegment.start, end: endSegment.end };
+  // Canonical segments expose a meaningful observed pause before the next
+  // utterance. For a semantic whole-topic selection, retain half of that
+  // evidence-backed silence (with a general cap for very long pauses) so a
+  // cut does not land on the final phoneme or enter the following utterance.
+  if (momentRequest.mode === "EVENT_SEGMENT" && nextSegment?.start > endSegment.end) {
+    const silence = nextSegment.start - endSegment.end;
+    range.end = Math.min(source.duration, endSegment.end + Math.min(silence / 2, MAX_SEMANTIC_TRAILING_SILENCE_SECONDS));
+  }
+  return range;
+}
+
 function validateSemanticTranscriptCandidates(response, momentRequest, transcript, source) {
   if (response?.sourceId !== source.sourceId) throw spokenMomentError("SPEECH_SOURCE_MISMATCH", { sourceId: source.sourceId });
   if (response?.momentId !== momentRequest.momentId || !Array.isArray(response?.candidates)) {
@@ -581,11 +600,7 @@ function validateSemanticTranscriptCandidates(response, momentRequest, transcrip
     if (startIndex > endIndex) throw spokenMomentError("SPEECH_INVALID_SEGMENT_RANGE", { sourceId: source.sourceId });
     const startSegment = segments[startIndex];
     const endSegment = segments[endIndex];
-    const range = momentRequest.mode === "START_BOUNDARY"
-      ? { start: startSegment.start, end: source.duration }
-      : momentRequest.mode === "END_BOUNDARY"
-        ? { start: 0, end: endSegment.end }
-        : { start: startSegment.start, end: endSegment.end };
+    const range = semanticSegmentRange({ momentRequest, startSegment, endSegment, nextSegment: segments[endIndex + 1], source });
     if (!Number.isFinite(range.start) || !Number.isFinite(range.end) || range.start < 0 || range.end <= range.start || range.end > source.duration) {
       throw spokenMomentError("SPEECH_INVALID_SEGMENT_RANGE", { sourceId: source.sourceId });
     }
