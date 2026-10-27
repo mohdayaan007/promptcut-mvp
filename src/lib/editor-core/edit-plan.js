@@ -267,6 +267,65 @@ export function requiresSpokenMomentUnderstanding(prompt = "", sourceCatalog = [
   return Boolean(extractSpokenMomentRequest(prompt, sourceCatalog));
 }
 
+function meaningfulOperations(prompt, sourceCatalog) {
+  return createEditPlan({ prompt, sourceCatalog }).operations.filter((operation) => !["sequence", "merge"].includes(operation.type));
+}
+
+function allowedSpeechSelectionTail(value = "") {
+  const tail = value.trim().replace(/^[,.!?;:\s]+/, "").replace(/[.!?\s]+$/, "").toLowerCase();
+  return !tail || /^(?:please\s+)?remove\s+(?:everything|all(?:\s+the\s+rest)?)\s+else$/.test(tail);
+}
+
+function quotedSpeechTail(prompt, request) {
+  const phrase = request.mode === MOMENT_MODES.START_END_BOUNDARY ? request.endPhrase : request.startPhrase || request.endPhrase;
+  const quote = String(phrase || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = quote && new RegExp(`["“]${quote}["”]`, "i").exec(prompt);
+  return match ? prompt.slice(match.index + match[0].length) : null;
+}
+
+/**
+ * Classifies a spoken selection without guessing whether unconsumed text was
+ * intentional. A fast path is allowed only when the complete request is the
+ * selection itself (plus its explicit "remove everything else" wording).
+ */
+export function analyzeSpokenRequestCoverage(prompt = "", sourceCatalog = []) {
+  const request = extractSpokenMomentRequest(prompt, sourceCatalog);
+  if (!request) return null;
+
+  if (request.type === "exact") {
+    const tail = quotedSpeechTail(prompt, request);
+    if (tail === null || allowedSpeechSelectionTail(tail)) return { kind: "pure", request };
+    const operations = meaningfulOperations(tail, sourceCatalog);
+    return operations.length ? { kind: "supported_compound", request } : { kind: "unsupported_compound", request };
+  }
+
+  const topicKey = request.startTopicDescription || request.endTopicDescription;
+  const topicIndex = topicKey ? prompt.toLowerCase().indexOf(topicKey.toLowerCase()) : -1;
+  if (topicIndex < 0) return { kind: "unsupported_compound", request };
+  const topicEnd = topicIndex + topicKey.length;
+  const description = prompt.slice(topicIndex, topicEnd);
+  const conjunction = /\s+(?:and|then|also)\s+/ig;
+  let compound;
+  while ((compound = conjunction.exec(description))) {
+    const suffix = description.slice(compound.index + compound[0].length);
+    const operations = meaningfulOperations(suffix, sourceCatalog);
+    if (operations.length) {
+      const adjustedRequest = request.startTopicDescription
+        ? { ...request, startTopicDescription: description.slice(0, compound.index).trim() }
+        : { ...request, endTopicDescription: description.slice(0, compound.index).trim() };
+      return { kind: "supported_compound", request: adjustedRequest };
+    }
+    // A semantic topic joined to another clause is ambiguous without a
+    // supported operation; fail closed rather than silently treating it as
+    // topic text or discarding it.
+    return { kind: "unsupported_compound", request };
+  }
+  const tail = prompt.slice(topicEnd);
+  if (allowedSpeechSelectionTail(tail)) return { kind: "pure", request };
+  const operations = meaningfulOperations(tail, sourceCatalog);
+  return operations.length ? { kind: "supported_compound", request } : { kind: "unsupported_compound", request };
+}
+
 function cleanMomentDescription(description = "") {
   return description
     .replace(/\s*(?:[,.!?;:]|\b(?:please|thanks?)\b).*$/i, "")

@@ -13,7 +13,7 @@ import { safeSourceMetadata } from "@/lib/jobs/http";
 import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, sourcesForTerminalAttempt, terminalAttemptMessage, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
 import { browserVideoPreflightError } from "@/lib/client/media-preflight";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
-import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { analyzeSpokenRequestCoverage, createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createDelegatedStyleDecisionJsonSchema, createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
@@ -2355,6 +2355,44 @@ test("large pure spoken selection uses transcript evidence without full-video ac
     scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
   }), "SPEECH_AMBIGUOUS"));
   assert.equal(ambiguous.uploads.length, 1, "an ambiguous transcript result must not fall back to a full-video guess");
+});
+
+test("speech fast path accounts for every compound clause before execution", async () => {
+  const catalog = speechCatalog([{ ...sourceCatalog[0], duration: 30 }]);
+  const unsupported = [
+    'Use the part where I say "Welcome" and blur it.',
+    'Use the part where I say "Welcome" and reverse it.',
+    'Use the part where I say "Welcome" and stabilize it.',
+    'Use the part where I say "Welcome" and translate it to French.',
+    'Use the part where I say "Welcome" and add an unfamiliar hologram.'
+  ];
+  for (const prompt of unsupported) {
+    assert.equal(analyzeSpokenRequestCoverage(prompt, catalog)?.kind, "unsupported_compound", prompt);
+    const aiClient = createMockGemini();
+    await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+      prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+      scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+    }), (error) => error instanceof UnsupportedEditRequestError && /compound speech edit/i.test(error.message)));
+    assert.equal(aiClient.uploads.length, 0, "unsupported compound request must be rejected before media activation");
+  }
+
+  const quoted = 'Use the part where I say "Welcome".';
+  assert.equal(analyzeSpokenRequestCoverage(quoted, catalog)?.kind, "pure");
+  const supported = 'Use the part where I say "Welcome" and make it black and white.';
+  assert.equal(analyzeSpokenRequestCoverage(supported, catalog)?.kind, "supported_compound");
+  const aiClient = createMockGemini({
+    responseText: JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] }),
+    transcriptionInteractions: [interaction([{ text: "Welcome", start_offset: "1s", end_offset: "1.4s" }])]
+  });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: supported, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 1.4 }] },
+    { type: "color_grade", style: "bw" }
+  ]);
+  assert.ok(aiClient.uploads.some((file) => file.uri.endsWith("source-1.mp4")), "supported compound requests use the full planner path");
 });
 
 test("semantic spoken ranges override final timestamps and reject conflicting source operations", async () => {
