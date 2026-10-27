@@ -32,9 +32,10 @@ export default function PricingPage() {
             <span className="cliponaut-member-badge">Founding Member Access</span>
             <p>Early access</p>
           </div>
+          <p className="cliponaut-member-note">Early paid beta access at the introductory price shown here.</p>
           <h2>Cliponaut Pro</h2>
           <p className="cliponaut-plan-summary">Natural-language video editing for your real projects.</p>
-          <p className="cliponaut-price"><span>$6</span> / month</p>
+          <p className="cliponaut-price"><span>$6</span> USD / month</p>
           <p className="cliponaut-plan-note">Recurring monthly. No free tier. No annual plan.</p>
           <div className="cliponaut-plan-rule" />
           <ul className="cliponaut-plan-list">
