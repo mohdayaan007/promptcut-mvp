@@ -236,15 +236,16 @@ export function requiresMomentCompositionUnderstanding(prompt = "", sourceCatalo
 // form supported here; topic requests are routed but deferred to Stage 4.
 export function extractSpokenMomentRequest(prompt = "", sourceCatalog = []) {
   if (!prompt.trim() || /\d+:\d+\s*(?:to|until|through)\s*\d+:\d+/i.test(prompt)) return null;
+  const parsePrompt = prompt.replace(/'([^']+)'/g, '"$1"');
   const quoted = `(?:I|he|she|they|we)?\\s*(?:say|says|said)\\s*["“]([^"”]+)["”]`;
-  const paired = prompt.match(new RegExp(`\\b(?:start|begin|cut\\s+in)(?:\\s+from)?\\s+when\\s+${quoted}\\s+(?:and|then)\\s+(?:end|stop|cut\\s+(?:off|everything\\s+after))(?:\\s+(?:when|once|after))?\\s+${quoted}`, "i"));
-  const start = paired ? null : prompt.match(new RegExp(`\\b(?:start|begin|cut\\s+in)(?:\\s+from)?\\s+when\\s+${quoted}`, "i"));
-  const end = paired ? null : prompt.match(new RegExp(`\\b(?:end|stop|cut\\s+(?:off|everything\\s+after))(?:\\s+(?:when|once|after))?\\s+${quoted}`, "i"));
-  const segment = paired || start || end ? null : prompt.match(new RegExp(`\\b(?:use|show|keep|trim(?:\\s+to)?)(?:\\s+only)?(?:\\s+(?:me|this|the\\s+video))?\\s+(?:the\\s+)?(?:part|bit|section|moment|clip)\\s+(?:where|when)\\s+${quoted}`, "i"));
-  const semanticPaired = prompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)\s+(?:and|then)\s+(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once|after))?\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
-  const semanticStart = semanticPaired ? null : prompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
-  const semanticEnd = semanticPaired ? null : prompt.match(/\b(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once|after))?\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
-  const semanticSegment = semanticPaired || semanticStart || semanticEnd ? null : prompt.match(/\b(?:use|show|keep|trim(?:\s+to)?)(?:\s+only)?(?:\s+(?:me|this|the\s+video))?\s+(?:the\s+)?(?:part|bit|section|moment|clip)\s+(?:where|when)\s+(?:I|he|she|they|we)?\s*(?:explain|discuss|talk(?:ing)?\s+about|speaking\s+about)\s+(.+?)(?=[.!?]|$)/i);
+  const paired = parsePrompt.match(new RegExp(`\\b(?:start|begin|cut\\s+in)(?:\\s+from)?\\s+when\\s+${quoted}\\s+(?:and|then)\\s+(?:end|stop|cut\\s+(?:off|everything\\s+after))(?:\\s+(?:when|once|after))?\\s+${quoted}`, "i"));
+  const start = paired ? null : parsePrompt.match(new RegExp(`\\b(?:start|begin|cut\\s+in)(?:\\s+from)?\\s+when\\s+${quoted}`, "i"));
+  const end = paired ? null : parsePrompt.match(new RegExp(`\\b(?:end|stop|cut\\s+(?:off|everything\\s+after))(?:\\s+(?:when|once|after))?\\s+${quoted}`, "i"));
+  const segment = paired || start || end ? null : parsePrompt.match(new RegExp(`\\b(?:use|show|keep|trim(?:\\s+to)?)(?:\\s+only)?(?:\\s+(?:me|this|the\\s+video))?\\s+(?:the\\s+)?(?:part|bit|section|moment|clip)\\s+(?:where|when)\\s+${quoted}`, "i"));
+  const semanticPaired = parsePrompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)\s+(?:and|then)\s+(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once|after))?\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
+  const semanticStart = semanticPaired ? null : parsePrompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
+  const semanticEnd = semanticPaired ? null : parsePrompt.match(/\b(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once|after))?\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?\s*(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
+  const semanticSegment = semanticPaired || semanticStart || semanticEnd ? null : parsePrompt.match(/\b(?:use|show|keep|trim(?:\s+to)?)(?:\s+only)?(?:\s+(?:me|this|the\s+video))?\s+(?:the\s+)?(?:part|bit|section|moment|clip)\s+(?:where|when)\s+(?:I|he|she|they|we)?\s*(?:explain|discuss|talk(?:ing)?\s+about|speaking\s+about)\s+(.+?)(?=[.!?]|$)/i);
   if (!paired && !start && !end && !segment && !semanticPaired && !semanticStart && !semanticEnd && !semanticSegment) return null;
 
   const semanticReferences = extractSemanticSourceReferences(prompt, sourceCatalog);
@@ -276,10 +277,32 @@ function allowedSpeechSelectionTail(value = "") {
   return !tail || /^(?:please\s+)?remove\s+(?:everything|all(?:\s+the\s+rest)?)\s+else$/.test(tail);
 }
 
+function selectionClauseStart(prompt, beforeIndex) {
+  const command = /\b(?:use|show|keep|trim(?:\s+to)?|start|begin|end|stop|cut\s+in)\b/ig;
+  let match;
+  let start = -1;
+  while ((match = command.exec(prompt))) {
+    if (match.index >= beforeIndex) break;
+    start = match.index;
+  }
+  return start;
+}
+
+function coverageForAdditionalClause(clause, sourceCatalog) {
+  return meaningfulOperations(clause, sourceCatalog).length ? "supported_compound" : "unsupported_compound";
+}
+
+// This identifies grammar rather than named effects: an imperative verb plus
+// a direct editing object is not safely interpretable as part of a topic.
+function looksLikeImperativeEditClause(clause) {
+  const value = clause.trim();
+  return !/^[a-z]+ing\b/i.test(value) && /^[a-z]+\s+(?:it|this|that|the\s+(?:video|clip|footage)|my\s+[a-z]+)/i.test(value);
+}
+
 function quotedSpeechTail(prompt, request) {
   const phrase = request.mode === MOMENT_MODES.START_END_BOUNDARY ? request.endPhrase : request.startPhrase || request.endPhrase;
   const quote = String(phrase || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = quote && new RegExp(`["“]${quote}["”]`, "i").exec(prompt);
+  const match = quote && new RegExp(`["“']${quote}["”']`, "i").exec(prompt);
   return match ? prompt.slice(match.index + match[0].length) : null;
 }
 
@@ -294,9 +317,12 @@ export function analyzeSpokenRequestCoverage(prompt = "", sourceCatalog = []) {
 
   if (request.type === "exact") {
     const tail = quotedSpeechTail(prompt, request);
+    const phraseIndex = prompt.toLowerCase().indexOf(String(request.startPhrase || request.endPhrase).toLowerCase());
+    const start = selectionClauseStart(prompt, phraseIndex);
+    const prefix = start >= 0 ? prompt.slice(0, start) : "";
+    if (prefix.trim()) return { kind: coverageForAdditionalClause(prefix, sourceCatalog), request };
     if (tail === null || allowedSpeechSelectionTail(tail)) return { kind: "pure", request };
-    const operations = meaningfulOperations(tail, sourceCatalog);
-    return operations.length ? { kind: "supported_compound", request } : { kind: "unsupported_compound", request };
+    return { kind: coverageForAdditionalClause(tail, sourceCatalog), request };
   }
 
   const topicKey = request.startTopicDescription || request.endTopicDescription;
@@ -304,6 +330,9 @@ export function analyzeSpokenRequestCoverage(prompt = "", sourceCatalog = []) {
   if (topicIndex < 0) return { kind: "unsupported_compound", request };
   const topicEnd = topicIndex + topicKey.length;
   const description = prompt.slice(topicIndex, topicEnd);
+  const selectionStart = selectionClauseStart(prompt, topicIndex);
+  const prefix = selectionStart >= 0 ? prompt.slice(0, selectionStart) : "";
+  if (prefix.trim()) return { kind: coverageForAdditionalClause(prefix, sourceCatalog), request };
   const conjunction = /\s+(?:and|then|also)\s+/ig;
   let compound;
   while ((compound = conjunction.exec(description))) {
@@ -315,10 +344,7 @@ export function analyzeSpokenRequestCoverage(prompt = "", sourceCatalog = []) {
         : { ...request, endTopicDescription: description.slice(0, compound.index).trim() };
       return { kind: "supported_compound", request: adjustedRequest };
     }
-    // A semantic topic joined to another clause is ambiguous without a
-    // supported operation; fail closed rather than silently treating it as
-    // topic text or discarding it.
-    return { kind: "unsupported_compound", request };
+    if (looksLikeImperativeEditClause(suffix)) return { kind: "unsupported_compound", request };
   }
   const tail = prompt.slice(topicEnd);
   if (allowedSpeechSelectionTail(tail)) return { kind: "pure", request };

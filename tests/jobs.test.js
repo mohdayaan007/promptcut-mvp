@@ -2395,6 +2395,61 @@ test("speech fast path accounts for every compound clause before execution", asy
   assert.ok(aiClient.uploads.some((file) => file.uri.endsWith("source-1.mp4")), "supported compound requests use the full planner path");
 });
 
+test("speech coverage accounts for prefix clauses without rejecting natural topic conjunctions", async () => {
+  const catalog = speechCatalog([{ ...sourceCatalog[0], duration: 30 }]);
+  const unsupportedPrefixes = [
+    "Blur my face. Keep only the part where I talk about Cliponaut.",
+    "Reverse the video. Use the part where I say 'Welcome'."
+  ];
+  for (const prompt of unsupportedPrefixes) {
+    assert.equal(analyzeSpokenRequestCoverage(prompt, catalog)?.kind, "unsupported_compound", prompt);
+    const aiClient = createMockGemini();
+    await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+      prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+      scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+    }), UnsupportedEditRequestError));
+    assert.equal(aiClient.uploads.length, 0, "unaccounted prefix must reject before media activation");
+  }
+
+  const supportedPrefix = "Make it black and white. Keep only the part where I discuss pricing.";
+  assert.equal(analyzeSpokenRequestCoverage(supportedPrefix, catalog)?.kind, "supported_compound");
+  const supportedClient = createMockGemini({
+    responses: [
+      semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]),
+      JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] })
+    ],
+    transcriptionInteractions: [interaction([{ text: "Pricing.", start_offset: "2s", end_offset: "2.5s" }])]
+  });
+  const supported = await withGeminiKey(() => createAiEditPlan({
+    prompt: supportedPrefix, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: supportedClient,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(supported.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 2, end: 2.5 }] },
+    { type: "color_grade", style: "bw" }
+  ]);
+  assert.ok(supportedClient.uploads.some((file) => file.uri.endsWith("source-1.mp4")), "supported prefix operation stays on the full planner path");
+
+  const topics = [
+    "Keep only the part where I talk about building the MVP in 14 days while working full time and leaving my job to focus on Cliponaut. Remove everything else.",
+    "Keep only the part where I discuss designing and building Cliponaut.",
+    "Keep only the part where I talk about testing and improving the MVP."
+  ];
+  for (const prompt of topics) {
+    assert.equal(analyzeSpokenRequestCoverage(prompt, catalog)?.kind, "pure", prompt);
+    const aiClient = createMockGemini({
+      responses: [semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }])],
+      transcriptionInteractions: [interaction([{ text: "Topic.", start_offset: "4s", end_offset: "4.5s" }])]
+    });
+    const result = await withGeminiKey(() => createAiEditPlan({
+      prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+      scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+    }));
+    assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 4, end: 4.5 }] }]);
+    assert.deepEqual(aiClient.uploads.map((file) => file.uri), ["gemini:///scratch/source-1-speech.m4a"], "natural topic conjunction retains audio-only planning");
+  }
+});
+
 test("semantic spoken ranges override final timestamps and reject conflicting source operations", async () => {
   const catalog = speechCatalog(sourceCatalog.slice(0, 2));
   const words = [{ text: "Pricing.", start_offset: "2s", end_offset: "2.5s" }];
