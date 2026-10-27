@@ -57,6 +57,7 @@ function safeTerminalState(state) {
     session: { id: state.session.id, accessToken: state.session.accessToken },
     status: state.status,
     error: safePrompt(state.error),
+    prompt: safePrompt(state.prompt),
     sources: safeSources(state.sources)
   };
 }
@@ -145,7 +146,9 @@ export function consumeUndo(state) {
 /** Persists only the latest authoritative terminal presentation, never history. */
 export function recordTerminalJob(state, session, job) {
   const normalized = normalizeUndoState(state).state;
-  const terminal = safeTerminalState({ session, status: job?.status, error: job?.error, sources: job?.sources });
+  const terminal = safeTerminalState({
+    session, status: job?.status, error: job?.error, prompt: job?.prompt ?? normalized.active?.prompt, sources: job?.sources
+  });
   return { ...normalized, active: null, terminal };
 }
 
@@ -436,6 +439,20 @@ export function terminalAttemptMessage(job, hasPreviousSuccessfulEdit = false) {
   return job?.status === "cancelled"
     ? `This edit was cancelled.${suffix}`
     : `We couldn’t complete that edit.${suffix}`;
+}
+
+/** A durable terminal attempt still needs its workspace to present its error and sources. */
+export function hasWorkspacePresentation({ videos = [], referenceImage = null, activeJob = null, undoState = null } = {}) {
+  return Boolean(videos.length || referenceImage || activeJob || undoState?.current || undoState?.terminal);
+}
+
+/** Recovery UI may show the failed request, but never invent a successful output. */
+export function terminalAttemptConversation(terminal) {
+  if (!terminal?.prompt || !validSession(terminal.session)) return [];
+  return [
+    { role: "user", text: terminal.prompt, jobId: terminal.session.id },
+    { role: "assistant", text: terminal.error || terminalAttemptMessage(terminal, false), jobId: terminal.session.id }
+  ];
 }
 
 /** Prevents an older polling or restoration response from replacing a newer attempt. */

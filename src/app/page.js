@@ -35,6 +35,8 @@ import {
   submitConversationTurn,
   terminalAttemptPresentation,
   terminalAttemptMessage,
+  terminalAttemptConversation,
+  hasWorkspacePresentation,
   sourcesForTerminalAttempt,
   shouldScheduleUndoOriginalReveal,
   undoPreviewMode,
@@ -110,7 +112,7 @@ export default function HomePage() {
     resultUrlRef.current = resultUrl;
   }, [resultUrl]);
 
-  const hasWorkspace = Boolean(videos.length || referenceImage || activeJob || undoState?.current);
+  const hasWorkspace = hasWorkspacePresentation({ videos, referenceImage, activeJob, undoState });
   const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
   const isProcessing = isActiveJobStatus(status);
   const previewMode = undoPreviewMode({ isRestoring: isRestoringPrevious, current: undoState?.current, localVideoCount: videos.length });
@@ -214,6 +216,7 @@ export default function HomePage() {
     let stopped = false;
     if (saved.terminal) {
       showTerminalAttempt(saved.terminal);
+      setMessages(terminalAttemptConversation(saved.terminal));
     }
     if (!saved.active?.id || !saved.active?.accessToken) {
       if (saved.current) restoreCurrentVersion(saved.current, hydrationAttempt).then(() => {

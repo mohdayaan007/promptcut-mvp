@@ -10,7 +10,7 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, MAX_REFERENCE_IMAGE_BYTES, 
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, sourcesForTerminalAttempt, terminalAttemptMessage, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, hasWorkspacePresentation, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, sourcesForTerminalAttempt, terminalAttemptConversation, terminalAttemptMessage, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
 import { browserVideoPreflightError } from "@/lib/client/media-preflight";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
 import { analyzeSpokenRequestCoverage, createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
@@ -3083,9 +3083,37 @@ test("terminal attempts retain a completed preview without consuming Undo histor
 
   const terminal = recordTerminalJob(duringB, sessionB, { status: "failed", error: "Rendering failed.", sources });
   assert.deepEqual(terminal.terminal, {
-    session: sessionB, status: "failed", error: "Rendering failed.", sources
+    session: sessionB, status: "failed", error: "Rendering failed.", prompt: "Make it brighter.", sources
   }, "an authoritative terminal job survives refresh without altering successful history");
   assert.equal(clearTerminalJob(terminal).terminal, null, "explicitly restoring the previous result clears only terminal presentation state");
+});
+
+test("first failed job refresh retains its truthful workspace, sources, and conversation", () => {
+  const session = { id: "first-failed-job", accessToken: "first-failed-token" };
+  const sources = [{ index: 0, name: "original.mp4", type: "video/mp4", size: 42 }];
+  const failed = recordTerminalJob(setUndoActiveJob(emptyUndoState(), session, "Keep only the introduction."), session, {
+    status: "failed", error: "The source could not be processed.", sources
+  });
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
+  saveUndoState(failed, storage);
+  const refreshed = loadUndoState(storage);
+  assert.equal(refreshed.current, null, "a first failure never invents a completed edit");
+  assert.equal(refreshed.previous, null, "a first failure never invents an Undo target");
+  assert.equal(hasWorkspacePresentation({ undoState: failed }), true, "terminal failure keeps the workspace visible after refresh");
+  assert.equal(hasWorkspacePresentation({ undoState: emptyUndoState() }), false, "an empty editor remains empty");
+  const messages = terminalAttemptConversation(failed.terminal);
+  assert.deepEqual(messages, [
+    { role: "user", text: "Keep only the introduction.", jobId: session.id },
+    { role: "assistant", text: "The source could not be processed.", jobId: session.id }
+  ]);
+  assert.deepEqual(loadUndoState(storage).terminal, failed.terminal, "refresh retains safe source metadata and the failure text");
+
+  const completed = promoteSuccessfulJob(setUndoActiveJob(emptyUndoState(), { id: "completed", accessToken: "completed-token" }, "Make it black and white."), { id: "completed", accessToken: "completed-token" }, sources);
+  const followup = setUndoActiveJob(completed, { id: "failed-followup", accessToken: "failed-followup-token" }, "Make it unsupported.");
+  const afterFollowupFailure = recordTerminalJob(followup, { id: "failed-followup", accessToken: "failed-followup-token" }, { status: "failed", error: "Unsupported edit.", sources });
+  assert.equal(afterFollowupFailure.current.session.id, "completed", "a failed follow-up retains the completed output identity");
+  assert.equal(hasWorkspacePresentation({ undoState: afterFollowupFailure }), true);
 });
 
 test("browser media preflight rejects invalid duration and resolution before upload", () => {
