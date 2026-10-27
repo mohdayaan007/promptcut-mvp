@@ -18,6 +18,8 @@ export default function TermsPage() {
       <p>You retain responsibility for your source content. You must review an output before relying on or sharing it. Cliponaut does not guarantee that any requested edit, AI interpretation, or output will be error-free or suitable for a particular purpose.</p>
       <h2>Suspension and changes</h2>
       <p>We may suspend access to protect the service, users, or rights holders, or where required by law. The final terms will state the applicable notice process, liability terms, governing law, and dispute process.</p>
+      <h2>Contact</h2>
+      <p>For support questions, email <a href="mailto:cliponauthq@gmail.com">cliponauthq@gmail.com</a>.</p>
     </PolicyPage>
   );
 }

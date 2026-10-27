@@ -13,7 +13,7 @@ export default function RefundsPage() {
       <h2>Proposed first-payment refund</h2>
       <p>Cliponaut plans to offer a 100% refund of the first subscription payment when requested within 7 days of that payment. This proposal is subject to founder approval and confirmation of Dodo Payments’ operational terms. It does not apply until the final policy is published at checkout.</p>
       <h2>How to ask for help</h2>
-      <p>The official support contact and refund-request procedure have not yet been published. Before launch, this page must state how a customer submits a request, what information is needed to locate the payment, the review timeframe, and how approved refunds are returned.</p>
+      <p>For refund requests or cancellation assistance, email <a href="mailto:cliponauthq@gmail.com">cliponauthq@gmail.com</a>. Before launch, this page must still state what information is needed to locate a payment, the review timeframe, and how approved refunds are returned.</p>
       <h2>Final policy notice</h2>
       <p>The terms displayed at checkout and the published final policy will control any subscription or refund request. This page will be updated before payments are accepted.</p>
     </PolicyPage>

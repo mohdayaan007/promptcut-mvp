@@ -1201,7 +1201,6 @@ body {
   text-align: center;
 }
 
-.cliponaut-pricing-hero h1,
 .cliponaut-section-heading h2,
 .cliponaut-details-grid h2,
 .cliponaut-faq h2,
@@ -1213,13 +1212,21 @@ body {
   line-height: 0.94;
 }
 
-.cliponaut-pricing-hero h1 { font-size: clamp(3.25rem, 7vw, 6.8rem); }
+.cliponaut-pricing-hero h1 {
+  margin: 0;
+  font-family: var(--font-display), "Iowan Old Style", "Times New Roman", serif;
+  font-size: clamp(2.75rem, 4.5vw, 4.25rem);
+  font-weight: 400;
+  letter-spacing: -0.055em;
+  line-height: 1;
+  white-space: normal;
+}
 
 .cliponaut-pricing-hero > p:last-child {
   max-width: 500px;
-  margin: 24px auto 0;
+  margin: 25px auto 0;
   color: #6d6863;
-  font-size: 1.05rem;
+  font-size: clamp(1rem, 1.5vw, 1.125rem);
   line-height: 1.55;
 }
 
@@ -1336,6 +1343,7 @@ body {
 .cliponaut-policy-body > p:first-child { margin-top: 0; color: #4e4a46; font-size: 1.08rem; line-height: 1.65; }
 .cliponaut-policy-body h2 { margin: 42px 0 12px; font-size: 1.1rem; }
 .cliponaut-policy-body p { color: #645f5a; line-height: 1.65; }
+.cliponaut-policy-body a { color: #171717; font-weight: 700; text-underline-offset: 3px; }
 .cliponaut-legal-review { margin-top: 54px; border-left: 2px solid #a1734f; background: #f0e7dd; padding: 21px 22px; }
 .cliponaut-legal-review strong { font-size: 0.83rem; }
 .cliponaut-legal-review p { margin: 6px 0 0; color: #6b625b; font-size: 0.84rem; line-height: 1.5; }
@@ -1357,6 +1365,8 @@ body {
   .cliponaut-faq,
   .cliponaut-policy { width: min(100% - 32px, 760px); }
   .cliponaut-pricing-hero { padding-top: 73px; }
+  .cliponaut-pricing-hero h1 { font-size: clamp(3.05rem, 14vw, 4.4rem); line-height: 0.96; white-space: normal; }
+  .cliponaut-pricing-hero > p:last-child { margin-top: 19px; font-size: 0.9375rem; }
   .cliponaut-plan-card { box-shadow: 6px 6px 0 #ded8d0; }
   .cliponaut-feature { min-height: 184px; padding: 18px; }
   .cliponaut-feature h3 { margin-top: 30px; }

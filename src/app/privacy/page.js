@@ -15,9 +15,9 @@ export default function PrivacyPage() {
       <h2>How information is used</h2>
       <p>We use information to provide and secure the service, process your requested edits, support users, prevent misuse, and meet applicable legal obligations. We do not describe any sale of personal information in this draft.</p>
       <h2>Your choices</h2>
-      <p>You may contact us about privacy questions, deletion requests, or access requests using the contact route below once the official support contact has been published. Some information may need to be retained where required for security, legal, or operational reasons.</p>
+      <p>For privacy questions, data access requests, or deletion requests, email <a href="mailto:cliponauthq@gmail.com">cliponauthq@gmail.com</a>. Some information may need to be retained where required for security, legal, or operational reasons.</p>
       <h2>Changes and contact</h2>
-      <p>Material updates will be reflected by changing this policy’s effective date. Official business identity and privacy contact details are not yet published.</p>
+      <p>Material updates will be reflected by changing this policy’s effective date. Official business identity details are not yet published.</p>
     </PolicyPage>
   );
 }
