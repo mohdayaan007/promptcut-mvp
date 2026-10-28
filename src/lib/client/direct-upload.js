@@ -409,23 +409,23 @@ export function loadPendingPartialEdit(storage) {
   if (!target) return null;
   try {
     const pending = JSON.parse(target.getItem(PENDING_PARTIAL_EDIT_STORAGE_KEY) || "null");
-    return pending && typeof pending.sessionId === "string" && typeof pending.supportedPrompt === "string" && typeof pending.message === "string"
-      ? { sessionId: pending.sessionId, supportedPrompt: pending.supportedPrompt, message: pending.message }
+    return pending && typeof pending.sessionId === "string" && typeof pending.token === "string" && typeof pending.message === "string"
+      ? { sessionId: pending.sessionId, token: pending.token, message: pending.message }
       : null;
   } catch { return null; }
 }
 export function savePendingPartialEdit(pending, storage) {
   const target = browserStorage(storage);
-  if (!target || !pending?.sessionId || !pending?.supportedPrompt || !pending?.message) return null;
-  const safe = { sessionId: pending.sessionId, supportedPrompt: String(pending.supportedPrompt).slice(0, 1000), message: String(pending.message).slice(0, 2000) };
+  if (!target || !pending?.sessionId || !pending?.token || !pending?.message) return null;
+  const safe = { sessionId: pending.sessionId, token: String(pending.token).slice(0, 4000), message: String(pending.message).slice(0, 2000) };
   target.setItem(PENDING_PARTIAL_EDIT_STORAGE_KEY, JSON.stringify(safe));
   return safe;
 }
 export function clearPendingPartialEdit(storage) { browserStorage(storage)?.removeItem(PENDING_PARTIAL_EDIT_STORAGE_KEY); }
-export async function submitConversationTurn(session, prompt, signal, baseJobId) {
+export async function submitConversationTurn(session, prompt, signal, baseJobId, confirmationToken) {
   const response = await requestJson(`/api/editing-sessions/${session.id}`, {
     method: "POST", headers: { "x-cliponaut-session-token": session.accessToken },
-    body: JSON.stringify({ prompt, expectedVersion: session.version, ...(baseJobId ? { baseJobId } : {}) }), signal
+    body: JSON.stringify({ prompt, expectedVersion: session.version, ...(baseJobId ? { baseJobId } : {}), ...(confirmationToken ? { confirmationToken } : {}) }), signal
   });
   if (response.pendingConfirmation) return { pendingConfirmation: response.pendingConfirmation };
   return { job: { id: response.id, accessToken: response.accessToken }, session: { ...session, version: response.version }, confirmation: response.confirmation };

@@ -1049,9 +1049,6 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
   if (capability.kind === "partial") throw new PartialEditRequestError(capability);
   if (capability.kind === "unsupported" || capability.kind === "ambiguous") throw new UnsupportedEditRequestError(capability.message);
   const spokenCoverage = analyzeSpokenRequestCoverage(prompt, sourceCatalog);
-  if (spokenCoverage?.kind === "unsupported_compound") {
-    throw new UnsupportedEditRequestError("This compound speech edit is not supported yet. Submit the speech selection first, then make the additional edit.");
-  }
   if (referenceStyleActive && hasExplicitReferenceStyleConflict(prompt, sourceCatalog)) {
     throw new UnsupportedEditRequestError("Choose either the reference style or a named visual style.");
   }

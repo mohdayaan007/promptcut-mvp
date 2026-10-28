@@ -13,6 +13,7 @@ import { safeSourceMetadata } from "@/lib/jobs/http";
 import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearPendingPartialEdit, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, hasWorkspacePresentation, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadPendingPartialEdit, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, savePendingPartialEdit, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, sourcesForTerminalAttempt, terminalAttemptConversation, terminalAttemptMessage, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
 import { browserVideoPreflightError } from "@/lib/client/media-preflight";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
+import { createConversationConfirmation, verifyConversationConfirmation } from "@/lib/editor-core/conversation-confirmation";
 import { analyzeEditRequestCapabilities, analyzeSpokenRequestCoverage, createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
@@ -2363,8 +2364,7 @@ test("speech fast path accounts for every compound clause before execution", asy
     'Use the part where I say "Welcome" and blur it.',
     'Use the part where I say "Welcome" and reverse it.',
     'Use the part where I say "Welcome" and stabilize it.',
-    'Use the part where I say "Welcome" and translate it to French.',
-    'Use the part where I say "Welcome" and add an unfamiliar hologram.'
+    'Use the part where I say "Welcome" and translate it to French.'
   ];
   for (const prompt of unsupported) {
     assert.equal(analyzeSpokenRequestCoverage(prompt, catalog)?.kind, "unsupported_compound", prompt);
@@ -2375,6 +2375,15 @@ test("speech fast path accounts for every compound clause before execution", asy
     }), (error) => error instanceof PartialEditRequestError && error.capability?.kind === "partial"));
     assert.equal(aiClient.uploads.length, 0, "unsupported compound request must be rejected before media activation");
   }
+
+  // “Add” also owns established AI-planned paths such as logo/title work, so
+  // an unfamiliar addition stays on that authoritative route and still fails
+  // safely rather than being silently reduced to the speech selection.
+  const unfamiliar = createMockGemini();
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+    prompt: 'Use the part where I say "Welcome" and add an unfamiliar hologram.', sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: unfamiliar,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }), UnsupportedEditRequestError));
 
   const quoted = 'Use the part where I say "Welcome".';
   assert.equal(analyzeSpokenRequestCoverage(quoted, catalog)?.kind, "pure");
@@ -2465,15 +2474,31 @@ test("capability preflight offers a supported subset without silently dropping a
   assert.equal(analyzeEditRequestCapabilities("Blur the face.", catalog).kind, "unsupported");
   assert.equal(analyzeEditRequestCapabilities("From video 1, use the part where I explain pricing and make it black and white.", catalog).kind, "complete");
   assert.equal(analyzeEditRequestCapabilities("Keep only the part where I discuss designing and building Cliponaut.", catalog).kind, "complete");
+  for (const prompt of ["Make my video cinematic and also blur the face.", "Make my video cinematic. Then blur the face."]) {
+    const connector = analyzeEditRequestCapabilities(prompt, catalog);
+    assert.equal(connector.kind, "partial", prompt);
+    assert.equal(connector.supportedPrompt, "Make my video cinematic", prompt);
+  }
+  assert.equal(analyzeEditRequestCapabilities("Make it elegant.", catalog).kind, "complete", "delegated taste remains on its established AI route");
+  assert.equal(analyzeEditRequestCapabilities("Add subtitles", catalog).kind, "complete", "caption reconciliation remains on its established route");
 });
 
 test("a pending partial confirmation is safe to restore and clear without a job", () => {
   const values = new Map();
   const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
-  const saved = savePendingPartialEdit({ sessionId: "session-1", supportedPrompt: "Make it cinematic", message: "I can apply cinematic." }, storage);
+  const saved = savePendingPartialEdit({ sessionId: "session-1", token: "signed-action", message: "I can apply cinematic." }, storage);
   assert.deepEqual(loadPendingPartialEdit(storage), saved);
   clearPendingPartialEdit(storage);
   assert.equal(loadPendingPartialEdit(storage), null, "cancellation or a replacement instruction leaves no stale action to queue");
+});
+
+test("session partial confirmations are signed and bound to their exact version and source edit", () => {
+  const session = { id: "session-1", access_token: "test-only-secret" };
+  const offered = createConversationConfirmation({ session, expectedVersion: 4, baseJobId: "job-4", supportedPrompt: "Make it cinematic", message: "Review cinematic." });
+  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 4, baseJobId: "job-4" }).supportedPrompt, "Make it cinematic");
+  assert.equal(verifyConversationConfirmation({ session, token: `${offered.token}x`, expectedVersion: 4, baseJobId: "job-4" }), null, "tampering cannot substitute another supported edit");
+  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 5, baseJobId: "job-4" }), null, "a stale version cannot run");
+  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 4, baseJobId: "job-3" }), null, "a cross-edit confirmation cannot run");
 });
 
 test("semantic spoken ranges override final timestamps and reject conflicting source operations", async () => {

@@ -1,5 +1,6 @@
 import { applyConversationTurn, validateConversationPlan } from "@/lib/editor-core/conversation-state";
 import { analyzeEditRequestCapabilities } from "@/lib/editor-core/edit-plan";
+import { createConversationConfirmation, verifyConversationConfirmation } from "@/lib/editor-core/conversation-confirmation";
 import { createConversationJob, getAuthorizedSession, getSessionHistory } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
 import { signedDownloadUrl } from "@/lib/jobs/storage";
@@ -34,22 +35,34 @@ export async function POST(req, { params }) {
     const { id } = await params;
     const session = await getAuthorizedSession(id, token(req));
     if (!session) throw new PublicRequestError("Editing session was not found", 404);
-    const { prompt, expectedVersion, baseJobId } = await req.json();
+    const { prompt, expectedVersion, baseJobId, confirmationToken } = await req.json();
     if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 1000) throw new PublicRequestError("Enter an editing instruction");
     if (!Number.isInteger(expectedVersion)) throw new PublicRequestError("The editing session version is invalid.");
     const history = await getSessionHistory(session.id);
     if (baseJobId !== undefined && typeof baseJobId !== "string") throw new PublicRequestError("The selected edit is invalid.", 422);
     const current = [...history].reverse().find((version) => (!baseJobId || version.job_id === baseJobId) && version.status === "completed" && version.plan && Array.isArray(version.source_catalog));
     if (!current) throw new PublicRequestError("Wait for a successful edit before making another change.", 409);
-    const capability = analyzeEditRequestCapabilities(prompt.trim(), current.source_catalog);
-    if (capability.kind === "partial") {
-      return Response.json({ pendingConfirmation: capability }, { status: 200 });
+    const confirmed = confirmationToken && verifyConversationConfirmation({ session, token: confirmationToken, expectedVersion, baseJobId });
+    if (confirmationToken && !confirmed) throw new PublicRequestError("That edit confirmation is no longer valid. Please review the request again.", 409);
+    const effectivePrompt = confirmed?.supportedPrompt || prompt.trim();
+    if (!confirmed) {
+      const capability = analyzeEditRequestCapabilities(effectivePrompt, current.source_catalog);
+      if (capability.kind === "partial") {
+        // A partial selection may be valid for an initial AI plan but not for
+        // an iterative delta. Never offer an action that this route cannot run.
+        try { applyConversationTurn({ priorPlan: current.plan, prompt: capability.supportedPrompt, sourceCatalog: current.source_catalog }); }
+        catch { throw new PublicRequestError("I can’t apply that supported part as a follow-up. Start a new edit to make that selection.", 422); }
+        return Response.json({ pendingConfirmation: createConversationConfirmation({
+          session, expectedVersion, baseJobId: baseJobId || current.job_id,
+          supportedPrompt: capability.supportedPrompt, message: capability.message
+        }) }, { status: 200 });
+      }
+      if (capability.kind === "unsupported" || capability.kind === "ambiguous") throw new PublicRequestError(capability.message, 422);
     }
-    if (capability.kind === "unsupported" || capability.kind === "ambiguous") throw new PublicRequestError(capability.message, 422);
     let plan;
     let confirmation;
     try {
-      ({ plan, confirmation } = applyConversationTurn({ priorPlan: current.plan, prompt: prompt.trim(), sourceCatalog: current.source_catalog }));
+      ({ plan, confirmation } = applyConversationTurn({ priorPlan: current.plan, prompt: effectivePrompt, sourceCatalog: current.source_catalog }));
       validateConversationPlan(plan, current.source_catalog);
     } catch (error) {
       // Conversation parsing and plan validation operate only on user input and
@@ -61,7 +74,7 @@ export async function POST(req, { params }) {
         : "I couldn’t safely apply that change to the current edit.";
       throw new PublicRequestError(message, 422);
     }
-    const next = await createConversationJob(session, { prompt: prompt.trim(), plan, confirmation, expectedVersion });
+    const next = await createConversationJob(session, { prompt: effectivePrompt, plan, confirmation, expectedVersion });
     if (!next) throw new PublicRequestError("A newer edit is already in progress. Refresh the conversation and try again.", 409);
     return Response.json({ id: next.job.id, status: next.job.status, accessToken: next.accessToken, version: next.version, confirmation });
   } catch (error) { return jsonError(error); }

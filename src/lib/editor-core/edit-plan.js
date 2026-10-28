@@ -283,8 +283,15 @@ function selectionClauseStart(prompt, beforeIndex) {
   let start = -1;
   while ((match = command.exec(prompt))) {
     if (match.index >= beforeIndex) break;
+    // “I begin talking” describes the selected speech; it is not a second
+    // edit command and must not turn a start-boundary request into a prefix.
+    if (/\b(?:I|he|she|they|we)\s+$/i.test(prompt.slice(0, match.index))) continue;
     start = match.index;
   }
+  if (start < 0) return start;
+  // Source scopes are part of the selection clause, not a separate edit.
+  const scopedPrefix = /\bfrom\s+(?:(?:video\s*|source[-\s]?)(?:\d+)|(?:the\s+)?[a-z][a-z\s-]{1,48}\s+(?:video|clip|footage|shot))\s*,?\s*$/i.exec(prompt.slice(0, start));
+  if (scopedPrefix) return scopedPrefix.index;
   return start;
 }
 
@@ -372,10 +379,10 @@ function editClausesOutsideQuotedSpeech(prompt = "", spokenRequest = null) {
   let start = 0;
   for (const match of prompt.matchAll(separator)) {
     if (overlapsQuotedRange(match, protectedRanges)) continue;
-    clauses.push({ text: prompt.slice(start, match.index).trim(), start, end: match.index });
+    clauses.push({ text: prompt.slice(start, match.index).trim().replace(/^(?:and|then|also)\s+/i, ""), start, end: match.index });
     start = (match.index || 0) + match[0].length;
   }
-  clauses.push({ text: prompt.slice(start).trim(), start, end: prompt.length });
+  clauses.push({ text: prompt.slice(start).trim().replace(/^(?:and|then|also)\s+/i, ""), start, end: prompt.length });
   return clauses.filter((clause) => clause.text);
 }
 
@@ -391,6 +398,13 @@ function hasKnownDeterministicEdit(clause = "") {
   // is deliberately an allow-list of shipped operations, not a list of things
   // to reject.
   return /\b(?:black\s*(?:and|&)\s*white|grayscale|cinematic|warm|cool|portrait|vertical|landscape|square|fade|slow(?:\s+motion)?|speed\s+up|zoom\s+in|mute)\b/i.test(clause);
+}
+
+function isKnownUnavailableOperation(clause = "") {
+  // These are operation verbs with no entry in the shipped capability
+  // registry. They are parsed as requests, not inferred from a noun such as
+  // “face”, so the check remains stable as users vary their wording.
+  return /^(?:please\s+)?(?:blur|reverse|stabili[sz]e|translate)\b/i.test(clause.trim());
 }
 
 function normalizeSupportedPrompt(clauses) {
@@ -437,6 +451,7 @@ export function analyzeEditRequestCapabilities(prompt = "", sourceCatalog = []) 
   const clauses = editClausesOutsideQuotedSpeech(coverageText, coverageSpoken);
   const supported = [];
   const unsupported = [];
+  let unresolved = false;
   for (const clause of clauses) {
     const plan = createEditPlan({ prompt: clause.text, sourceCatalog });
     const hasOperation = plan.operations.some((operation) => !["merge"].includes(operation.type));
@@ -445,8 +460,13 @@ export function analyzeEditRequestCapabilities(prompt = "", sourceCatalog = []) 
     // clip until evidence is resolved.
     const hasSelection = Boolean(extractSpokenMomentRequest(clause.text, sourceCatalog) || extractVisualMomentRequest(clause.text, sourceCatalog));
     if (hasOperation || hasSelection || hasKnownDeterministicEdit(clause.text)) supported.push(clause);
-    else if (isEditingClause(clause.text)) unsupported.push(clause);
+    else if (isKnownUnavailableOperation(clause.text)) unsupported.push(clause);
+    else if (isEditingClause(clause.text)) unresolved = true;
   }
+  // Established Gemini-planned style/caption routes have deliberately richer
+  // language than deterministic parsing. Leave an unclassified clause to the
+  // authoritative planner instead of rejecting a known capability early.
+  if (unresolved) return { kind: "complete" };
   if (!unsupported.length) return { kind: "complete" };
   if (!supported.length) {
     return { kind: "unsupported", message: "I can’t do that edit yet, so I haven’t changed your video." };

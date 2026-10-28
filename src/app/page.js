@@ -399,7 +399,10 @@ export default function HomePage() {
         return;
       }
       if (confirmation) {
-        submittedPrompt = pendingPartialEdit.supportedPrompt;
+        // Session actions are server-signed and version-bound. Initial-upload
+        // actions are intentionally kept only in memory because no durable
+        // server session exists yet.
+        if (!pendingPartialEdit.token) submittedPrompt = pendingPartialEdit.supportedPrompt;
         setPendingPartialEdit(null);
         clearPendingPartialEdit();
       } else {
@@ -424,7 +427,7 @@ export default function HomePage() {
 
     try {
       if (editingSession && undoStateRef.current?.current?.kind === "job") {
-        const turn = await submitConversationTurn(editingSession, submittedPrompt, controller.signal, undoStateRef.current.current.session.id);
+        const turn = await submitConversationTurn(editingSession, submittedPrompt, controller.signal, undoStateRef.current.current.session.id, confirmation ? pendingPartialEdit?.token : undefined);
         if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
         if (turn.pendingConfirmation) {
           const pending = savePendingPartialEdit({ ...turn.pendingConfirmation, sessionId: editingSession.id });
