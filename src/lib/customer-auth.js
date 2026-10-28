@@ -22,11 +22,25 @@ function cookie(req, name) { const entry = (req.headers.get("cookie") || "").spl
 export function customerSessionToken(req) { return cookie(req, CUSTOMER_SESSION_COOKIE); }
 export function googleNonceToken(req) { return cookie(req, GOOGLE_NONCE_COOKIE); }
 
+/**
+ * Google authenticates the account identified by `sub`.  It is only also
+ * authoritative for the mailbox when Google says the address is Gmail, or
+ * when its Workspace hosted-domain claim agrees with the address domain.
+ */
+export function googleEmailAuthority(payload) {
+  const email = typeof payload?.email === "string" ? payload.email.trim().toLowerCase() : "";
+  const domain = email.split("@")[1] || "";
+  if (domain === "gmail.com") return { authority: "gmail", hostedDomain: null };
+  const hostedDomain = typeof payload?.hd === "string" ? payload.hd.trim().toLowerCase() : "";
+  if (hostedDomain && hostedDomain === domain) return { authority: "workspace", hostedDomain };
+  return { authority: "external", hostedDomain: null };
+}
+
 export async function verifyGoogleCredential(credential, nonce, { clientId = process.env.GOOGLE_OAUTH_CLIENT_ID, client = new OAuth2Client() } = {}) {
   if (!clientId || typeof credential !== "string" || credential.length > 16_000 || !nonce) throw new CustomerAuthError("Google sign-in is temporarily unavailable.", 503);
   let ticket;
   try { ticket = await client.verifyIdToken({ idToken: credential, audience: clientId }); } catch { throw new CustomerAuthError("Google sign-in could not be verified.", 401); }
   const payload = ticket.getPayload();
   if (!payload?.sub || !payload.email || payload.email_verified !== true || payload.nonce !== nonce) throw new CustomerAuthError("Google sign-in could not be verified.", 401);
-  return { subject: payload.sub, email: payload.email.trim().toLowerCase() };
+  return { subject: payload.sub, email: payload.email.trim().toLowerCase(), ...googleEmailAuthority(payload) };
 }

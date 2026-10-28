@@ -11,6 +11,13 @@ function database() {
   return pool;
 }
 
+/** Test/process shutdown hook for the module-owned connection pool. */
+export async function closeJobStorePool() {
+  if (!pool) return;
+  const closing = pool; pool = undefined;
+  await closing.end();
+}
+
 export const EDIT_JOBS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS edit_jobs (
   id UUID PRIMARY KEY,
@@ -61,6 +68,8 @@ CREATE TABLE IF NOT EXISTS subscriber_identities (
   id UUID PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   google_subject TEXT UNIQUE,
+  google_email_authority TEXT NOT NULL DEFAULT 'unknown' CHECK (google_email_authority IN ('unknown','gmail','workspace','external')),
+  google_hosted_domain TEXT,
   verified_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -128,6 +137,10 @@ export async function migrateEditJobs() {
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS source_catalog JSONB;");
   await database().query("ALTER TABLE dodo_subscriptions ADD COLUMN IF NOT EXISTS last_event_at TIMESTAMPTZ NOT NULL DEFAULT now();");
   await database().query("ALTER TABLE subscriber_identities ADD COLUMN IF NOT EXISTS google_subject TEXT UNIQUE;");
+  // Existing identities predate Google authority evidence. They must not gain
+  // payment ownership until a later, server-verified Google sign-in proves it.
+  await database().query("ALTER TABLE subscriber_identities ADD COLUMN IF NOT EXISTS google_email_authority TEXT NOT NULL DEFAULT 'unknown' CHECK (google_email_authority IN ('unknown','gmail','workspace','external'));");
+  await database().query("ALTER TABLE subscriber_identities ADD COLUMN IF NOT EXISTS google_hosted_domain TEXT;");
   await database().query(`ALTER TABLE edit_jobs DROP CONSTRAINT IF EXISTS edit_jobs_status_check;
     ALTER TABLE edit_jobs ADD CONSTRAINT edit_jobs_status_check
     CHECK (status IN ('uploading','queued','analyzing','rendering','completed','failed','cancelled'));`);
@@ -161,10 +174,11 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
     if (!inserted.rowCount) { await client.query("COMMIT"); return false; }
     if (subscription) await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,subscriber_id,status,last_event_at)
       SELECT $1,$2,$3,$4,i.id,$5,$6 FROM (SELECT 1) AS present LEFT JOIN subscriber_identities i ON i.email=$4 AND i.verified_at IS NOT NULL
+        AND i.google_email_authority IN ('gmail','workspace') AND $5 = 'active' AND $2 = $7
       ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
         customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),subscriber_id=COALESCE(dodo_subscriptions.subscriber_id, EXCLUDED.subscriber_id),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,updated_at=now()
       WHERE EXCLUDED.last_event_at > dodo_subscriptions.last_event_at`,
-    [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt]);
+    [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""]);
     await client.query("COMMIT"); return true;
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
@@ -194,8 +208,8 @@ export async function createGoogleLoginNonce(token) {
 }
 
 /** Atomically consumes a Google-bound nonce, resolves stable-subject ownership, and creates a server session. */
-export async function completeGoogleSignIn({ subject, email }, nonce) {
-  if (typeof subject !== "string" || !subject || typeof email !== "string" || !email || typeof nonce !== "string") return null;
+export async function completeGoogleSignIn({ subject, email, authority, hostedDomain }, nonce) {
+  if (typeof subject !== "string" || !subject || typeof email !== "string" || !email || typeof nonce !== "string" || !["gmail", "workspace", "external"].includes(authority)) return null;
   const client = await database().connect();
   try {
     await client.query("BEGIN");
@@ -206,16 +220,16 @@ export async function completeGoogleSignIn({ subject, email }, nonce) {
     let identity;
     if (bySubject.rows[0]) {
       if (byEmail.rows[0] && byEmail.rows[0].id !== bySubject.rows[0].id) { await client.query("ROLLBACK"); return null; }
-      identity = (await client.query("UPDATE subscriber_identities SET email=$2,verified_at=now() WHERE id=$1 RETURNING id", [bySubject.rows[0].id, email])).rows[0];
+      identity = (await client.query("UPDATE subscriber_identities SET email=$2,google_email_authority=$3,google_hosted_domain=$4,verified_at=now() WHERE id=$1 RETURNING id", [bySubject.rows[0].id, email, authority, hostedDomain || null])).rows[0];
     } else if (byEmail.rows[0]) {
       if (byEmail.rows[0].google_subject) { await client.query("ROLLBACK"); return null; }
-      identity = (await client.query("UPDATE subscriber_identities SET google_subject=$2,verified_at=now() WHERE id=$1 RETURNING id", [byEmail.rows[0].id, subject])).rows[0];
+      identity = (await client.query("UPDATE subscriber_identities SET google_subject=$2,google_email_authority=$3,google_hosted_domain=$4,verified_at=now() WHERE id=$1 RETURNING id", [byEmail.rows[0].id, subject, authority, hostedDomain || null])).rows[0];
     } else {
-      identity = (await client.query("INSERT INTO subscriber_identities (id,email,google_subject,verified_at) VALUES ($1,$2,$3,now()) RETURNING id", [newId(), email, subject])).rows[0];
+      identity = (await client.query("INSERT INTO subscriber_identities (id,email,google_subject,google_email_authority,google_hosted_domain,verified_at) VALUES ($1,$2,$3,$4,$5,now()) RETURNING id", [newId(), email, subject, authority, hostedDomain || null])).rows[0];
     }
     const productId = process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || "";
     if (!productId) throw new Error("DODO_TEST_CLIPONAUT_PRODUCT_ID is not configured");
-    await client.query(`UPDATE dodo_subscriptions SET subscriber_id=$1,updated_at=now()
+    if (authority === "gmail" || authority === "workspace") await client.query(`UPDATE dodo_subscriptions SET subscriber_id=$1,updated_at=now()
       WHERE customer_email=$2 AND product_id=$3 AND status='active' AND subscriber_id IS NULL`, [identity.id, email, productId]);
     const session = newToken();
     await client.query(`INSERT INTO customer_sessions (id,subscriber_id,token_hash,expires_at) VALUES ($1,$2,$3,now() + ($4 * interval '1 day'))`, [newId(), identity.id, customerTokenHash(session), CUSTOMER_SESSION_DAYS]);

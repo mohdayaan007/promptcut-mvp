@@ -15,6 +15,7 @@
     "test:founder-access": "tsx --test tests/founder-test-access.test.js",
     "test:customer-auth": "tsx --test tests/customer-auth.test.js",
     "test:customer-auth-integration": "tsx --test tests/customer-auth-postgres.integration.test.js",
+    "test:google-signin-browser": "tsx --test tests/google-signin-browser.test.js",
     "test:dodo": "tsx --test tests/dodo-test-mode.test.js",
     "test:dodo-integration": "tsx --test tests/dodo-postgres.integration.test.js",
     "test:session-integration": "tsx --test tests/session-postgres.integration.test.js",
