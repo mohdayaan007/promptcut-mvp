@@ -1,0 +1,353 @@
+{
+  "fixture": "synthetic explicit 10–25s selection; no semantic model",
+  "results": [
+    {
+      "turn": 1,
+      "prompt": "explicit fixture selection 10–25s",
+      "plan": {
+        "version": "2",
+        "operations": [
+          {
+            "type": "sequence",
+            "clips": [
+              {
+                "sourceId": "source-1",
+                "start": 10,
+                "end": 25
+              }
+            ]
+          }
+        ]
+      },
+      "probe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_type": "video",
+            "start_time": "0.000000",
+            "duration": "15.000000",
+            "nb_read_frames": "450"
+          },
+          {
+            "codec_type": "audio",
+            "start_time": "0.000000",
+            "duration": "15.000000",
+            "nb_read_frames": "704"
+          }
+        ],
+        "format": {
+          "duration": "15.000000"
+        }
+      }
+    },
+    {
+      "turn": 2,
+      "prompt": "Now trim the first five seconds too.",
+      "plan": {
+        "version": "2",
+        "operations": [
+          {
+            "type": "sequence",
+            "clips": [
+              {
+                "sourceId": "source-1",
+                "start": 15,
+                "end": 25
+              }
+            ]
+          }
+        ]
+      },
+      "probe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_type": "video",
+            "start_time": "0.000000",
+            "duration": "10.000000",
+            "nb_read_frames": "300"
+          },
+          {
+            "codec_type": "audio",
+            "start_time": "0.000000",
+            "duration": "10.000000",
+            "nb_read_frames": "469"
+          }
+        ],
+        "format": {
+          "duration": "10.000000"
+        }
+      }
+    },
+    {
+      "turn": 3,
+      "prompt": "Also add black and white.",
+      "plan": {
+        "version": "2",
+        "operations": [
+          {
+            "type": "sequence",
+            "clips": [
+              {
+                "sourceId": "source-1",
+                "start": 15,
+                "end": 25
+              }
+            ]
+          },
+          {
+            "type": "color_grade",
+            "style": "bw"
+          }
+        ]
+      },
+      "probe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_type": "video",
+            "start_time": "0.000000",
+            "duration": "10.000000",
+            "nb_read_frames": "300"
+          },
+          {
+            "codec_type": "audio",
+            "start_time": "0.000000",
+            "duration": "10.005000",
+            "nb_read_frames": "469"
+          }
+        ],
+        "format": {
+          "duration": "10.005000"
+        }
+      }
+    },
+    {
+      "turn": 4,
+      "prompt": "Make it cinematic instead.",
+      "plan": {
+        "version": "2",
+        "operations": [
+          {
+            "type": "sequence",
+            "clips": [
+              {
+                "sourceId": "source-1",
+                "start": 15,
+                "end": 25
+              }
+            ]
+          },
+          {
+            "type": "color_grade",
+            "style": "cinematic"
+          }
+        ]
+      },
+      "probe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_type": "video",
+            "start_time": "0.000000",
+            "duration": "10.000000",
+            "nb_read_frames": "300"
+          },
+          {
+            "codec_type": "audio",
+            "start_time": "0.000000",
+            "duration": "10.005000",
+            "nb_read_frames": "469"
+          }
+        ],
+        "format": {
+          "duration": "10.005000"
+        }
+      }
+    },
+    {
+      "turn": 5,
+      "prompt": "Bring it back to normal.",
+      "plan": {
+        "version": "2",
+        "operations": [
+          {
+            "type": "sequence",
+            "clips": [
+              {
+                "sourceId": "source-1",
+                "start": 15,
+                "end": 25
+              }
+            ]
+          }
+        ]
+      },
+      "probe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_type": "video",
+            "start_time": "0.000000",
+            "duration": "10.000000",
+            "nb_read_frames": "300"
+          },
+          {
+            "codec_type": "audio",
+            "start_time": "0.000000",
+            "duration": "10.000000",
+            "nb_read_frames": "469"
+          }
+        ],
+        "format": {
+          "duration": "10.000000"
+        }
+      }
+    },
+    {
+      "turn": 6,
+      "prompt": "Also add black and white.",
+      "plan": {
+        "version": "2",
+        "operations": [
+          {
+            "type": "sequence",
+            "clips": [
+              {
+                "sourceId": "source-1",
+                "start": 15,
+                "end": 25
+              }
+            ]
+          },
+          {
+            "type": "color_grade",
+            "style": "bw"
+          }
+        ]
+      },
+      "probe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_type": "video",
+            "start_time": "0.000000",
+            "duration": "10.000000",
+            "nb_read_frames": "300"
+          },
+          {
+            "codec_type": "audio",
+            "start_time": "0.000000",
+            "duration": "10.005000",
+            "nb_read_frames": "469"
+          }
+        ],
+        "format": {
+          "duration": "10.005000"
+        }
+      }
+    },
+    {
+      "turn": 7,
+      "prompt": "Make it cinematic instead.",
+      "plan": {
+        "version": "2",
+        "operations": [
+          {
+            "type": "sequence",
+            "clips": [
+              {
+                "sourceId": "source-1",
+                "start": 15,
+                "end": 25
+              }
+            ]
+          },
+          {
+            "type": "color_grade",
+            "style": "cinematic"
+          }
+        ]
+      },
+      "probe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_type": "video",
+            "start_time": "0.000000",
+            "duration": "10.000000",
+            "nb_read_frames": "300"
+          },
+          {
+            "codec_type": "audio",
+            "start_time": "0.000000",
+            "duration": "10.005000",
+            "nb_read_frames": "469"
+          }
+        ],
+        "format": {
+          "duration": "10.005000"
+        }
+      }
+    },
+    {
+      "turn": 8,
+      "prompt": "Bring it back to normal.",
+      "plan": {
+        "version": "2",
+        "operations": [
+          {
+            "type": "sequence",
+            "clips": [
+              {
+                "sourceId": "source-1",
+                "start": 15,
+                "end": 25
+              }
+            ]
+          }
+        ]
+      },
+      "probe": {
+        "programs": [],
+        "stream_groups": [],
+        "streams": [
+          {
+            "codec_type": "video",
+            "start_time": "0.000000",
+            "duration": "10.000000",
+            "nb_read_frames": "300"
+          },
+          {
+            "codec_type": "audio",
+            "start_time": "0.000000",
+            "duration": "10.000000",
+            "nb_read_frames": "469"
+          }
+        ],
+        "format": {
+          "duration": "10.000000"
+        }
+      }
+    }
+  ],
+  "frameMSE": {
+    "expectedPreviousPlusFive": 6.065648148148148,
+    "wrongEndTrim": 4994.656203703704,
+    "wrongOriginalPlusFive": 6269.787546296297,
+    "retainedEnding": 3.2169907407407408,
+    "normalReset": 0,
+    "cinematic": 26.36023148148148
+  },
+  "audioAlignment": {
+    "correlation": 0.999998803237535,
+    "lagSamples": 0
+  }
+}

@@ -10,13 +10,15 @@ import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, MAX_REFERENCE_IMAGE_BYTES, 
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
-import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
+import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearPendingPartialEdit, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, hasWorkspacePresentation, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadPendingPartialEdit, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, savePendingPartialEdit, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, sourcesForTerminalAttempt, terminalAttemptConversation, terminalAttemptMessage, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
+import { browserVideoPreflightError } from "@/lib/client/media-preflight";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
-import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { ConfirmationConfigurationError, createConversationConfirmation, verifyConversationConfirmation, verifySubmittedConversationConfirmation } from "@/lib/editor-core/conversation-confirmation";
+import { analyzeEditRequestCapabilities, analyzeSpokenRequestCoverage, createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { createDelegatedStyleDecisionJsonSchema, createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
-import { buildDelegatedStyleContents, createAiEditPlan, createStylePlanningDiagnostics, reconcileReferenceStylePlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, summarizeStylePlanDiagnostic, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
+import { buildDelegatedStyleContents, createAiEditPlan, createStylePlanningDiagnostics, PartialEditRequestError, reconcileReferenceStylePlan, resolveSemanticSourceClassifications, resolveVisualMomentLocalizations, summarizeStylePlanDiagnostic, UnsupportedEditRequestError } from "@/lib/editor-core/ai-editor/planner";
 import { buildAiEditorPrompt, buildDelegatedStyleDecisionPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { buildReferenceStyleTreatmentFilters, buildReferenceToneCurveFilter, buildReferenceToneCurvePoints, buildStyleProfileFilters, buildStyleRecipeFilters, buildToneCurveFilter, buildToneCurvePoints, buildVibranceFilter, buildVisualAdjustmentFilters, compileStyleProfileForExecution, createExecutionController, createStyleProfileExecutionDiagnostic, EditExecutionCancelledError, executeEditPlan, orderedVisualOperations, perceptualAdjustmentMagnitude, titleReadabilityForLuma, VISUAL_OPERATION_ORDER } from "@/lib/editor-core/edit-executor";
 import { CAPABILITY_REGISTRY } from "@/lib/editor-core/capability-registry";
@@ -2149,6 +2151,21 @@ test("spoken transcript segmentation is stable and uses sentence/pause boundarie
   ]);
 });
 
+test("speech segmentation keeps short intra-thought pauses but exposes a later topic-transition pause", () => {
+  const boundary = createCanonicalTranscript({ sourceId: "source-1", duration: 30, words: [
+    { text: "Ahmed", start: 10, end: 10.3 }, { text: "Perfumes", start: 10.3, end: 10.7 },
+    { text: "has", start: 10.7, end: 10.9 }, { text: "lasting", start: 11.35, end: 11.7 },
+    { text: "scents", start: 11.7, end: 12.1 }, { text: "for", start: 12.1, end: 12.25 },
+    { text: "everyday", start: 12.5, end: 12.8 }, { text: "wear", start: 12.8, end: 13.05 },
+    { text: "with", start: 13.05, end: 13.2 }, { text: "confidence", start: 13.2, end: 13.6 },
+    { text: "Anyway", start: 14.32, end: 14.4 }
+  ] });
+  assert.deepEqual(boundary.segments.map(({ start, end, text }) => ({ start, end, text })), [
+    { start: 10, end: 13.6, text: "Ahmed Perfumes has lasting scents for everyday wear with confidence" },
+    { start: 14.32, end: 14.4, text: "Anyway" }
+  ]);
+});
+
 test("spoken phrase normalization covers punctuation, contractions, numbers, and currency", () => {
   assert.equal(normalizePhrase(" Welcome   to Kerala! "), "welcome to kerala");
   assert.equal(normalizePhrase("I'm here"), "i am here");
@@ -2271,8 +2288,228 @@ test("semantic spoken matching derives coherent ranges and validates segment IDs
     prompt: "Use the part where I explain pricing and make it black and white.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
     scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
   }));
-  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 5.3 }] }, { type: "color_grade", style: "bw" }]);
+  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 5.8 }] }, { type: "color_grade", style: "bw" }]);
   assert.equal(aiClient.requests.length, 2);
+});
+
+test("keep only the part where I talk about a topic uses speech boundaries and excludes the next utterance", async () => {
+  const catalog = speechCatalog([{ ...sourceCatalog[0], duration: 30 }]);
+  const prompt = "Keep only the part where I talk about Ahmed Perfumes. Remove everything else.";
+  const request = extractSpokenMomentRequest(prompt, catalog);
+  assert.equal(requiresSpokenMomentUnderstanding(prompt, catalog), true);
+  assert.equal(request?.type, "semantic");
+  assert.equal(request?.mode, "EVENT_SEGMENT");
+  const words = [
+    { text: "Ahmed", start_offset: "10s", end_offset: "10.3s" }, { text: "Perfumes", start_offset: "10.3s", end_offset: "10.7s" },
+    { text: "has", start_offset: "10.7s", end_offset: "10.9s" }, { text: "lasting", start_offset: "11.35s", end_offset: "11.7s" },
+    { text: "scents", start_offset: "11.7s", end_offset: "12.1s" }, { text: "for", start_offset: "12.1s", end_offset: "12.25s" },
+    { text: "everyday", start_offset: "12.5s", end_offset: "12.8s" }, { text: "wear", start_offset: "12.8s", end_offset: "13.05s" },
+    { text: "with", start_offset: "13.05s", end_offset: "13.2s" }, { text: "confidence", start_offset: "13.2s", end_offset: "13.6s" },
+    { text: "Anyway", start_offset: "14.32s", end_offset: "14.4s" }
+  ];
+  const aiClient = createMockGemini({ responses: [
+    semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }])
+  ], transcriptionInteractions: [interaction(words)] });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 10, end: 13.96 }] }]);
+  assert.equal(aiClient.requests.length, 1, "semantic transcript matching, not visual timestamp planning, owns the boundary");
+  assert.deepEqual(aiClient.uploads.map((file) => file.uri), ["gemini:///scratch/source-1-speech.m4a"], "the full source is never activated for transcript-owned speech selection");
+});
+
+test("large pure spoken selection uses transcript evidence without full-video activation and rejects ambiguity", async () => {
+  const catalog = speechCatalog([{ ...sourceCatalog[0], duration: 216 }]);
+  const words = [
+    { text: "Gutter", start_offset: "100s", end_offset: "100.25s" },
+    { text: "Capital", start_offset: "100.25s", end_offset: "100.6s" },
+    { text: "is", start_offset: "100.6s", end_offset: "100.72s" },
+    { text: "our", start_offset: "100.72s", end_offset: "100.9s" },
+    { text: "partner.", start_offset: "100.9s", end_offset: "101.3s" },
+    { text: "Gutter", start_offset: "103s", end_offset: "103.25s" },
+    { text: "Capital", start_offset: "103.25s", end_offset: "103.6s" },
+    { text: "returns.", start_offset: "103.6s", end_offset: "104s" }
+  ];
+  const client = createMockGemini({
+    responses: [semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }])],
+    transcriptionInteractions: [interaction(words)]
+  });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: "Keep only the part where I talk about Gutter Capital.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: client,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 100, end: 101.8 }] }]);
+  assert.equal(client.requests.length, 1, "only the transcript segment matcher receives a model request");
+  assert.equal(client.uploads.length, 1, "only extracted speech audio is uploaded");
+  assert.match(client.uploads[0].uri, /source-1-speech\.m4a$/);
+
+  const ambiguous = createMockGemini({
+    responses: [semanticTranscriptResponse("source-1", [
+      { startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" },
+      { startSegmentId: "source-1-seg-2", endSegmentId: "source-1-seg-2" }
+    ])],
+    transcriptionInteractions: [interaction(words)]
+  });
+  await withGeminiKey(() => assertSpokenRejection(() => createAiEditPlan({
+    prompt: "Keep only the part where I talk about Gutter Capital.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: ambiguous,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }), "SPEECH_AMBIGUOUS"));
+  assert.equal(ambiguous.uploads.length, 1, "an ambiguous transcript result must not fall back to a full-video guess");
+});
+
+test("speech fast path accounts for every compound clause before execution", async () => {
+  const catalog = speechCatalog([{ ...sourceCatalog[0], duration: 30 }]);
+  const unsupported = [
+    'Use the part where I say "Welcome" and blur it.',
+    'Use the part where I say "Welcome" and reverse it.',
+    'Use the part where I say "Welcome" and stabilize it.',
+    'Use the part where I say "Welcome" and translate it to French.'
+  ];
+  for (const prompt of unsupported) {
+    assert.equal(analyzeSpokenRequestCoverage(prompt, catalog)?.kind, "unsupported_compound", prompt);
+    const aiClient = createMockGemini();
+    await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+      prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+      scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+    }), (error) => error instanceof PartialEditRequestError && error.capability?.kind === "partial"));
+    assert.equal(aiClient.uploads.length, 0, "unsupported compound request must be rejected before media activation");
+  }
+
+  // “Add” also owns established AI-planned paths such as logo/title work, so
+  // an unfamiliar addition stays on that authoritative route and still fails
+  // safely rather than being silently reduced to the speech selection.
+  const unfamiliar = createMockGemini();
+  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+    prompt: 'Use the part where I say "Welcome" and add an unfamiliar hologram.', sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: unfamiliar,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }), UnsupportedEditRequestError));
+
+  const quoted = 'Use the part where I say "Welcome".';
+  assert.equal(analyzeSpokenRequestCoverage(quoted, catalog)?.kind, "pure");
+  const supported = 'Use the part where I say "Welcome" and make it black and white.';
+  assert.equal(analyzeSpokenRequestCoverage(supported, catalog)?.kind, "supported_compound");
+  const aiClient = createMockGemini({
+    responseText: JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] }),
+    transcriptionInteractions: [interaction([{ text: "Welcome", start_offset: "1s", end_offset: "1.4s" }])]
+  });
+  const result = await withGeminiKey(() => createAiEditPlan({
+    prompt: supported, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(result.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 1.4 }] },
+    { type: "color_grade", style: "bw" }
+  ]);
+  assert.ok(aiClient.uploads.some((file) => file.uri.endsWith("source-1.mp4")), "supported compound requests use the full planner path");
+});
+
+test("speech coverage accounts for prefix clauses without rejecting natural topic conjunctions", async () => {
+  const catalog = speechCatalog([{ ...sourceCatalog[0], duration: 30 }]);
+  const unsupportedPrefixes = [
+    "Blur my face. Keep only the part where I talk about Cliponaut.",
+    "Reverse the video. Use the part where I say 'Welcome'."
+  ];
+  for (const prompt of unsupportedPrefixes) {
+    assert.equal(analyzeSpokenRequestCoverage(prompt, catalog)?.kind, "unsupported_compound", prompt);
+    const aiClient = createMockGemini();
+    await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+      prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+      scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+    }), UnsupportedEditRequestError));
+    assert.equal(aiClient.uploads.length, 0, "unaccounted prefix must reject before media activation");
+  }
+
+  const supportedPrefix = "Make it black and white. Keep only the part where I discuss pricing.";
+  assert.equal(analyzeSpokenRequestCoverage(supportedPrefix, catalog)?.kind, "supported_compound");
+  const supportedClient = createMockGemini({
+    responses: [
+      semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]),
+      JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] })
+    ],
+    transcriptionInteractions: [interaction([{ text: "Pricing.", start_offset: "2s", end_offset: "2.5s" }])]
+  });
+  const supported = await withGeminiKey(() => createAiEditPlan({
+    prompt: supportedPrefix, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: supportedClient,
+    scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+  }));
+  assert.deepEqual(supported.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 2, end: 2.5 }] },
+    { type: "color_grade", style: "bw" }
+  ]);
+  assert.ok(supportedClient.uploads.some((file) => file.uri.endsWith("source-1.mp4")), "supported prefix operation stays on the full planner path");
+
+  const topics = [
+    "Keep only the part where I talk about building the MVP in 14 days while working full time and leaving my job to focus on Cliponaut. Remove everything else.",
+    "Keep only the part where I discuss designing and building Cliponaut.",
+    "Keep only the part where I talk about testing and improving the MVP."
+  ];
+  for (const prompt of topics) {
+    assert.equal(analyzeSpokenRequestCoverage(prompt, catalog)?.kind, "pure", prompt);
+    const aiClient = createMockGemini({
+      responses: [semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }])],
+      transcriptionInteractions: [interaction([{ text: "Topic.", start_offset: "4s", end_offset: "4.5s" }])]
+    });
+    const result = await withGeminiKey(() => createAiEditPlan({
+      prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient,
+      scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
+    }));
+    assert.deepEqual(result.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 4, end: 4.5 }] }]);
+    assert.deepEqual(aiClient.uploads.map((file) => file.uri), ["gemini:///scratch/source-1-speech.m4a"], "natural topic conjunction retains audio-only planning");
+  }
+});
+
+test("capability preflight offers a supported subset without silently dropping an edit", () => {
+  const catalog = speechCatalog([{ ...sourceCatalog[0], duration: 30 }]);
+  const cinematic = analyzeEditRequestCapabilities("Make my video cinematic and blur the face.", catalog);
+  assert.equal(cinematic.kind, "partial");
+  assert.match(cinematic.supportedPrompt, /cinematic/i);
+  assert.doesNotMatch(cinematic.supportedPrompt, /blur/i);
+
+  const translated = analyzeEditRequestCapabilities("Keep only the part where I talk about Cliponaut and translate the speech to Hindi.", catalog);
+  assert.equal(translated.kind, "partial");
+  assert.match(translated.supportedPrompt, /Cliponaut/i);
+  assert.doesNotMatch(translated.supportedPrompt, /translate/i);
+
+  assert.equal(analyzeEditRequestCapabilities("Blur the face.", catalog).kind, "unsupported");
+  assert.equal(analyzeEditRequestCapabilities("From video 1, use the part where I explain pricing and make it black and white.", catalog).kind, "complete");
+  assert.equal(analyzeEditRequestCapabilities("Keep only the part where I discuss designing and building Cliponaut.", catalog).kind, "complete");
+  for (const prompt of ["Make my video cinematic and also blur the face.", "Make my video cinematic. Then blur the face."]) {
+    const connector = analyzeEditRequestCapabilities(prompt, catalog);
+    assert.equal(connector.kind, "partial", prompt);
+    assert.equal(connector.supportedPrompt, "Make my video cinematic", prompt);
+  }
+  assert.equal(analyzeEditRequestCapabilities("Make it elegant.", catalog).kind, "complete", "delegated taste remains on its established AI route");
+  assert.equal(analyzeEditRequestCapabilities("Add subtitles", catalog).kind, "complete", "caption reconciliation remains on its established route");
+});
+
+test("a pending partial confirmation is safe to restore and clear without a job", () => {
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
+  const saved = savePendingPartialEdit({ sessionId: "session-1", token: "signed-action", message: "I can apply cinematic." }, storage);
+  assert.deepEqual(loadPendingPartialEdit(storage), saved);
+  clearPendingPartialEdit(storage);
+  assert.equal(loadPendingPartialEdit(storage), null, "cancellation or a replacement instruction leaves no stale action to queue");
+});
+
+test("session partial confirmations are signed and bound to their exact version and source edit", () => {
+  const session = { id: "session-1", access_token: "browser-readable-token" };
+  const secret = "test-only-server-secret-with-at-least-32-bytes";
+  const offered = createConversationConfirmation({ session, expectedVersion: 4, baseJobId: "job-4", supportedPrompt: "Make it cinematic", message: "Review cinematic.", secret, now: 10_000 });
+  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 4, baseJobId: "job-4", secret, now: 10_001 }).supportedPrompt, "Make it cinematic");
+  assert.equal(verifyConversationConfirmation({ session, token: `${offered.token}x`, expectedVersion: 4, baseJobId: "job-4", secret, now: 10_001 }), null, "tampering cannot substitute another supported edit");
+  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 5, baseJobId: "job-4", secret, now: 10_001 }), null, "a stale version cannot run");
+  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 4, baseJobId: "job-3", secret, now: 10_001 }), null, "a cross-edit confirmation cannot run");
+  assert.equal(verifyConversationConfirmation({ session: { ...session, id: "session-2" }, token: offered.token, expectedVersion: 4, baseJobId: "job-4", secret, now: 10_001 }), null, "a cross-session confirmation cannot run");
+  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 4, baseJobId: "job-4", secret, now: 10_000 + 10 * 60 * 1000 + 1 }), null, "an expired confirmation cannot run");
+  assert.throws(() => createConversationConfirmation({ session, expectedVersion: 4, baseJobId: "job-4", supportedPrompt: "Make it cinematic", message: "Review cinematic.", secret: "too-short" }), ConfirmationConfigurationError, "there is no browser-token fallback when server signing is missing");
+
+  // Reproduce the A/B defect: a genuine action for completed output A must
+  // not be accepted without its base and then applied to newer output B.
+  const outputA = createConversationConfirmation({ session, expectedVersion: 4, baseJobId: "output-a", supportedPrompt: "Make it cinematic", message: "Review cinematic.", secret, now: 20_000 });
+  assert.equal(verifySubmittedConversationConfirmation({ session, token: outputA.token, expectedVersion: 4, baseJobId: undefined, secret, now: 20_001 }), null, "omitting output A cannot fall through to newer output B");
+  assert.equal(verifySubmittedConversationConfirmation({ session, token: outputA.token, expectedVersion: 4, baseJobId: "output-b", secret, now: 20_001 }), null, "output A cannot be replayed against output B");
+  assert.equal(verifySubmittedConversationConfirmation({ session, token: outputA.token, expectedVersion: 4, baseJobId: "output-a", secret, now: 20_001 }).baseJobId, "output-a");
 });
 
 test("semantic spoken ranges override final timestamps and reject conflicting source operations", async () => {
@@ -2298,10 +2535,12 @@ test("semantic spoken ranges override final timestamps and reject conflicting so
     semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]),
     JSON.stringify({ version: "2", operations: [{ type: "color_grade", sourceId: "source-2", style: "bw" }] })
   ], transcriptionInteractions: [interaction(words)] });
-  await withGeminiKey(() => assertSpokenRejection(() => createAiEditPlan({
+  const transcriptOwned = await withGeminiKey(() => createAiEditPlan({
     prompt: "From video 1, use the part where I explain pricing.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient: conflict,
     scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
-  }), "SPEECH_SOURCE_MISMATCH"));
+  }));
+  assert.deepEqual(transcriptOwned.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 2, end: 2.5 }] }]);
+  assert.equal(conflict.requests.length, 1, "a pure speech selection does not accept an unrelated full-video planner operation");
 });
 
 test("semantic spoken response rejects malformed, unknown, and reversed segment references", async () => {
@@ -2370,7 +2609,7 @@ test("semantic matcher retry and failure matrix preserves its one canonical tran
     const { aiClient, promise } = run({ failures: [error], responses: [undefined, semanticTranscriptResponse("source-1", [{ startSegmentId: "source-1-seg-1", endSegmentId: "source-1-seg-1" }]), JSON.stringify(fullSequence(catalog))] });
     await promise;
     assert.equal(aiClient.interactionRequests.length, 1);
-    assert.equal(aiClient.requests.length, 3);
+    assert.equal(aiClient.requests.length, 2, "the recovered transcript matcher does not need a second full-video planning request");
   }
   const exhausted = run({ failures: [503, 503, 503].map((status) => Object.assign(new Error("busy"), { status })) });
   await assert.rejects(exhausted.promise, UnsupportedEditRequestError);
@@ -2393,6 +2632,7 @@ test("ordinary visual moments remain on the visual path without speech transcrip
   assert.ok(requiresVisualMomentUnderstanding("Use the part where the car enters the frame.", catalog));
   await withGeminiKey(() => createAiEditPlan({ prompt: "Use the part where the car enters the frame.", sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient }));
   assert.equal(aiClient.interactionRequests.length, 0);
+  assert.equal(aiClient.uploads.length, 1, "visual localization still requires an active full-video source");
 });
 
 test("exact spoken modes create server-authoritative V2 ranges without visual localization", async () => {
@@ -2407,8 +2647,8 @@ test("exact spoken modes create server-authoritative V2 ranges without visual lo
     const aiClient = createMockGemini({ responseText: JSON.stringify({ version: "1", operations: [{ type: "color_grade", style: "bw" }] }), transcriptionInteractions: [interaction(transcriptWords.map((word) => ({ text: word.text, start_offset: `${word.start}s`, end_offset: `${word.end}s` })))] });
     const result = await withGeminiKey(() => createAiEditPlan({ prompt, sourceCatalog: catalog, sourceInputs: plannerSources(catalog), aiClient, scratchDirectory: "/scratch", transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} } }));
     assert.deepEqual(result.plan.operations[0], { type: "sequence", clips: [{ sourceId: "source-1", ...range }] });
-    assert.deepEqual(result.plan.operations[1], { type: "color_grade", style: "bw" });
-    assert.equal(aiClient.requests.length, 1);
+    assert.equal(result.plan.operations.length, 1, "an unsolicited model color grade cannot alter a transcript-owned request");
+    assert.equal(aiClient.requests.length, 0, "exact speech matching needs no full-video planner call");
   }
 });
 
@@ -2592,11 +2832,12 @@ test("spoken no-match, paired ambiguity, and final source mismatch reject safely
     aiClient: createMockGemini({ transcriptionInteractions: [interaction(repeatedPairs)] }), scratchDirectory: "/scratch",
     transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
   }), UnsupportedEditRequestError));
-  await withGeminiKey(() => assert.rejects(() => createAiEditPlan({
+  const sourceAuthoritative = await withGeminiKey(() => createAiEditPlan({
     prompt: 'Use the part where I say "Welcome".', sourceCatalog: catalog, sourceInputs: plannerSources(catalog), scratchDirectory: "/scratch",
     aiClient: createMockGemini({ responseText: JSON.stringify({ version: "2", operations: [{ type: "color_grade", sourceId: "source-2", style: "bw" }] }), transcriptionInteractions: [interaction([{ text: "Welcome", start_offset: "1s", end_offset: "1.2s" }])] }),
     transcriptionOptions: { spawn: successfulSpawn(), remove: async () => {} }
-  }), UnsupportedEditRequestError));
+  }));
+  assert.deepEqual(sourceAuthoritative.plan.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 1, end: 1.2 }] }], "a transcript-owned request never accepts an unsolicited conflicting source operation");
 });
 
 test("a source without an audio stream rejects speech selection without transcription", async () => {
@@ -2837,7 +3078,52 @@ test("single-step Undo only invalidates a previous job after a confirmed unavail
   assert.deepEqual(retry.state, state, "temporary or unexpected retrieval results retain the previous undo target");
 });
 
-test("terminal attempts clear stale output presentation without consuming Undo history", () => {
+test("refresh, rejected follow-up, and repeated completion polling retain the distinct prior Undo job", () => {
+  const sources = [{ index: 0, name: "fixture.mp4", type: "video/mp4", size: 20 }];
+  const cinematic = { id: "cinematic-job", accessToken: "cinematic-token" };
+  const normal = { id: "normal-job", accessToken: "normal-token" };
+
+  let state = promoteSuccessfulJob(setUndoActiveJob(emptyUndoState(), cinematic, "Replace that with the cinematic style."), cinematic, sources);
+  state = promoteSuccessfulJob(setUndoActiveJob(state, normal, "Bring it back to normal."), normal, sources);
+  assert.equal(state.current.session.id, normal.id);
+  assert.equal(state.previous.session.id, cinematic.id);
+
+  // This models the duplicate terminal poll that occurred around completion.
+  state = promoteSuccessfulJob(state, normal, sources);
+  assert.equal(state.current.session.id, normal.id);
+  assert.equal(state.previous.session.id, cinematic.id, "same-job completion must not become its own Undo target");
+
+  // Refresh serializes this exact state; an unsupported request only clears an
+  // active attempt and must not alter either successful identity.
+  const storage = new Map();
+  const hydrated = loadUndoState({ getItem: (key) => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) });
+  assert.equal(hydrated.current, null, "empty storage does not invent state");
+  const persisted = saveUndoState(state, { getItem: () => null, setItem: (key, value) => storage.set(key, value) });
+  const refreshed = loadUndoState({ getItem: (key) => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) });
+  assert.deepEqual(refreshed, persisted);
+  const rejected = discardUndoActiveJob(setUndoActiveJob(refreshed, { id: "rejected-job", accessToken: "rejected-token" }, "Replace the background with a beach."));
+  assert.equal(rejected.current.session.id, normal.id);
+  assert.equal(rejected.previous.session.id, cinematic.id);
+
+  const restored = resolveUndoRestoration(rejected, { status: "completed", outputUrl: "https://signed.example/cinematic.mp4" });
+  assert.equal(restored.outcome, "restored");
+  assert.equal(restored.state.current.session.id, cinematic.id, "Undo restores the preceding cinematic job identity");
+  assert.notEqual(restored.state.current.session.id, normal.id);
+  assert.equal(restored.state.previous, null);
+
+  const stale = promoteSuccessfulJob(restored.state, normal, sources);
+  assert.equal(stale.current.session.id, cinematic.id, "a late normal poll cannot overwrite the restored cinematic output");
+
+  // A browser already affected by the old defect cannot safely recover the
+  // missing cinematic token from local storage. It must fail closed rather
+  // than claim that undo restored a distinct version.
+  const corruptedStorage = new Map([["cliponaut-active-job", JSON.stringify({ ...state, previous: state.current })]]);
+  const corrupted = loadUndoState({ getItem: (key) => corruptedStorage.get(key) || null, setItem: () => {} });
+  assert.equal(corrupted.current.session.id, normal.id);
+  assert.equal(corrupted.previous, null, "corrupt same-job Undo history is disabled rather than restoring the current output");
+});
+
+test("terminal attempts retain a completed preview without consuming Undo history", () => {
   const sessionA = { id: "job-a", accessToken: "token-a" };
   const sessionB = { id: "job-b", accessToken: "token-b" };
   const sources = [{ index: 0, name: "source.mp4", type: "video/mp4", size: 10 }];
@@ -2847,18 +3133,56 @@ test("terminal attempts clear stale output presentation without consuming Undo h
 
   assert.deepEqual(afterBFailure.current, successfulA.current, "the prior result remains an explicit recovery target");
   assert.deepEqual(afterBFailure.previous, successfulA.previous, "failure does not consume a valid Undo target");
-  assert.deepEqual(terminalAttemptPresentation({ status: "failed", error: "Rendering failed." }), {
-    status: "error", resultUrl: null, error: "Rendering failed."
-  }, "a failed current job cannot present an old MP4 as Ready");
-  assert.deepEqual(terminalAttemptPresentation({ status: "cancelled" }), {
-    status: "error", resultUrl: null, error: "This edit was cancelled."
-  }, "a cancelled current job cannot present an old MP4 as Ready");
+  assert.deepEqual(terminalAttemptPresentation({ status: "failed", error: "Rendering failed." }, "https://signed.example/previous.mp4"), {
+    status: "error", resultUrl: "https://signed.example/previous.mp4", error: "Rendering failed."
+  }, "a failed follow-up retains the previous playable MP4");
+  assert.deepEqual(terminalAttemptPresentation({ status: "cancelled" }, "https://signed.example/previous.mp4"), {
+    status: "error", resultUrl: "https://signed.example/previous.mp4", error: "This edit was cancelled."
+  }, "a cancelled follow-up retains the previous playable MP4");
+  assert.deepEqual(sourcesForTerminalAttempt({ status: "failed" }, sources), sources, "a rejected follow-up retains restored source cards");
+  assert.equal(terminalAttemptMessage({ status: "failed" }, false), "We couldn’t complete that edit. No previous edit was created.");
+  assert.equal(terminalAttemptMessage({ status: "cancelled" }, true), "This edit was cancelled. Your previous version is still available.");
 
   const terminal = recordTerminalJob(duringB, sessionB, { status: "failed", error: "Rendering failed.", sources });
   assert.deepEqual(terminal.terminal, {
-    session: sessionB, status: "failed", error: "Rendering failed.", sources
+    session: sessionB, status: "failed", error: "Rendering failed.", prompt: "Make it brighter.", sources
   }, "an authoritative terminal job survives refresh without altering successful history");
   assert.equal(clearTerminalJob(terminal).terminal, null, "explicitly restoring the previous result clears only terminal presentation state");
+});
+
+test("first failed job refresh retains its truthful workspace, sources, and conversation", () => {
+  const session = { id: "first-failed-job", accessToken: "first-failed-token" };
+  const sources = [{ index: 0, name: "original.mp4", type: "video/mp4", size: 42 }];
+  const failed = recordTerminalJob(setUndoActiveJob(emptyUndoState(), session, "Keep only the introduction."), session, {
+    status: "failed", error: "The source could not be processed.", sources
+  });
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
+  saveUndoState(failed, storage);
+  const refreshed = loadUndoState(storage);
+  assert.equal(refreshed.current, null, "a first failure never invents a completed edit");
+  assert.equal(refreshed.previous, null, "a first failure never invents an Undo target");
+  assert.equal(hasWorkspacePresentation({ undoState: failed }), true, "terminal failure keeps the workspace visible after refresh");
+  assert.equal(hasWorkspacePresentation({ undoState: emptyUndoState() }), false, "an empty editor remains empty");
+  const messages = terminalAttemptConversation(failed.terminal);
+  assert.deepEqual(messages, [
+    { role: "user", text: "Keep only the introduction.", jobId: session.id },
+    { role: "assistant", text: "The source could not be processed.", jobId: session.id }
+  ]);
+  assert.deepEqual(loadUndoState(storage).terminal, failed.terminal, "refresh retains safe source metadata and the failure text");
+
+  const completed = promoteSuccessfulJob(setUndoActiveJob(emptyUndoState(), { id: "completed", accessToken: "completed-token" }, "Make it black and white."), { id: "completed", accessToken: "completed-token" }, sources);
+  const followup = setUndoActiveJob(completed, { id: "failed-followup", accessToken: "failed-followup-token" }, "Make it unsupported.");
+  const afterFollowupFailure = recordTerminalJob(followup, { id: "failed-followup", accessToken: "failed-followup-token" }, { status: "failed", error: "Unsupported edit.", sources });
+  assert.equal(afterFollowupFailure.current.session.id, "completed", "a failed follow-up retains the completed output identity");
+  assert.equal(hasWorkspacePresentation({ undoState: afterFollowupFailure }), true);
+});
+
+test("browser media preflight rejects invalid duration and resolution before upload", () => {
+  assert.equal(browserVideoPreflightError({ width: 1920, height: 1080, duration: 12 }), null);
+  assert.match(browserVideoPreflightError({ width: 1920, height: 1080, duration: 601 }), /10 minutes/);
+  assert.match(browserVideoPreflightError({ width: 7680, height: 4320, duration: 12 }), /resolution/);
+  assert.match(browserVideoPreflightError({ width: 0, height: 0, duration: NaN }), /readable video/);
 });
 
 test("client presentation generation rejects late polling and restoration responses", () => {

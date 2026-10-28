@@ -1,0 +1,28 @@
+{
+  "programs": [],
+  "stream_groups": [],
+  "streams": [
+    {
+      "codec_name": "h264",
+      "codec_type": "video",
+      "width": 320,
+      "height": 180,
+      "start_time": "0.000000",
+      "duration": "2.000000",
+      "nb_frames": "60"
+    },
+    {
+      "codec_name": "aac",
+      "codec_type": "audio",
+      "start_time": "0.000000",
+      "duration": "2.005000",
+      "nb_frames": "95"
+    }
+  ],
+  "format": {
+    "duration": "2.005000"
+  },
+  "meanChannelDifference": 0.0,
+  "hostedJobId": "1b426dd7-eb57-41ee-adb7-52139031d5d6",
+  "fullDecode": "PASS"
+}

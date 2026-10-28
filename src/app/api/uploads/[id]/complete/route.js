@@ -1,7 +1,8 @@
 import { abortMultipartUpload, completeMultipartUpload, headObject } from "@/lib/jobs/storage";
-import { getAuthorizedJob, queueJob } from "@/lib/jobs/job-store";
+import { createEditingSession, getAuthorizedJob, queueJob } from "@/lib/jobs/job-store";
 import { jsonError, jobToken, PublicRequestError, safeJobResponse } from "@/lib/jobs/http";
 import { validateJobRequest, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { hasFounderTestAccess } from "@/lib/founder-test-access";
 
 export const runtime = "nodejs";
 
@@ -47,7 +48,11 @@ export async function POST(req, { params }) {
     }
     const queued = await queueJob(id, { prompt: prompt.trim(), exportQuality, sources, reference });
     if (!queued) throw new PublicRequestError("This upload session can no longer be queued");
-    return Response.json(safeJobResponse(queued));
+    // Conversational sessions are intentionally unavailable unless the
+    // server-verified, short-lived founder test cookie is present. Ordinary
+    // uploads keep their established single-edit response shape.
+    const session = hasFounderTestAccess(req) ? await createEditingSession(queued.id, prompt.trim()) : null;
+    return Response.json({ ...safeJobResponse(queued), ...(session ? { session } : {}) });
   } catch (error) {
     return jsonError(error);
   }

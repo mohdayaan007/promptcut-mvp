@@ -1,5 +1,5 @@
 import { GoogleGenAI, createPartFromUri } from "@google/genai";
-import { createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { analyzeEditRequestCapabilities, analyzeSpokenRequestCoverage, createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { createDelegatedStyleDecisionJsonSchema, createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { buildAiEditorPrompt, buildDelegatedStyleDecisionPrompt, buildSemanticSourceClassificationPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { findPhraseOccurrences, pairPhraseOccurrences } from "@/lib/editor-core/spoken-transcript";
@@ -17,6 +17,12 @@ const MAX_PLANNING_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 300;
 
 export class UnsupportedEditRequestError extends Error {}
+export class PartialEditRequestError extends UnsupportedEditRequestError {
+  constructor(capability) {
+    super(capability.message);
+    this.capability = capability;
+  }
+}
 export class GeminiSourceUploadError extends UnsupportedEditRequestError {}
 
 function hasExplicitReferenceStyleConflict(prompt, sourceCatalog) {
@@ -559,6 +565,25 @@ function exactSpokenCandidates(transcript, momentRequest, source) {
   return candidates.map((candidate) => ({ sourceId: source.sourceId, ...candidate }));
 }
 
+const MAX_SEMANTIC_TRAILING_SILENCE_SECONDS = 0.5;
+
+function semanticSegmentRange({ momentRequest, startSegment, endSegment, nextSegment, source }) {
+  const range = momentRequest.mode === "START_BOUNDARY"
+    ? { start: startSegment.start, end: source.duration }
+    : momentRequest.mode === "END_BOUNDARY"
+      ? { start: 0, end: endSegment.end }
+      : { start: startSegment.start, end: endSegment.end };
+  // Canonical segments expose a meaningful observed pause before the next
+  // utterance. For a semantic whole-topic selection, retain half of that
+  // evidence-backed silence (with a general cap for very long pauses) so a
+  // cut does not land on the final phoneme or enter the following utterance.
+  if (momentRequest.mode === "EVENT_SEGMENT" && nextSegment?.start > endSegment.end) {
+    const silence = nextSegment.start - endSegment.end;
+    range.end = Math.min(source.duration, endSegment.end + Math.min(silence / 2, MAX_SEMANTIC_TRAILING_SILENCE_SECONDS));
+  }
+  return range;
+}
+
 function validateSemanticTranscriptCandidates(response, momentRequest, transcript, source) {
   if (response?.sourceId !== source.sourceId) throw spokenMomentError("SPEECH_SOURCE_MISMATCH", { sourceId: source.sourceId });
   if (response?.momentId !== momentRequest.momentId || !Array.isArray(response?.candidates)) {
@@ -581,11 +606,7 @@ function validateSemanticTranscriptCandidates(response, momentRequest, transcrip
     if (startIndex > endIndex) throw spokenMomentError("SPEECH_INVALID_SEGMENT_RANGE", { sourceId: source.sourceId });
     const startSegment = segments[startIndex];
     const endSegment = segments[endIndex];
-    const range = momentRequest.mode === "START_BOUNDARY"
-      ? { start: startSegment.start, end: source.duration }
-      : momentRequest.mode === "END_BOUNDARY"
-        ? { start: 0, end: endSegment.end }
-        : { start: startSegment.start, end: endSegment.end };
+    const range = semanticSegmentRange({ momentRequest, startSegment, endSegment, nextSegment: segments[endIndex + 1], source });
     if (!Number.isFinite(range.start) || !Number.isFinite(range.end) || range.start < 0 || range.end <= range.start || range.end > source.duration) {
       throw spokenMomentError("SPEECH_INVALID_SEGMENT_RANGE", { sourceId: source.sourceId });
     }
@@ -781,7 +802,44 @@ async function waitForActiveFile(ai, uploadedFile) {
   return file;
 }
 
-async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions, textStyleIntent = null, referenceStyleActive = false }) {
+/**
+ * Speech selection is intentionally transcript-owned.  A full video file is
+ * neither stronger evidence nor a prerequisite for selecting words that we
+ * already transcribe with timestamps.  Keeping this predicate conservative is
+ * important: anything that needs visual inspection (including semantic source
+ * references or delegated visual taste) stays on the full-video path.
+ */
+function canPlanFromTranscriptOnly({ spokenCoverage, semanticReferences, referenceStyleActive, prompt }) {
+  return spokenCoverage?.kind === "pure" &&
+    semanticReferences.length === 0 &&
+    !referenceStyleActive &&
+    !requiresDelegatedStyleJudgment(prompt);
+}
+
+function createTranscriptOwnedSpokenPlan({ prompt, hasMultipleVideos, sourceCatalog, localizedMoments, textStyleIntent }) {
+  const resolvedTextStyle = resolveTextStyleScope(textStyleIntent, prompt);
+  let plan = createEditPlan({ prompt, hasMultipleVideos, sourceCatalog, resolvedStyleIntent: resolvedTextStyle });
+  plan = applyAuthoritativeMomentSequence(plan, localizedMoments, { reject: spokenMomentError, mismatchReason: "SPEECH_SOURCE_MISMATCH" });
+  plan = reconcileCaptionOperation(plan, prompt);
+  plan = reconcileAudioControls(plan, prompt);
+  plan = reconcileVisualAdjustments(plan, prompt, { sourceCatalog, resolvedSemanticSources: [] });
+  if (resolvedTextStyle ? plan.operations.length : true) {
+    plan = resolvedTextStyle
+      ? reconcileResolvedStyleProfile(plan, resolvedTextStyle)
+      : reconcileStyleProfile(plan, prompt, { sourceCatalog, resolvedSemanticSources: [] });
+  }
+  if (!plan.operations.length) throw new UnsupportedEditRequestError("This edit is not supported yet");
+  return {
+    plan: addAutomaticMerge(collapseGlobalSourceColorGrades(plan), hasMultipleVideos),
+    styleDiagnostics: createStylePlanningDiagnostics({
+      styleIntent: textStyleIntent,
+      resolvedStyle: resolvedTextStyle,
+      planningPath: "transcript_owned_spoken"
+    })
+  };
+}
+
+async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions, textStyleIntent = null, referenceStyleActive = false, spokenCoverage = null }) {
   const ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const uploadedFiles = [];
   const composition = extractMomentCompositionRequests(prompt, sourceCatalog);
@@ -790,15 +848,18 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
   }
   const compositionRequests = composition?.requests || null;
   const semanticReferences = compositionRequests ? [] : extractSemanticSourceReferences(prompt, sourceCatalog);
-  const spokenMomentRequest = compositionRequests ? null : extractSpokenMomentRequest(prompt, sourceCatalog);
+  const spokenMomentRequest = compositionRequests ? null : spokenCoverage?.request || extractSpokenMomentRequest(prompt, sourceCatalog);
   const momentRequest = compositionRequests ? null : extractVisualMomentRequest(prompt, sourceCatalog);
+  const transcriptOwnedSpokenRequest = canPlanFromTranscriptOnly({ spokenCoverage, semanticReferences, referenceStyleActive, prompt });
   const requiresVisualUnderstanding = semanticReferences.length > 0;
   if (requiresVisualUnderstanding) {
     console.info("Gemini semantic source references extracted:", { semanticReferences });
   }
   try {
     const activeSources = [];
-    for (const input of sourceInputs) {
+    // Do not activate a complete source merely to localize spoken content.
+    // transcribeSource uploads a short-lived extracted audio track instead.
+    for (const input of transcriptOwnedSpokenRequest ? [] : sourceInputs) {
       try {
         const uploadedFile = await ai.files.upload({
           file: input.inputPath,
@@ -869,6 +930,13 @@ async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourc
         ? await localizeSpokenMoment({ momentRequest: request, sourceCatalog, resolvedSemanticSources, sourceInputs, ai, retryOptions, scratchDirectory, executionController, transcriptionOptions, transcripts })
         : await localizeVisualMoment({ momentRequest: request, sourceCatalog, resolvedSemanticSources, activeSources, ai, retryOptions });
       localizedMoments.push(localizedMoment);
+    }
+
+    if (transcriptOwnedSpokenRequest) {
+      const direct = createTranscriptOwnedSpokenPlan({
+        prompt, hasMultipleVideos, sourceCatalog, localizedMoments, textStyleIntent
+      });
+      return { ...direct, transcripts };
     }
 
     const delegatedDecision = textStyleIntent?.mode === "delegated_taste"
@@ -977,6 +1045,10 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
     : inputPath ? [{ inputPath, inputMimeType, source: sourceCatalog[0] }] : [];
   const requiresVisualUnderstanding = requiresVisualSourceUnderstanding(prompt, sourceCatalog) || requiresMomentCompositionUnderstanding(prompt, sourceCatalog) || requiresVisualMomentUnderstanding(prompt, sourceCatalog) || requiresSpokenMomentUnderstanding(prompt, sourceCatalog);
   const deterministicStyleRequest = !referenceStyleActive && isDeterministicallySafeStyleRequest(prompt, { sourceCatalog });
+  const capability = analyzeEditRequestCapabilities(prompt, sourceCatalog);
+  if (capability.kind === "partial") throw new PartialEditRequestError(capability);
+  if (capability.kind === "unsupported" || capability.kind === "ambiguous") throw new UnsupportedEditRequestError(capability.message);
+  const spokenCoverage = analyzeSpokenRequestCoverage(prompt, sourceCatalog);
   if (referenceStyleActive && hasExplicitReferenceStyleConflict(prompt, sourceCatalog)) {
     throw new UnsupportedEditRequestError("Choose either the reference style or a named visual style.");
   }
@@ -1030,7 +1102,7 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
       }
     }
     return {
-      ...(await createGeminiPlan({ sourceInputs: planningSources, prompt, hasMultipleVideos, sourceCatalog, aiClient: ai, retryOptions, scratchDirectory, executionController, transcriptionOptions, textStyleIntent, referenceStyleActive })),
+      ...(await createGeminiPlan({ sourceInputs: planningSources, prompt, hasMultipleVideos, sourceCatalog, aiClient: ai, retryOptions, scratchDirectory, executionController, transcriptionOptions, textStyleIntent, referenceStyleActive, spokenCoverage })),
       source: "gemini"
     };
   } catch (error) {

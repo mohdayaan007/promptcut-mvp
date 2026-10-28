@@ -1,4 +1,4 @@
-import { getAuthorizedJob } from "@/lib/jobs/job-store";
+import { getAuthorizedJob, getJobConfirmation } from "@/lib/jobs/job-store";
 import { signedDownloadUrl } from "@/lib/jobs/storage";
 import { jsonError, jobToken, PublicRequestError, safeJobResponse, safeSourceMetadata } from "@/lib/jobs/http";
 
@@ -10,8 +10,10 @@ export async function GET(req, { params }) {
     const job = await getAuthorizedJob(id, jobToken(req));
     if (!job) return jsonError(new PublicRequestError("Edit job was not found", 404));
     const outputUrl = job.status === "completed" && job.outputKey && !job.outputCleanedAt ? await signedDownloadUrl(job.outputKey) : null;
+    const confirmation = job.status === "completed" ? await getJobConfirmation(job.id) : null;
     return Response.json(safeJobResponse(job, {
       outputUrl,
+      confirmation,
       sources: safeSourceMetadata(job.sources)
     }), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
