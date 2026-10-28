@@ -13,6 +13,8 @@
     "test:conversation": "tsx --test tests/conversation-state.test.js",
     "test:conversation-e2e": "tsx --test tests/conversation-e2e.test.js",
     "test:founder-access": "tsx --test tests/founder-test-access.test.js",
+    "test:dodo": "tsx --test tests/dodo-test-mode.test.js",
+    "test:dodo-integration": "tsx --test tests/dodo-postgres.integration.test.js",
     "test:session-integration": "tsx --test tests/session-postgres.integration.test.js",
     "test:session-worker-storage": "tsx --test tests/session-worker-storage.integration.test.js",
     "test:browser-phase4": "tsx --test tests/browser-phase4.acceptance.test.js",
