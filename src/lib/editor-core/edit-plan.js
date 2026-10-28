@@ -236,15 +236,16 @@ export function requiresMomentCompositionUnderstanding(prompt = "", sourceCatalo
 // form supported here; topic requests are routed but deferred to Stage 4.
 export function extractSpokenMomentRequest(prompt = "", sourceCatalog = []) {
   if (!prompt.trim() || /\d+:\d+\s*(?:to|until|through)\s*\d+:\d+/i.test(prompt)) return null;
+  const parsePrompt = prompt.replace(/'([^']+)'/g, '"$1"');
   const quoted = `(?:I|he|she|they|we)?\\s*(?:say|says|said)\\s*["“]([^"”]+)["”]`;
-  const paired = prompt.match(new RegExp(`\\b(?:start|begin|cut\\s+in)(?:\\s+from)?\\s+when\\s+${quoted}\\s+(?:and|then)\\s+(?:end|stop|cut\\s+(?:off|everything\\s+after))(?:\\s+(?:when|once|after))?\\s+${quoted}`, "i"));
-  const start = paired ? null : prompt.match(new RegExp(`\\b(?:start|begin|cut\\s+in)(?:\\s+from)?\\s+when\\s+${quoted}`, "i"));
-  const end = paired ? null : prompt.match(new RegExp(`\\b(?:end|stop|cut\\s+(?:off|everything\\s+after))(?:\\s+(?:when|once|after))?\\s+${quoted}`, "i"));
-  const segment = paired || start || end ? null : prompt.match(new RegExp(`\\b(?:use|show|keep|trim(?:\\s+to)?)(?:\\s+(?:me|this|the\\s+video))?\\s+(?:the\\s+)?(?:part|bit|section|moment|clip)\\s+(?:where|when)\\s+${quoted}`, "i"));
-  const semanticPaired = prompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)\s+(?:and|then)\s+(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once|after))?\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
-  const semanticStart = semanticPaired ? null : prompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
-  const semanticEnd = semanticPaired ? null : prompt.match(/\b(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once|after))?\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
-  const semanticSegment = semanticPaired || semanticStart || semanticEnd ? null : prompt.match(/\b(?:use|show|keep|trim(?:\s+to)?)(?:\s+(?:me|this|the\s+video))?\s+(?:the\s+)?(?:part|bit|section|moment|clip)\s+(?:where|when)\s+(?:I|he|she|they|we)?\s*(?:explain|discuss|talk(?:ing)?\s+about|speaking\s+about)\s+(.+?)(?=[.!?]|$)/i);
+  const paired = parsePrompt.match(new RegExp(`\\b(?:start|begin|cut\\s+in)(?:\\s+from)?\\s+when\\s+${quoted}\\s+(?:and|then)\\s+(?:end|stop|cut\\s+(?:off|everything\\s+after))(?:\\s+(?:when|once|after))?\\s+${quoted}`, "i"));
+  const start = paired ? null : parsePrompt.match(new RegExp(`\\b(?:start|begin|cut\\s+in)(?:\\s+from)?\\s+when\\s+${quoted}`, "i"));
+  const end = paired ? null : parsePrompt.match(new RegExp(`\\b(?:end|stop|cut\\s+(?:off|everything\\s+after))(?:\\s+(?:when|once|after))?\\s+${quoted}`, "i"));
+  const segment = paired || start || end ? null : parsePrompt.match(new RegExp(`\\b(?:use|show|keep|trim(?:\\s+to)?)(?:\\s+only)?(?:\\s+(?:me|this|the\\s+video))?\\s+(?:the\\s+)?(?:part|bit|section|moment|clip)\\s+(?:where|when)\\s+${quoted}`, "i"));
+  const semanticPaired = parsePrompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)\s+(?:and|then)\s+(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once|after))?\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
+  const semanticStart = semanticPaired ? null : parsePrompt.match(/\b(?:start|begin|cut\s+in)(?:\s+from)?\s+when\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
+  const semanticEnd = semanticPaired ? null : parsePrompt.match(/\b(?:end|stop|cut\s+(?:off|everything\s+after))(?:\s+(?:when|once|after))?\s+(?:I|he|she|they|we)?\s*(?:(?:begin|start)\s+)?\s*(?:talking|speaking)\s+about\s+(.+?)(?=[.!?]|$)/i);
+  const semanticSegment = semanticPaired || semanticStart || semanticEnd ? null : parsePrompt.match(/\b(?:use|show|keep|trim(?:\s+to)?)(?:\s+only)?(?:\s+(?:me|this|the\s+video))?\s+(?:the\s+)?(?:part|bit|section|moment|clip)\s+(?:where|when)\s+(?:I|he|she|they|we)?\s*(?:explain|discuss|talk(?:ing)?\s+about|speaking\s+about)\s+(.+?)(?=[.!?]|$)/i);
   if (!paired && !start && !end && !segment && !semanticPaired && !semanticStart && !semanticEnd && !semanticSegment) return null;
 
   const semanticReferences = extractSemanticSourceReferences(prompt, sourceCatalog);
@@ -265,6 +266,223 @@ export function extractSpokenMomentRequest(prompt = "", sourceCatalog = []) {
 
 export function requiresSpokenMomentUnderstanding(prompt = "", sourceCatalog = []) {
   return Boolean(extractSpokenMomentRequest(prompt, sourceCatalog));
+}
+
+function meaningfulOperations(prompt, sourceCatalog) {
+  return createEditPlan({ prompt, sourceCatalog }).operations.filter((operation) => !["sequence", "merge"].includes(operation.type));
+}
+
+function allowedSpeechSelectionTail(value = "") {
+  const tail = value.trim().replace(/^[,.!?;:\s]+/, "").replace(/[.!?\s]+$/, "").toLowerCase();
+  return !tail || /^(?:please\s+)?remove\s+(?:everything|all(?:\s+the\s+rest)?)\s+else$/.test(tail);
+}
+
+function selectionClauseStart(prompt, beforeIndex) {
+  const command = /\b(?:use|show|keep|trim(?:\s+to)?|start|begin|end|stop|cut\s+in)\b/ig;
+  let match;
+  let start = -1;
+  while ((match = command.exec(prompt))) {
+    if (match.index >= beforeIndex) break;
+    // “I begin talking” describes the selected speech; it is not a second
+    // edit command and must not turn a start-boundary request into a prefix.
+    if (/\b(?:I|he|she|they|we)\s+$/i.test(prompt.slice(0, match.index))) continue;
+    start = match.index;
+  }
+  if (start < 0) return start;
+  // Source scopes are part of the selection clause, not a separate edit.
+  const scopedPrefix = /\bfrom\s+(?:(?:video\s*|source[-\s]?)(?:\d+)|(?:the\s+)?[a-z][a-z\s-]{1,48}\s+(?:video|clip|footage|shot))\s*,?\s*$/i.exec(prompt.slice(0, start));
+  if (scopedPrefix) return scopedPrefix.index;
+  return start;
+}
+
+function coverageForAdditionalClause(clause, sourceCatalog) {
+  return meaningfulOperations(clause, sourceCatalog).length ? "supported_compound" : "unsupported_compound";
+}
+
+// This identifies grammar rather than named effects: an imperative verb plus
+// a direct editing object is not safely interpretable as part of a topic.
+function looksLikeImperativeEditClause(clause) {
+  const value = clause.trim();
+  return !/^[a-z]+ing\b/i.test(value) && /^[a-z]+\s+(?:it|this|that|the\s+(?:video|clip|footage)|my\s+[a-z]+)/i.test(value);
+}
+
+function quotedSpeechTail(prompt, request) {
+  const phrase = request.mode === MOMENT_MODES.START_END_BOUNDARY ? request.endPhrase : request.startPhrase || request.endPhrase;
+  const quote = String(phrase || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = quote && new RegExp(`["“']${quote}["”']`, "i").exec(prompt);
+  return match ? prompt.slice(match.index + match[0].length) : null;
+}
+
+/**
+ * Classifies a spoken selection without guessing whether unconsumed text was
+ * intentional. A fast path is allowed only when the complete request is the
+ * selection itself (plus its explicit "remove everything else" wording).
+ */
+export function analyzeSpokenRequestCoverage(prompt = "", sourceCatalog = []) {
+  // Composition owns the boundaries of each individual moment. Applying the
+  // single-moment coverage guard to the whole sentence mistakes an earlier
+  // valid moment for an unaccounted prefix (and rejects the composition).
+  const composition = extractMomentCompositionRequests(prompt, sourceCatalog);
+  if (composition?.requests?.length) return { kind: "composition", requests: composition.requests };
+  const request = extractSpokenMomentRequest(prompt, sourceCatalog);
+  if (!request) return null;
+
+  if (request.type === "exact") {
+    const tail = quotedSpeechTail(prompt, request);
+    const phraseIndex = prompt.toLowerCase().indexOf(String(request.startPhrase || request.endPhrase).toLowerCase());
+    const start = selectionClauseStart(prompt, phraseIndex);
+    const prefix = start >= 0 ? prompt.slice(0, start) : "";
+    if (prefix.trim()) return { kind: coverageForAdditionalClause(prefix, sourceCatalog), request };
+    if (tail === null || allowedSpeechSelectionTail(tail)) return { kind: "pure", request };
+    return { kind: coverageForAdditionalClause(tail, sourceCatalog), request };
+  }
+
+  const topicKey = request.startTopicDescription || request.endTopicDescription;
+  const topicIndex = topicKey ? prompt.toLowerCase().indexOf(topicKey.toLowerCase()) : -1;
+  if (topicIndex < 0) return { kind: "unsupported_compound", request };
+  const topicEnd = topicIndex + topicKey.length;
+  const description = prompt.slice(topicIndex, topicEnd);
+  const selectionStart = selectionClauseStart(prompt, topicIndex);
+  const prefix = selectionStart >= 0 ? prompt.slice(0, selectionStart) : "";
+  if (prefix.trim()) return { kind: coverageForAdditionalClause(prefix, sourceCatalog), request };
+  const conjunction = /\s+(?:and|then|also)\s+/ig;
+  let compound;
+  while ((compound = conjunction.exec(description))) {
+    const suffix = description.slice(compound.index + compound[0].length);
+    const operations = meaningfulOperations(suffix, sourceCatalog);
+    if (operations.length) {
+      const adjustedRequest = request.startTopicDescription
+        ? { ...request, startTopicDescription: description.slice(0, compound.index).trim() }
+        : { ...request, endTopicDescription: description.slice(0, compound.index).trim() };
+      return { kind: "supported_compound", request: adjustedRequest };
+    }
+    if (looksLikeImperativeEditClause(suffix)) return { kind: "unsupported_compound", request };
+  }
+  const tail = prompt.slice(topicEnd);
+  if (allowedSpeechSelectionTail(tail)) return { kind: "pure", request };
+  const operations = meaningfulOperations(tail, sourceCatalog);
+  return operations.length ? { kind: "supported_compound", request } : { kind: "unsupported_compound", request };
+}
+
+function editClausesOutsideQuotedSpeech(prompt = "", spokenRequest = null) {
+  const protectedRanges = quotedRanges(prompt);
+  // A semantic topic is prose, not an editing clause. In particular, “building
+  // and testing Cliponaut” must never be split merely because it contains an
+  // ordinary conjunction.
+  const topic = spokenRequest?.startTopicDescription || spokenRequest?.endTopicDescription;
+  if (topic) {
+    const start = prompt.toLowerCase().indexOf(topic.toLowerCase());
+    if (start >= 0) protectedRanges.push({ start, end: start + topic.length });
+  }
+  const separator = /(?:[.;]\s*|\s+\b(?:and|then|also)\b\s+)/gi;
+  const clauses = [];
+  let start = 0;
+  for (const match of prompt.matchAll(separator)) {
+    if (overlapsQuotedRange(match, protectedRanges)) continue;
+    clauses.push({ text: prompt.slice(start, match.index).trim().replace(/^(?:and|then|also)\s+/i, ""), start, end: match.index });
+    start = (match.index || 0) + match[0].length;
+  }
+  clauses.push({ text: prompt.slice(start).trim().replace(/^(?:and|then|also)\s+/i, ""), start, end: prompt.length });
+  return clauses.filter((clause) => clause.text);
+}
+
+function isEditingClause(clause = "") {
+  // This is grammatical routing, not an effect denylist. Unknown imperative
+  // editing clauses are deliberately surfaced as unsupported instead of being
+  // silently absorbed by an otherwise supported request.
+  return /^(?:please\s+)?(?:make|turn|change|apply|use|add|remove|keep|show|trim|cut|start|begin|end|stop|blur|reverse|stabili[sz]e|translate|replace|crop|zoom|fade|mute|speed|slow|increase|decrease|reduce|lower)\b/i.test(clause.trim());
+}
+
+function hasKnownDeterministicEdit(clause = "") {
+  // These phrases are the public, deterministic capability definitions. This
+  // is deliberately an allow-list of shipped operations, not a list of things
+  // to reject.
+  return /\b(?:black\s*(?:and|&)\s*white|grayscale|cinematic|warm|cool|portrait|vertical|landscape|square|fade|slow(?:\s+motion)?|speed\s+up|zoom\s+in|mute)\b/i.test(clause);
+}
+
+function isKnownUnavailableOperation(clause = "") {
+  // These are operation verbs with no entry in the shipped capability
+  // registry. They are parsed as requests, not inferred from a noun such as
+  // “face”, so the check remains stable as users vary their wording.
+  return /^(?:please\s+)?(?:blur|reverse|stabili[sz]e|translate)\b/i.test(clause.trim());
+}
+
+function normalizeSupportedPrompt(clauses) {
+  return clauses.map((clause) => clause.text.replace(/[\s,.!?;:]+$/g, "").trim()).filter(Boolean).join(". ");
+}
+
+/**
+ * Deterministically accounts for all requested operations before media work.
+ * It intentionally returns a pending partial action rather than guessing how
+ * to execute text that no shipped capability owns.
+ */
+export function analyzeEditRequestCapabilities(prompt = "", sourceCatalog = []) {
+  const text = String(prompt || "").trim();
+  if (!text) return { kind: "unsupported", message: "Enter an editing instruction." };
+  const composition = extractMomentCompositionRequests(text, sourceCatalog);
+  if (composition?.error) return { kind: "ambiguous", message: "Please clarify the sequence of moments you want to use." };
+  const spokenCoverage = analyzeSpokenRequestCoverage(text, sourceCatalog);
+  const originalSpoken = extractSpokenMomentRequest(text, sourceCatalog);
+  const originalTopic = originalSpoken?.startTopicDescription || originalSpoken?.endTopicDescription;
+  const imperativeInOriginalTopic = originalTopic && new RegExp(`\\s+(?:and|then|also)\\s+(?=(?:make|turn|change|apply|use|add|remove|blur|reverse|stabili[sz]e|translate|replace|crop|zoom|fade|mute|speed|slow|increase|decrease|reduce|lower)\\b)`, "i").exec(originalTopic);
+  // Visual localization and semantic source routing are already server-owned
+  // Gemini paths. Their clauses cannot be decomposed safely by a text-only
+  // preflight, so preserve that established authoritative planner route.
+  if (!originalSpoken && (requiresVisualMomentUnderstanding(text, sourceCatalog) || requiresVisualSourceUnderstanding(text, sourceCatalog))) return { kind: "complete" };
+  // These routes already prove that every grammatical clause is owned by a
+  // shipped planner path. Do not re-split their selection wording below.
+  if (["composition", "supported_compound"].includes(spokenCoverage?.kind) || (spokenCoverage?.kind === "pure" && !imperativeInOriginalTopic)) return { kind: "complete" };
+  if (imperativeInOriginalTopic && hasKnownDeterministicEdit(originalTopic.slice(imperativeInOriginalTopic.index))) return { kind: "complete" };
+  // Some safe style intents are recognized on the complete sentence (where
+  // their wording is contextual) rather than the isolated suffix. Preserve
+  // that established supported path before treating a remaining clause as
+  // unowned.
+  if (spokenCoverage?.kind === "unsupported_compound" && meaningfulOperations(text, sourceCatalog).length) return { kind: "complete" };
+  const spoken = originalSpoken;
+  // The broad semantic-topic grammar intentionally consumes natural prose.
+  // Split it only when a conjunction introduces a new imperative edit clause;
+  // this leaves “designing and building Cliponaut” untouched.
+  const topic = originalTopic;
+  const imperativeInTopic = imperativeInOriginalTopic;
+  const coverageText = imperativeInTopic
+    ? text.replace(topic, `${topic.slice(0, imperativeInTopic.index).trim()}. ${topic.slice(imperativeInTopic.index + imperativeInTopic[0].length).trim()}`)
+    : text;
+  const coverageSpoken = extractSpokenMomentRequest(coverageText, sourceCatalog);
+  const clauses = editClausesOutsideQuotedSpeech(coverageText, coverageSpoken);
+  const supported = [];
+  const unsupported = [];
+  let unresolved = false;
+  for (const clause of clauses) {
+    const plan = createEditPlan({ prompt: clause.text, sourceCatalog });
+    const hasOperation = plan.operations.some((operation) => !["merge"].includes(operation.type));
+    // A spoken selection is represented later by transcript/semantic planning,
+    // so it is a supported operation even though the deterministic plan has no
+    // clip until evidence is resolved.
+    const hasSelection = Boolean(extractSpokenMomentRequest(clause.text, sourceCatalog) || extractVisualMomentRequest(clause.text, sourceCatalog));
+    if (hasOperation || hasSelection || hasKnownDeterministicEdit(clause.text)) supported.push(clause);
+    else if (isKnownUnavailableOperation(clause.text)) unsupported.push(clause);
+    else if (isEditingClause(clause.text)) unresolved = true;
+  }
+  // Established Gemini-planned style/caption routes have deliberately richer
+  // language than deterministic parsing. Leave an unclassified clause to the
+  // authoritative planner instead of rejecting a known capability early.
+  if (unresolved) return { kind: "complete" };
+  if (!unsupported.length) return { kind: "complete" };
+  if (!supported.length) {
+    return { kind: "unsupported", message: "I can’t do that edit yet, so I haven’t changed your video." };
+  }
+  const supportedPrompt = normalizeSupportedPrompt(supported);
+  if (!supportedPrompt) return { kind: "ambiguous", message: "Please clarify which edit you want me to make." };
+  const unsupportedPrompt = normalizeSupportedPrompt(unsupported);
+  const supportedDescription = `“${supportedPrompt}”`;
+  const unsupportedDescription = `“${unsupportedPrompt}”`;
+  return {
+    kind: "partial",
+    supportedPrompt,
+    supportedDescription,
+    unsupportedDescription,
+    message: `I can apply ${supportedDescription}, but ${unsupportedDescription} isn’t supported yet. Would you like me to proceed?`
+  };
 }
 
 function cleanMomentDescription(description = "") {

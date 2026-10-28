@@ -9,6 +9,7 @@ export function EmptyEditorState({
   onSelectImages,
   onSelectSuggestion,
   imageCount,
+  error,
 }) {
   return (
     <section className="cliponaut-empty-state" aria-labelledby="editor-heading">
@@ -28,6 +29,7 @@ export function EmptyEditorState({
         />
         <PromptSuggestions onSelect={onSelectSuggestion} />
         <PromptComposer prompt={prompt} onPromptChange={onPromptChange} />
+        {error ? <p className="cliponaut-empty-editor-error" role="alert">{error}</p> : null}
         <p className="cliponaut-composer-note">Upload a video to start editing. Short clips work best.</p>
       </div>
     </section>

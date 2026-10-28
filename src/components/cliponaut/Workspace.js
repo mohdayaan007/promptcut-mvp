@@ -4,6 +4,7 @@ import { AttachmentControls } from "@/components/cliponaut/AttachmentControls";
 import { ArrowLeftIcon, DownloadIcon, ImageIcon, PlusIcon, VideoIcon } from "@/components/cliponaut/icons";
 import { UndoControl } from "@/components/cliponaut/UndoControl";
 import { findUndoTurnIndex } from "@/lib/client/direct-upload";
+import { retainedPreviewLabel } from "@/lib/client/conversation-presentation";
 
 export function Workspace({
   videos,
@@ -162,6 +163,8 @@ function SourcePreview({ file, onMediaReady }) {
 function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, exportQuality, canExport4k, onExportQualityChange, onEditAgain, canViewPreviousEdit, onViewPreviousEdit, previewMode, originalVideo, restoringOriginal, originalPreviewArmed, restoringResultUrl, onRestoredMediaReady }) {
   const videoRef = useRef(null);
   const [playbackRate, setPlaybackRate] = useState("1");
+  const [mediaDuration, setMediaDuration] = useState(null);
+  const previousLabel = resultUrl && previewMode === "normal" ? retainedPreviewLabel(status, mediaDuration) : null;
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = Number(playbackRate);
@@ -180,6 +183,7 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
           <h2 id="preview-heading">Preview</h2>
         </div>
         {status === "done" && previewMode === "normal" && <span className="cliponaut-status-badge">Ready</span>}
+        {previousLabel && <span className="cliponaut-status-badge" role="status">{previousLabel}</span>}
       </div>
 
       <fieldset className="cliponaut-export-quality">
@@ -203,15 +207,17 @@ function PreviewPanel({ status, uploadProgress, error, resultUrl, messages, expo
           <SourcePreview file={originalVideo} onMediaReady={previewMode === "restoring" ? onRestoredMediaReady : undefined} />
         )}
         {previewMode === "normal" && status === "idle" && <PreviewEmptyState />}
-        {previewMode === "normal" && ["uploading", "queued", "analyzing", "rendering"].includes(status) && <PreviewProcessingState status={status} uploadProgress={uploadProgress} />}
-        {previewMode === "normal" && status === "error" && <PreviewErrorState error={error} canViewPreviousEdit={canViewPreviousEdit} onViewPreviousEdit={onViewPreviousEdit} />}
-        {status === "done" && resultUrl && (
-          <video key={resultUrl} ref={videoRef} src={resultUrl} controls playsInline className="cliponaut-result-video" onLoadedData={previewMode === "restoring" && resultUrl === restoringResultUrl ? onRestoredMediaReady : undefined} />
+        {previewMode === "normal" && ["uploading", "queued", "analyzing", "rendering"].includes(status) && !resultUrl && <PreviewProcessingState status={status} uploadProgress={uploadProgress} />}
+        {previewMode === "normal" && status === "error" && !resultUrl && <PreviewErrorState error={error} canViewPreviousEdit={canViewPreviousEdit} onViewPreviousEdit={onViewPreviousEdit} />}
+        {resultUrl && (previewMode === "normal" || (previewMode === "restoring" && !restoringOriginal && resultUrl === restoringResultUrl)) && (
+          <video key={resultUrl} ref={videoRef} src={resultUrl} controls playsInline className="cliponaut-result-video" onLoadedMetadata={(event) => setMediaDuration(event.currentTarget.duration)} onLoadedData={previewMode === "restoring" && resultUrl === restoringResultUrl ? onRestoredMediaReady : undefined} />
         )}
         {previewMode === "restoring" && <PreviewRestoringState />}
       </div>
 
-      {previewMode === "normal" && status === "done" && resultUrl && (
+      {previewMode === "normal" && status === "error" && resultUrl && <div className="cliponaut-preview-retained-error" role="alert">{error || "We couldn’t complete the latest edit. Your previous version is still available."}</div>}
+
+      {previewMode === "normal" && ["done", "error"].includes(status) && resultUrl && (
         <div className="cliponaut-preview-actions">
           <label className="cliponaut-speed-control">
             <span>Speed</span>

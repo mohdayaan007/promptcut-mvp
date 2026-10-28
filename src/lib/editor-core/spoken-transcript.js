@@ -3,7 +3,10 @@ export class TranscriptValidationError extends Error {}
 
 const MAX_SEGMENT_WORDS = 24;
 const MAX_SEGMENT_DURATION = 12;
-const PAUSE_SECONDS = 0.8;
+// A short intra-thought pause is common in natural speech. A 600 ms pause is
+// long enough to expose a likely topic transition to semantic matching while
+// keeping ordinary hesitations inside the same canonical segment.
+const TOPIC_BOUNDARY_PAUSE_SECONDS = 0.6;
 
 function fail(message) { throw new TranscriptValidationError(message); }
 function validText(text) { return typeof text === "string" && text.trim().length > 0; }
@@ -33,7 +36,7 @@ export function createCanonicalTranscript({ sourceId, duration, words }) {
   let current = [];
   for (const word of normalized) {
     const previous = current.at(-1);
-    const paused = previous && word.start - previous.end >= PAUSE_SECONDS;
+    const paused = previous && word.start - previous.end >= TOPIC_BOUNDARY_PAUSE_SECONDS;
     const tooLong = previous && (current.length >= MAX_SEGMENT_WORDS || word.end - current[0].start > MAX_SEGMENT_DURATION);
     if (current.length && (paused || tooLong)) {
       segments.push(current);

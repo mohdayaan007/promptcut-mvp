@@ -1,4 +1,6 @@
 const JOB_STORAGE_KEY = "cliponaut-active-job";
+const EDITING_SESSION_STORAGE_KEY = "cliponaut-editing-session";
+const PENDING_PARTIAL_EDIT_STORAGE_KEY = "cliponaut-pending-partial-edit";
 export const UNDO_STATE_VERSION = 1;
 export const ACTIVE_JOB_STATUSES = ["uploading", "queued", "analyzing", "rendering"];
 const PART_UPLOAD_MAX_ATTEMPTS = 3;
@@ -7,7 +9,11 @@ const PART_UPLOAD_RETRY_DELAYS_MS = [500, 1_000];
 async function requestJson(url, options = {}, fetchFn = fetch) {
   const response = await fetchFn(url, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || "Request failed");
+  if (!response.ok) {
+    const error = new Error(body.error || "Request failed");
+    if (body.partial) error.partial = body.partial;
+    throw error;
+  }
   return body;
 }
 
@@ -56,6 +62,7 @@ function safeTerminalState(state) {
     session: { id: state.session.id, accessToken: state.session.accessToken },
     status: state.status,
     error: safePrompt(state.error),
+    prompt: safePrompt(state.prompt),
     sources: safeSources(state.sources)
   };
 }
@@ -65,12 +72,20 @@ function normalizeUndoState(value) {
     return { state: { ...emptyUndoState(), active: { id: value.id, accessToken: value.accessToken } }, migrated: true };
   }
   if (!value || value.version !== UNDO_STATE_VERSION) return { state: emptyUndoState(), migrated: false };
+  const current = safeSuccessfulState(value.current);
+  const candidatePrevious = safeSuccessfulState(value.previous);
+  // Earlier clients could persist the duplicate-completion defect. The true
+  // preceding job is not reconstructable from a private job token, so fail
+  // closed instead of offering an Undo action that restores the same output.
+  const previous = current?.kind === "job" && candidatePrevious?.kind === "job" && current.session.id === candidatePrevious.session.id
+    ? null
+    : candidatePrevious;
   return {
     state: {
       version: UNDO_STATE_VERSION,
       active: validSession(value.active) ? withPrompt({ id: value.active.id, accessToken: value.active.accessToken }, value.active.prompt) : null,
-      current: safeSuccessfulState(value.current),
-      previous: safeSuccessfulState(value.previous),
+      current,
+      previous,
       terminal: safeTerminalState(value.terminal)
     },
     migrated: false
@@ -107,6 +122,16 @@ export function discardUndoActiveJob(state) {
 
 export function promoteSuccessfulJob(state, session, sources, prompt) {
   const normalized = normalizeUndoState(state).state;
+  if (!validSession(session)) return normalized;
+  const currentJobId = normalized.current?.kind === "job" ? normalized.current.session.id : null;
+  // A polling interval can observe the terminal response more than once while
+  // React commits the first completion. Never turn a completed job into its
+  // own Undo target. Likewise, an old poll is not allowed to replace a newer
+  // successful presentation once its active job has changed or cleared.
+  if (currentJobId === session.id) {
+    return { ...normalized, active: normalized.active?.id === session.id ? null : normalized.active, terminal: null };
+  }
+  if (!normalized.active || normalized.active.id !== session.id) return normalized;
   const nextCurrent = withPrompt({ kind: "job", session: { id: session.id, accessToken: session.accessToken }, sources: safeSources(sources) }, prompt ?? normalized.active?.prompt);
   return {
     version: UNDO_STATE_VERSION,
@@ -126,7 +151,9 @@ export function consumeUndo(state) {
 /** Persists only the latest authoritative terminal presentation, never history. */
 export function recordTerminalJob(state, session, job) {
   const normalized = normalizeUndoState(state).state;
-  const terminal = safeTerminalState({ session, status: job?.status, error: job?.error, sources: job?.sources });
+  const terminal = safeTerminalState({
+    session, status: job?.status, error: job?.error, prompt: job?.prompt ?? normalized.active?.prompt, sources: job?.sources
+  });
   return { ...normalized, active: null, terminal };
 }
 
@@ -363,19 +390,96 @@ export async function cancelJob(session, signal) {
   });
 }
 
+export function loadEditingSession(storage) {
+  const target = browserStorage(storage);
+  if (!target) return null;
+  try {
+    const value = JSON.parse(target.getItem(EDITING_SESSION_STORAGE_KEY) || "null");
+    return value && typeof value.id === "string" && typeof value.accessToken === "string" && Number.isInteger(value.version) ? value : null;
+  } catch { return null; }
+}
+export function saveEditingSession(session, storage) {
+  const target = browserStorage(storage);
+  if (target && session) target.setItem(EDITING_SESSION_STORAGE_KEY, JSON.stringify(session));
+  return session;
+}
+export function clearEditingSession(storage) { browserStorage(storage)?.removeItem(EDITING_SESSION_STORAGE_KEY); }
+export function loadPendingPartialEdit(storage) {
+  const target = browserStorage(storage);
+  if (!target) return null;
+  try {
+    const pending = JSON.parse(target.getItem(PENDING_PARTIAL_EDIT_STORAGE_KEY) || "null");
+    return pending && typeof pending.sessionId === "string" && typeof pending.token === "string"
+      ? { sessionId: pending.sessionId, token: pending.token }
+      : null;
+  } catch { return null; }
+}
+export function savePendingPartialEdit(pending, storage) {
+  const target = browserStorage(storage);
+  if (!target || !pending?.sessionId || !pending?.token) return null;
+  const safe = { sessionId: pending.sessionId, token: String(pending.token).slice(0, 4000) };
+  target.setItem(PENDING_PARTIAL_EDIT_STORAGE_KEY, JSON.stringify(safe));
+  return safe;
+}
+export function clearPendingPartialEdit(storage) { browserStorage(storage)?.removeItem(PENDING_PARTIAL_EDIT_STORAGE_KEY); }
+export async function submitConversationTurn(session, prompt, signal, baseJobId, confirmationToken) {
+  const response = await requestJson(`/api/editing-sessions/${session.id}`, {
+    method: "POST", headers: { "x-cliponaut-session-token": session.accessToken },
+    body: JSON.stringify({ prompt, expectedVersion: session.version, ...(baseJobId ? { baseJobId } : {}), ...(confirmationToken ? { confirmationToken } : {}) }), signal
+  });
+  if (response.pendingConfirmation) return { pendingConfirmation: response.pendingConfirmation };
+  return { job: { id: response.id, accessToken: response.accessToken }, session: { ...session, version: response.version }, confirmation: response.confirmation };
+}
+export async function preflightEditingCapabilities(prompt, signal) {
+  return requestJson("/api/editing-capabilities", { method: "POST", body: JSON.stringify({ prompt }), signal });
+}
+export async function getEditingSessionHistory(session, signal, pendingConfirmationToken) {
+  return requestJson(`/api/editing-sessions/${session.id}`, {
+    headers: { "x-cliponaut-session-token": session.accessToken, ...(pendingConfirmationToken ? { "x-cliponaut-pending-confirmation": pendingConfirmationToken } : {}) }, signal
+  });
+}
+
 export function isActiveJobStatus(status) { return ACTIVE_JOB_STATUSES.includes(status); }
 export function isRecoverableJobStatus(status) { return isActiveJobStatus(status) || status === "completed"; }
 
 /** Terminal attempts are presented independently from retained Undo history. */
-export function terminalAttemptPresentation(job) {
+export function terminalAttemptPresentation(job, retainedResultUrl = null) {
   const cancelled = job?.status === "cancelled";
   return Object.freeze({
     status: "error",
-    resultUrl: null,
+    // A follow-up is an attempted new version, never a reason to hide a
+    // playable completed version that is already on screen.
+    resultUrl: typeof retainedResultUrl === "string" && retainedResultUrl ? retainedResultUrl : null,
     error: cancelled
       ? "This edit was cancelled."
       : job?.error || "We couldn’t complete that edit."
   });
+}
+
+/** Preserve source cards after a rejected follow-up that has no job payload. */
+export function sourcesForTerminalAttempt(job, priorSources = []) {
+  return Array.isArray(job?.sources) && job.sources.length ? job.sources : Array.isArray(priorSources) ? priorSources : [];
+}
+
+export function terminalAttemptMessage(job, hasPreviousSuccessfulEdit = false) {
+  const suffix = hasPreviousSuccessfulEdit ? " Your previous version is still available." : " No previous edit was created.";
+  return job?.status === "cancelled"
+    ? `This edit was cancelled.${suffix}`
+    : `We couldn’t complete that edit.${suffix}`;
+}
+
+/** A durable terminal attempt still needs its workspace to present its error and sources. */
+export function hasWorkspacePresentation({ videos = [], referenceImage = null, activeJob = null, undoState = null } = {}) {
+  return Boolean(videos.length || referenceImage || activeJob || undoState?.current || undoState?.terminal);
+}
+
+/** Recovery UI may show the failed request, but never invent a successful output. */
+export function terminalAttemptConversation(terminal) {
+  if (!terminal?.prompt || !validSession(terminal.session)) return [];
+  return [
+    { role: "user", text: terminal.prompt, jobId: terminal.session.id },
+    { role: "assistant", text: terminal.error || terminalAttemptMessage(terminal, false), jobId: terminal.session.id }
+  ];
 }
 
 /** Prevents an older polling or restoration response from replacing a newer attempt. */

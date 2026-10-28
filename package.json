@@ -10,6 +10,17 @@
     "migrate:jobs": "tsx scripts/migrate-jobs.js",
     "configure:bucket-cors": "tsx scripts/configure-bucket-cors.js",
     "test:jobs": "tsx --test tests/jobs.test.js",
+    "test:conversation": "tsx --test tests/conversation-state.test.js",
+    "test:conversation-e2e": "tsx --test tests/conversation-e2e.test.js",
+    "test:founder-access": "tsx --test tests/founder-test-access.test.js",
+    "test:session-integration": "tsx --test tests/session-postgres.integration.test.js",
+    "test:session-worker-storage": "tsx --test tests/session-worker-storage.integration.test.js",
+    "test:browser-phase4": "tsx --test tests/browser-phase4.acceptance.test.js",
+    "test:hosted-phase4": "tsx --test tests/hosted-phase4.acceptance.test.js",
+    "test:hosted-phase4-normal": "tsx --test tests/hosted-phase4-normal.acceptance.test.js",
+    "test:hosted-phase4-media": "tsx --test tests/hosted-phase4-media-playback.test.js",
+    "test:hosted-phase4-readonly": "tsx --test tests/hosted-phase4-readonly.acceptance.test.js",
+    "test:phase4-final-offline": "node scripts/run-phase4-final-offline.cjs",
     "lint": "eslint"
   },
   "dependencies": {
@@ -25,6 +36,7 @@
     "react-dom": "19.2.3"
   },
   "devDependencies": {
+    "@playwright/test": "1.51.1",
     "@tailwindcss/postcss": "^4",
     "@types/react": "19.3.0",
     "eslint": "^9",
