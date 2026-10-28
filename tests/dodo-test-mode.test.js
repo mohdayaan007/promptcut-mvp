@@ -1,45 +1,52 @@
 import assert from "node:assert/strict";
 import crypto from "crypto";
 import test from "node:test";
-import { checkoutRequest, cliponautSubscriptionEvent, dodoTestModeConfig, DodoConfigurationError, DodoWebhookError, verifyDodoWebhook } from "@/lib/dodo-test-mode";
+import { checkoutRequest, cliponautSubscriptionEvent, createDodoTestCheckout, DodoConfigurationError, DodoWebhookError, parseDodoWebhookEnvelope, verifyDodoWebhook } from "@/lib/dodo-test-mode";
 
-const secret = `whsec_${Buffer.from("dodo-webhook-test-secret-which-is-long-enough").toString("base64")}`;
-function headers({ id = "evt_test_1", timestamp = String(Math.floor(Date.now() / 1000)), body = "{}", signingSecret = secret } = {}) {
-  const key = Buffer.from(signingSecret.replace(/^whsec_/, ""), "base64");
-  const signature = crypto.createHmac("sha256", key).update(`${id}.${timestamp}.${body}`).digest("base64");
-  return new Headers({ "webhook-id": id, "webhook-timestamp": timestamp, "webhook-signature": `v1,${signature}` });
-}
+const secret = `whsec_${Buffer.from("dodo-webhook-test-secret-material-over-thirty-two-bytes").toString("base64")}`;
+const config = { productId: "pdt_cliponaut_test", businessId: "biz_cliponaut", brandId: "brand_cliponaut" };
+const base = () => ({ type: "subscription.active", timestamp: "2026-10-28T08:00:00.000Z", business_id: "biz_cliponaut", brand_id: "brand_cliponaut", data: { subscription_id: "sub_1", product_id: config.productId, status: "active", customer: { customer_id: "cus_1", email: "member@example.test" } } });
+function signed(body, signingSecret = secret) { const timestamp = String(Math.floor(Date.now() / 1000)); const value = crypto.createHmac("sha256", Buffer.from(signingSecret.replace(/^whsec_/, ""), "base64")).update(`evt_1.${timestamp}.${body}`).digest("base64"); return new Headers({ "webhook-id": "evt_1", "webhook-timestamp": timestamp, "webhook-signature": `v1,${value}` }); }
 
-test("Dodo checkout has exactly one configured Cliponaut subscription item and reduced address friction", () => {
-  const request = checkoutRequest({ productId: "pdt_cliponaut_test", email: "Founder@Example.test", returnUrl: "https://test.cliponaut.example/billing/return" });
-  assert.deepEqual(request.product_cart, [{ product_id: "pdt_cliponaut_test", quantity: 1 }]);
-  assert.equal(request.minimal_address, true);
-  assert.equal(request.feature_flags.single_page, true);
-  assert.equal(request.customer.email, "founder@example.test");
-});
-
-test("checkout configuration rejects absent product ids and disabled test mode", () => {
-  const prior = { enabled: process.env.DODO_TEST_MODE_ENABLED, key: process.env.DODO_TEST_API_KEY, product: process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID, url: process.env.DODO_TEST_RETURN_URL };
+test("checkout uses one product, minimal address, and documented session_id/checkout_url", async () => {
+  const request = checkoutRequest({ productId: config.productId, email: "Founder@Example.test", returnUrl: "https://test.example/return" });
+  assert.deepEqual(request.product_cart, [{ product_id: config.productId, quantity: 1 }]); assert.equal(request.minimal_address, true); assert.equal(request.feature_flags.single_page, true);
+  const old = { ...process.env }; Object.assign(process.env, { DODO_TEST_MODE_ENABLED: "true", DODO_TEST_API_KEY: "test", DODO_TEST_CLIPONAUT_PRODUCT_ID: config.productId, DODO_TEST_RETURN_URL: "http://localhost:3000/return" });
   try {
-    process.env.DODO_TEST_MODE_ENABLED = "true"; process.env.DODO_TEST_API_KEY = "test"; delete process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID; process.env.DODO_TEST_RETURN_URL = "http://localhost:3000/billing/return";
-    assert.throws(() => dodoTestModeConfig(), DodoConfigurationError);
-    process.env.DODO_TEST_MODE_ENABLED = "false";
-    assert.throws(() => dodoTestModeConfig(), DodoConfigurationError);
-  } finally { Object.assign(process.env, { DODO_TEST_MODE_ENABLED: prior.enabled, DODO_TEST_API_KEY: prior.key, DODO_TEST_CLIPONAUT_PRODUCT_ID: prior.product, DODO_TEST_RETURN_URL: prior.url }); }
+    assert.deepEqual(await createDodoTestCheckout({ email: "a@b.test", fetchImpl: async () => new Response(JSON.stringify({ session_id: "cs_1", checkout_url: "https://checkout.example/cs_1" })) }), { id: "cs_1", url: "https://checkout.example/cs_1" });
+    await assert.rejects(createDodoTestCheckout({ email: "a@b.test", fetchImpl: async () => new Response(JSON.stringify({ id: "wrong", url: "https://checkout.example" })) }), DodoConfigurationError);
+  } finally { for (const key of ["DODO_TEST_MODE_ENABLED", "DODO_TEST_API_KEY", "DODO_TEST_CLIPONAUT_PRODUCT_ID", "DODO_TEST_RETURN_URL"]) old[key] === undefined ? delete process.env[key] : process.env[key] = old[key]; }
 });
 
-test("webhook rejects forged signatures and accepts documented raw-body signatures", () => {
-  const body = JSON.stringify({ type: "subscription.active" });
-  const now = Date.now();
-  const valid = headers({ body, timestamp: String(Math.floor(now / 1000)) });
-  assert.equal(verifyDodoWebhook({ headers: valid, rawBody: body, secret, now }), "evt_test_1");
-  assert.throws(() => verifyDodoWebhook({ headers: headers({ body, signingSecret: `whsec_${Buffer.from("forged").toString("base64")}` }), rawBody: body, secret, now }), DodoWebhookError);
+test("malformed, empty and undersized webhook secrets fail closed", () => {
+  const body = JSON.stringify(base()); const now = Date.now(); const headers = signed(body);
+  assert.equal(verifyDodoWebhook({ headers, rawBody: body, secret, now }), "evt_1");
+  for (const bad of ["", "whsec_not-base64!", `whsec_${Buffer.from("short").toString("base64")}`]) assert.throws(() => verifyDodoWebhook({ headers, rawBody: body, secret: bad, now }), DodoWebhookError);
 });
 
-test("only the configured Cliponaut product produces subscription state; BYND and unknown states do not", () => {
-  const event = { type: "subscription.active", data: { id: "sub_1", product_id: "cliponaut_product", customer: { email: "member@example.test" } } };
-  assert.equal(cliponautSubscriptionEvent(event, "cliponaut_product").status, "active");
-  assert.equal(cliponautSubscriptionEvent({ ...event, data: { ...event.data, product_id: "bynd_product" } }, "cliponaut_product"), null);
-  assert.equal(cliponautSubscriptionEvent({ ...event, type: "payment.succeeded" }, "cliponaut_product"), null);
-  assert.equal(cliponautSubscriptionEvent({ ...event, type: "subscription.cancelled" }, "cliponaut_product").status, "cancelled");
+test("documented envelope timestamp is required occurrence time", () => {
+  assert.equal(parseDodoWebhookEnvelope(base()).occurredAt, "2026-10-28T08:00:00.000Z");
+  assert.throws(() => parseDodoWebhookEnvelope({ ...base(), timestamp: undefined }), DodoWebhookError);
+});
+
+test("nested customer customer_id is used; email remains unverified evidence", () => {
+  assert.equal(cliponautSubscriptionEvent(base(), config).customerId, "cus_1");
+  assert.throws(() => cliponautSubscriptionEvent({ ...base(), data: { ...base().data, customer: { id: "cus_1" } } }, config), DodoWebhookError);
+});
+
+test("past_due maps explicitly and contradictions are rejected", () => {
+  assert.equal(cliponautSubscriptionEvent({ ...base(), type: "subscription.past_due", data: { ...base().data, status: "past_due" } }, config).status, "past_due");
+  assert.throws(() => cliponautSubscriptionEvent({ ...base(), data: { ...base().data, status: "cancelled" } }, config), DodoWebhookError);
+});
+
+test("malformed subscriptions reject before recording; valid non-subscription events stay supported", () => {
+  assert.throws(() => cliponautSubscriptionEvent({ ...base(), data: { ...base().data, subscription_id: "" } }, config), DodoWebhookError);
+  assert.equal(cliponautSubscriptionEvent({ type: "payment.succeeded", timestamp: "2026-10-28T08:00:00.000Z", data: {} }, config), null);
+});
+
+test("BYND, mixed products, business and brand mismatches cannot activate Cliponaut", () => {
+  assert.throws(() => cliponautSubscriptionEvent({ ...base(), data: { ...base().data, product_id: "pdt_bynd" } }, config), DodoWebhookError);
+  assert.throws(() => cliponautSubscriptionEvent({ ...base(), data: { ...base().data, product_ids: [config.productId, "pdt_bynd"] } }, config), DodoWebhookError);
+  assert.throws(() => cliponautSubscriptionEvent({ ...base(), business_id: "biz_bynd" }, config), DodoWebhookError);
+  assert.throws(() => cliponautSubscriptionEvent({ ...base(), brand_id: "brand_bynd" }, config), DodoWebhookError);
 });

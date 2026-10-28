@@ -137,7 +137,7 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
       VALUES ($1,$2,$3,$4,$5,$6)
       ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
         customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,updated_at=now()
-      WHERE EXCLUDED.last_event_at >= dodo_subscriptions.last_event_at`,
+      WHERE EXCLUDED.last_event_at > dodo_subscriptions.last_event_at`,
     [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt]);
     await client.query("COMMIT"); return true;
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }

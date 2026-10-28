@@ -9,9 +9,10 @@ This branch adds a founder-only, server-owned **test-mode** checkout endpoint an
 - `DODO_TEST_CLIPONAUT_PRODUCT_ID` — only the Cliponaut Pro test subscription product ID.
 - `DODO_TEST_RETURN_URL` — exact HTTPS return location (local HTTP is allowed only for local testing).
 - `DODO_TEST_WEBHOOK_SECRET` — Dodo webhook signing secret (`whsec_…`).
+- Optional provenance pinning: `DODO_TEST_BUSINESS_ID` and `DODO_TEST_BRAND_ID`. When set, a webhook must match both.
 - Existing `FOUNDER_CONVERSATIONAL_EDITING_ENABLED=true` and `FOUNDER_TEST_ACCESS_SECRET` — required to call the checkout endpoint.
 
-In Dodo Test Mode, create a webhook pointing to `/api/webhooks/dodo`, subscribe it to subscription activation, renewal, failure/on-hold, cancellation and expiry events, plus payment success/failure for operational visibility. Do not attach this endpoint to BYND configuration. The receiver verifies Standard Webhooks headers (`webhook-id`, `webhook-timestamp`, `webhook-signature`) against the untouched request body and rejects stale/forged requests.
+In Dodo Test Mode, create a webhook pointing to `/api/webhooks/dodo`, subscribe it to subscription activation, renewal, past-due, cancellation and expiry events, plus payment success/failure for operational visibility. Do not attach this endpoint to BYND configuration. The receiver verifies Standard Webhooks headers (`webhook-id`, `webhook-timestamp`, `webhook-signature`) against the untouched request body and rejects stale/forged requests. Envelope `timestamp` is the durable event occurrence time; the delivery header timestamp is only freshness protection. Equal occurrence timestamps never overwrite state.
 
 ## Checkout behavior
 
@@ -25,4 +26,4 @@ The later entitlement layer must count only successfully completed renders serve
 
 ## Authorizing an end-to-end test
 
-Before authorizing a real Test Mode checkout: configure the five variables above in an isolated environment, set the exact test webhook URL/secret/events in Dodo, confirm the configured product belongs to Cliponaut (not BYND), and provision the verified-email delivery flow. Run `npm run test:dodo`, lint, and build first. No live key, live product, Railway deployment, or real payment is included in this stage.
+Before authorizing a real Test Mode checkout: configure the variables above in an isolated environment, set the exact test webhook URL/secret/events in Dodo, confirm the configured product belongs to Cliponaut (not BYND), and provision the verified-email delivery flow. Run `npm run test:dodo`, `DATABASE_URL=... npm run test:dodo-integration`, lint, and build first. No live key, live product, Railway deployment, or real payment is included in this stage.
