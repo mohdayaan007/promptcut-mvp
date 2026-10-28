@@ -80,6 +80,25 @@ CREATE TABLE IF NOT EXISTS dodo_subscriptions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS dodo_subscriptions_subscriber_idx ON dodo_subscriptions (subscriber_id, status);
+CREATE TABLE IF NOT EXISTS customer_verification_tokens (
+  id UUID PRIMARY KEY,
+  email TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  consumed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS customer_verification_email_idx ON customer_verification_tokens (email, created_at DESC);
+CREATE TABLE IF NOT EXISTS customer_sessions (
+  id UUID PRIMARY KEY,
+  subscriber_id UUID NOT NULL REFERENCES subscriber_identities(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS customer_sessions_token_idx ON customer_sessions (token_hash, expires_at);
 `;
 
 function newId() { return crypto.randomUUID(); }
@@ -133,14 +152,79 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
     const inserted = await client.query(`INSERT INTO dodo_webhook_events (event_id,event_type,payload_sha256)
       VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING`, [eventId, eventType, hash]);
     if (!inserted.rowCount) { await client.query("COMMIT"); return false; }
-    if (subscription) await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,status,last_event_at)
-      VALUES ($1,$2,$3,$4,$5,$6)
+    if (subscription) await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,subscriber_id,status,last_event_at)
+      SELECT $1,$2,$3,$4,i.id,$5,$6 FROM (SELECT 1) AS present LEFT JOIN subscriber_identities i ON i.email=$4 AND i.verified_at IS NOT NULL
       ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
-        customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,updated_at=now()
+        customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),subscriber_id=COALESCE(dodo_subscriptions.subscriber_id, EXCLUDED.subscriber_id),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,updated_at=now()
       WHERE EXCLUDED.last_event_at > dodo_subscriptions.last_event_at`,
     [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt]);
     await client.query("COMMIT"); return true;
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+}
+
+function customerTokenHash(token) {
+  const secret = process.env.CUSTOMER_AUTH_TOKEN_SECRET || "";
+  if (secret.length < 32) throw new Error("CUSTOMER_AUTH_TOKEN_SECRET is not configured");
+  return crypto.createHmac("sha256", secret).update(token).digest("hex");
+}
+const CUSTOMER_VERIFICATION_MS = 15 * 60 * 1000;
+const CUSTOMER_SESSION_DAYS = 30;
+
+export async function requestVerificationAllowed(email) {
+  const { rows } = await database().query(`SELECT count(*) FILTER (WHERE created_at > now() - interval '15 minutes')::int AS recent,
+    max(created_at) AS last_sent FROM customer_verification_tokens WHERE email=$1`, [email]);
+  const { recent, last_sent: lastSent } = rows[0];
+  if (recent >= 5) return false;
+  return !lastSent || Date.now() - new Date(lastSent).getTime() >= 60_000;
+}
+
+export async function createCustomerVerification(email, token) {
+  const hash = customerTokenHash(token);
+  const client = await database().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [email]);
+    const { rows } = await client.query(`SELECT count(*) FILTER (WHERE created_at > now() - interval '15 minutes')::int AS recent,
+      max(created_at) AS last_sent FROM customer_verification_tokens WHERE email=$1`, [email]);
+    if (rows[0].recent >= 5 || (rows[0].last_sent && Date.now() - new Date(rows[0].last_sent).getTime() < 60_000)) { await client.query("ROLLBACK"); return false; }
+    await client.query(`UPDATE customer_verification_tokens SET consumed_at=now() WHERE email=$1 AND consumed_at IS NULL`, [email]);
+    await client.query(`INSERT INTO customer_verification_tokens (id,email,token_hash,expires_at) VALUES ($1,$2,$3,now() + ($4 * interval '1 millisecond'))`, [newId(), email, hash, CUSTOMER_VERIFICATION_MS]);
+    await client.query("COMMIT"); return true;
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+}
+
+/** Atomically consumes the link, verifies ownership, links already-confirmed Dodo evidence, and creates a new opaque session. */
+export async function completeCustomerVerification(email, token) {
+  if (typeof token !== "string" || token.length < 32 || token.length > 512) return null;
+  const client = await database().connect();
+  try {
+    await client.query("BEGIN");
+    const verification = await client.query(`UPDATE customer_verification_tokens SET attempts=attempts+1
+      WHERE email=$1 AND token_hash=$2 AND consumed_at IS NULL AND expires_at > now() AND attempts < 5 RETURNING id`, [email, customerTokenHash(token)]);
+    if (!verification.rows[0]) { await client.query("ROLLBACK"); return null; }
+    await client.query("UPDATE customer_verification_tokens SET consumed_at=now() WHERE id=$1", [verification.rows[0].id]);
+    const identity = await client.query(`INSERT INTO subscriber_identities (id,email,verified_at) VALUES ($1,$2,now())
+      ON CONFLICT (email) DO UPDATE SET verified_at=COALESCE(subscriber_identities.verified_at, now()) RETURNING id`, [newId(), email]);
+    const productId = process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || "";
+    if (!productId) throw new Error("DODO_TEST_CLIPONAUT_PRODUCT_ID is not configured");
+    await client.query(`UPDATE dodo_subscriptions SET subscriber_id=$1,updated_at=now()
+      WHERE customer_email=$2 AND product_id=$3 AND status='active' AND subscriber_id IS NULL`, [identity.rows[0].id, email, productId]);
+    const session = newToken();
+    await client.query(`INSERT INTO customer_sessions (id,subscriber_id,token_hash,expires_at) VALUES ($1,$2,$3,now() + ($4 * interval '1 day'))`, [newId(), identity.rows[0].id, customerTokenHash(session), CUSTOMER_SESSION_DAYS]);
+    await client.query("COMMIT"); return session;
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+}
+
+export async function getCustomerSession(token) {
+  if (!token) return null;
+  const { rows } = await database().query(`SELECT s.subscriber_id,i.email FROM customer_sessions s JOIN subscriber_identities i ON i.id=s.subscriber_id
+    WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at > now()`, [customerTokenHash(token)]);
+  return rows[0] || null;
+}
+
+export async function revokeCustomerSession(token) {
+  if (!token) return;
+  await database().query("UPDATE customer_sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL", [customerTokenHash(token)]);
 }
 export async function createEditingSession(jobId, initialPrompt) {
   const id = newId(); const accessToken = newToken();
