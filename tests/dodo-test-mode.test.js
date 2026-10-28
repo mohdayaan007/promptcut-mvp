@@ -4,6 +4,8 @@ import test from "node:test";
 import { checkoutRequest, cliponautSubscriptionEvent, createDodoTestCheckout, DodoConfigurationError, DodoWebhookError, parseDodoWebhookEnvelope, verifyDodoWebhook } from "@/lib/dodo-test-mode";
 
 const secret = `whsec_${Buffer.from("dodo-webhook-test-secret-material-over-thirty-two-bytes").toString("base64")}`;
+const secret24 = `whsec_${Buffer.alloc(24, 7).toString("base64")}`;
+const secret23 = `whsec_${Buffer.alloc(23, 7).toString("base64")}`;
 const config = { productId: "pdt_cliponaut_test", businessId: "biz_cliponaut", brandId: "brand_cliponaut" };
 const base = () => ({ type: "subscription.active", timestamp: "2026-10-28T08:00:00.000Z", business_id: "biz_cliponaut", data: { subscription_id: "sub_1", product_id: config.productId, brand_id: "brand_cliponaut", status: "active", customer: { customer_id: "cus_1", email: "member@example.test" } } });
 function signed(body, signingSecret = secret) { const timestamp = String(Math.floor(Date.now() / 1000)); const value = crypto.createHmac("sha256", Buffer.from(signingSecret.replace(/^whsec_/, ""), "base64")).update(`evt_1.${timestamp}.${body}`).digest("base64"); return new Headers({ "webhook-id": "evt_1", "webhook-timestamp": timestamp, "webhook-signature": `v1,${value}` }); }
@@ -19,10 +21,18 @@ test("checkout uses one product, minimal address, and documented session_id/chec
   } finally { for (const key of ["DODO_TEST_MODE_ENABLED", "DODO_TEST_API_KEY", "DODO_TEST_CLIPONAUT_PRODUCT_ID", "DODO_TEST_RETURN_URL"]) old[key] === undefined ? delete process.env[key] : process.env[key] = old[key]; }
 });
 
-test("malformed, empty and undersized webhook secrets fail closed", () => {
+test("canonical 24-byte and 32-byte webhook secrets verify signatures", () => {
   const body = JSON.stringify(base()); const now = Date.now(); const headers = signed(body);
   assert.equal(verifyDodoWebhook({ headers, rawBody: body, secret, now }), "evt_1");
-  for (const bad of ["", "whsec_not-base64!", `whsec_${Buffer.from("short").toString("base64")}`]) assert.throws(() => verifyDodoWebhook({ headers, rawBody: body, secret: bad, now }), DodoWebhookError);
+  const headers24 = signed(body, secret24);
+  assert.equal(verifyDodoWebhook({ headers: headers24, rawBody: body, secret: secret24, now }), "evt_1");
+});
+
+test("24-byte secret rejects 23-byte, malformed, tampered and forged inputs", () => {
+  const body = JSON.stringify(base()); const now = Date.now(); const headers24 = signed(body, secret24);
+  for (const bad of ["", "whsec_not-base64!", secret23]) assert.throws(() => verifyDodoWebhook({ headers: headers24, rawBody: body, secret: bad, now }), DodoWebhookError);
+  assert.throws(() => verifyDodoWebhook({ headers: headers24, rawBody: `${body} `, secret: secret24, now }), DodoWebhookError);
+  assert.throws(() => verifyDodoWebhook({ headers: signed(body, secret), rawBody: body, secret: secret24, now }), DodoWebhookError);
 });
 
 test("documented envelope timestamp is required occurrence time", () => {

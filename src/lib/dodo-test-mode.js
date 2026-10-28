@@ -2,6 +2,7 @@ import crypto from "crypto";
 
 const TEST_API_BASE = "https://test.dodopayments.com";
 const MAX_WEBHOOK_AGE_SECONDS = 5 * 60;
+const MIN_WEBHOOK_SECRET_BYTES = 24;
 
 export class DodoConfigurationError extends Error {}
 export class DodoWebhookError extends Error {}
@@ -57,7 +58,7 @@ function webhookSecretBytes(secret) {
   const encoded = String(secret || "").replace(/^whsec_/, "");
   if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new DodoWebhookError("Webhook secret is invalid");
   const decoded = Buffer.from(encoded, "base64");
-  if (decoded.length < 32 || decoded.toString("base64") !== encoded) throw new DodoWebhookError("Webhook secret is invalid");
+  if (decoded.length < MIN_WEBHOOK_SECRET_BYTES || decoded.toString("base64") !== encoded) throw new DodoWebhookError("Webhook secret is invalid");
   return decoded;
 }
 
