@@ -1,6 +1,6 @@
 import { applyConversationTurn, validateConversationPlan } from "@/lib/editor-core/conversation-state";
 import { analyzeEditRequestCapabilities } from "@/lib/editor-core/edit-plan";
-import { createConversationConfirmation, verifyConversationConfirmation } from "@/lib/editor-core/conversation-confirmation";
+import { ConfirmationConfigurationError, createConversationConfirmation, verifyConversationConfirmation } from "@/lib/editor-core/conversation-confirmation";
 import { createConversationJob, getAuthorizedSession, getSessionHistory } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
 import { signedDownloadUrl } from "@/lib/jobs/storage";
@@ -19,14 +19,26 @@ async function historyResponse(session) {
   })));
 }
 
+function restoredPendingConfirmation(session, history, value) {
+  if (!value) return null;
+  const action = verifyConversationConfirmation({ session, token: value });
+  const base = history.find((version) => version.jobId === action?.baseJobId && version.status === "completed");
+  if (!base || action.expectedVersion !== session.latest_version) return null;
+  return { token: value, message: action.message };
+}
+
 export async function GET(req, { params }) {
   try {
     if (!hasFounderTestAccess(req)) throw new PublicRequestError("Editing session was not found", 404);
     const { id } = await params;
     const session = await getAuthorizedSession(id, token(req));
     if (!session) throw new PublicRequestError("Editing session was not found", 404);
-    return Response.json({ id: session.id, latestVersion: session.latest_version, history: await historyResponse(session) }, { headers: { "Cache-Control": "no-store" } });
-  } catch (error) { return jsonError(error); }
+    const history = await historyResponse(session);
+    return Response.json({ id: session.id, latestVersion: session.latest_version, history, pendingConfirmation: restoredPendingConfirmation(session, history, req.headers.get("x-cliponaut-pending-confirmation")) }, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    if (error instanceof ConfirmationConfigurationError) return jsonError(new PublicRequestError("Confirmation is temporarily unavailable. Please try again later.", 503));
+    return jsonError(error);
+  }
 }
 
 export async function POST(req, { params }) {
@@ -77,5 +89,8 @@ export async function POST(req, { params }) {
     const next = await createConversationJob(session, { prompt: effectivePrompt, plan, confirmation, expectedVersion });
     if (!next) throw new PublicRequestError("A newer edit is already in progress. Refresh the conversation and try again.", 409);
     return Response.json({ id: next.job.id, status: next.job.status, accessToken: next.accessToken, version: next.version, confirmation });
-  } catch (error) { return jsonError(error); }
+  } catch (error) {
+    if (error instanceof ConfirmationConfigurationError) return jsonError(new PublicRequestError("Confirmation is temporarily unavailable. Please try again later.", 503));
+    return jsonError(error);
+  }
 }

@@ -409,15 +409,15 @@ export function loadPendingPartialEdit(storage) {
   if (!target) return null;
   try {
     const pending = JSON.parse(target.getItem(PENDING_PARTIAL_EDIT_STORAGE_KEY) || "null");
-    return pending && typeof pending.sessionId === "string" && typeof pending.token === "string" && typeof pending.message === "string"
-      ? { sessionId: pending.sessionId, token: pending.token, message: pending.message }
+    return pending && typeof pending.sessionId === "string" && typeof pending.token === "string"
+      ? { sessionId: pending.sessionId, token: pending.token }
       : null;
   } catch { return null; }
 }
 export function savePendingPartialEdit(pending, storage) {
   const target = browserStorage(storage);
-  if (!target || !pending?.sessionId || !pending?.token || !pending?.message) return null;
-  const safe = { sessionId: pending.sessionId, token: String(pending.token).slice(0, 4000), message: String(pending.message).slice(0, 2000) };
+  if (!target || !pending?.sessionId || !pending?.token) return null;
+  const safe = { sessionId: pending.sessionId, token: String(pending.token).slice(0, 4000) };
   target.setItem(PENDING_PARTIAL_EDIT_STORAGE_KEY, JSON.stringify(safe));
   return safe;
 }
@@ -433,9 +433,9 @@ export async function submitConversationTurn(session, prompt, signal, baseJobId,
 export async function preflightEditingCapabilities(prompt, signal) {
   return requestJson("/api/editing-capabilities", { method: "POST", body: JSON.stringify({ prompt }), signal });
 }
-export async function getEditingSessionHistory(session, signal) {
+export async function getEditingSessionHistory(session, signal, pendingConfirmationToken) {
   return requestJson(`/api/editing-sessions/${session.id}`, {
-    headers: { "x-cliponaut-session-token": session.accessToken }, signal
+    headers: { "x-cliponaut-session-token": session.accessToken, ...(pendingConfirmationToken ? { "x-cliponaut-pending-confirmation": pendingConfirmationToken } : {}) }, signal
   });
 }
 

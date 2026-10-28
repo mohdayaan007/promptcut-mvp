@@ -216,8 +216,7 @@ export default function HomePage() {
     const savedSession = loadEditingSession();
     setEditingSession(savedSession);
     const savedPending = loadPendingPartialEdit();
-    if (savedPending?.sessionId === savedSession?.id) setPendingPartialEdit(savedPending);
-    else clearPendingPartialEdit();
+    if (savedPending?.sessionId !== savedSession?.id) clearPendingPartialEdit();
     undoStateRef.current = saved;
     setUndoState(saved);
     setUndoAnchor(getInitialUndoAnchor(saved));
@@ -232,7 +231,7 @@ export default function HomePage() {
       });
     }
     if (savedSession) {
-      getEditingSessionHistory(savedSession).then((sessionHistory) => {
+      getEditingSessionHistory(savedSession, undefined, savedPending?.sessionId === savedSession.id ? savedPending.token : undefined).then((sessionHistory) => {
         if (stopped || !isCurrentPresentationAttempt(hydrationAttempt, presentationAttemptRef.current)) return;
         setEditingSession(saveEditingSession({ ...savedSession, version: sessionHistory.latestVersion }));
         let hasPreviousSuccessfulEdit = false;
@@ -246,7 +245,15 @@ export default function HomePage() {
           }
           return turns;
         });
-        if (savedPending?.sessionId === savedSession.id) restoredMessages.push({ role: "assistant", text: savedPending.message, pending: true });
+        if (sessionHistory.pendingConfirmation) {
+          const pending = { sessionId: savedSession.id, ...sessionHistory.pendingConfirmation };
+          savePendingPartialEdit(pending);
+          setPendingPartialEdit(pending);
+          restoredMessages.push({ role: "assistant", text: sessionHistory.pendingConfirmation.message, pending: true });
+        } else if (savedPending?.sessionId === savedSession.id) {
+          clearPendingPartialEdit();
+          setPendingPartialEdit(null);
+        }
         setMessages(restoredMessages);
       }).catch(() => {});
     }
