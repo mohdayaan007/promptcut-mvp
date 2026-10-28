@@ -47,7 +47,9 @@ export async function createDodoTestCheckout({ email, fetchImpl = fetch }) {
   });
   if (!response.ok) throw new DodoConfigurationError("Dodo test checkout could not be created");
   const body = await response.json();
-  if (typeof body.session_id !== "string" || !body.session_id || typeof body.checkout_url !== "string" || !/^https:\/\//.test(body.checkout_url)) throw new DodoConfigurationError("Dodo returned an invalid checkout session");
+  let checkoutUrl;
+  try { checkoutUrl = new URL(body.checkout_url); } catch { throw new DodoConfigurationError("Dodo returned an invalid checkout session"); }
+  if (typeof body.session_id !== "string" || !body.session_id || checkoutUrl.protocol !== "https:" || !checkoutUrl.hostname) throw new DodoConfigurationError("Dodo returned an invalid checkout session");
   return { id: body.session_id, url: body.checkout_url };
 }
 
@@ -74,24 +76,29 @@ export function verifyDodoWebhook({ headers, rawBody, secret = process.env.DODO_
 
 export function parseDodoWebhookEnvelope(event) {
   if (!event || typeof event !== "object" || typeof event.type !== "string" || !event.type || !event.data || typeof event.data !== "object" || Array.isArray(event.data)) throw new DodoWebhookError("Webhook envelope is invalid");
+  if (typeof event.business_id !== "string" || !event.business_id.trim()) throw new DodoWebhookError("Webhook business is invalid");
   if (typeof event.timestamp !== "string" || !event.timestamp || !Number.isFinite(Date.parse(event.timestamp))) throw new DodoWebhookError("Webhook occurrence timestamp is invalid");
-  return { type: event.type, data: event.data, occurredAt: new Date(event.timestamp).toISOString(), businessId: event.business_id || null, brandId: event.brand_id || null };
+  if (event.brand_id !== undefined && (typeof event.brand_id !== "string" || !event.brand_id)) throw new DodoWebhookError("Webhook brand is invalid");
+  return { type: event.type, data: event.data, occurredAt: new Date(event.timestamp).toISOString(), businessId: event.business_id, envelopeBrandId: event.brand_id || null };
 }
 
 export function cliponautSubscriptionEvent(event, config) {
-  const { type, data, occurredAt, businessId, brandId } = parseDodoWebhookEnvelope(event);
+  const { type, data, occurredAt, businessId, envelopeBrandId } = parseDodoWebhookEnvelope(event);
   if (!type.startsWith("subscription.")) return null;
   if (config.businessId && businessId !== config.businessId) throw new DodoWebhookError("Webhook business does not match Cliponaut");
-  if (config.brandId && brandId !== config.brandId) throw new DodoWebhookError("Webhook brand does not match Cliponaut");
+  if (typeof data.brand_id !== "string" || !data.brand_id) throw new DodoWebhookError("Subscription brand is invalid");
+  if (envelopeBrandId && envelopeBrandId !== data.brand_id) throw new DodoWebhookError("Webhook brand provenance conflicts");
+  if (config.brandId && data.brand_id !== config.brandId) throw new DodoWebhookError("Webhook brand does not match Cliponaut");
   if (typeof data.product_id !== "string" || data.product_id !== config.productId) throw new DodoWebhookError("Webhook product does not match Cliponaut");
   const secondaryProducts = [...(Array.isArray(data.product_ids) ? data.product_ids : []), ...(Array.isArray(data.items) ? data.items.map((item) => item?.product_id) : [])];
   if (secondaryProducts.some((productId) => productId !== config.productId)) throw new DodoWebhookError("Webhook contains a conflicting product");
   const states = {
-    "subscription.active": "active", "subscription.renewed": "active", "subscription.past_due": "past_due",
-    "subscription.cancelled": "cancelled", "subscription.expired": "expired"
+    "subscription.active": { provider: "active", internal: "active" }, "subscription.renewed": { provider: "active", internal: "active" },
+    "subscription.past_due": { provider: "past_due", internal: "past_due" }, "subscription.failed": { provider: "failed", internal: "past_due" },
+    "subscription.on_hold": { provider: "on_hold", internal: "past_due" }, "subscription.cancelled": { provider: "cancelled", internal: "cancelled" }, "subscription.expired": { provider: "expired", internal: "expired" }
   };
   if (!states[type]) throw new DodoWebhookError("Unsupported subscription event");
   if (typeof data.subscription_id !== "string" || !data.subscription_id || !data.customer || typeof data.customer !== "object" || typeof data.customer.customer_id !== "string" || !data.customer.customer_id || typeof data.status !== "string") throw new DodoWebhookError("Subscription payload is invalid");
-  if (data.status !== states[type]) throw new DodoWebhookError("Subscription event conflicts with current status");
-  return { subscriptionId: data.subscription_id, status: states[type], productId: config.productId, customerId: data.customer.customer_id, email: typeof data.customer.email === "string" ? normalizeEmail(data.customer.email) : null, occurredAt };
+  if (data.status !== states[type].provider) throw new DodoWebhookError("Subscription event conflicts with current status");
+  return { subscriptionId: data.subscription_id, status: states[type].internal, productId: config.productId, customerId: data.customer.customer_id, email: typeof data.customer.email === "string" ? normalizeEmail(data.customer.email) : null, occurredAt };
 }

@@ -8,7 +8,7 @@ const databaseUrl = process.env.DATABASE_URL;
 const integration = databaseUrl ? test : test.skip;
 const secret = `whsec_${Buffer.from("dodo-webhook-test-secret-material-over-thirty-two-bytes").toString("base64")}`;
 const productId = "pdt_cliponaut_test";
-function payload({ type = "subscription.active", status = "active", timestamp = "2026-10-28T08:00:00.000Z" } = {}) { return JSON.stringify({ type, timestamp, business_id: "biz_cliponaut", brand_id: "brand_cliponaut", data: { subscription_id: "sub_1", product_id: productId, status, customer: { customer_id: "cus_1", email: "member@example.test" } } }); }
+function payload({ type = "subscription.active", status = "active", timestamp = "2026-10-28T08:00:00.000Z" } = {}) { return JSON.stringify({ type, timestamp, business_id: "biz_cliponaut", data: { subscription_id: "sub_1", product_id: productId, brand_id: "brand_cliponaut", status, customer: { customer_id: "cus_1", email: "member@example.test" } } }); }
 function request(body, id) { const timestamp = String(Math.floor(Date.now() / 1000)); const signature = crypto.createHmac("sha256", Buffer.from(secret.replace(/^whsec_/, ""), "base64")).update(`${id}.${timestamp}.${body}`).digest("base64"); return new Request("http://localhost/api/webhooks/dodo", { method: "POST", headers: { "webhook-id": id, "webhook-timestamp": timestamp, "webhook-signature": `v1,${signature}` }, body }); }
 
 integration("Dodo handler migration, duplicate idempotency, and out-of-order delivery", async () => {
