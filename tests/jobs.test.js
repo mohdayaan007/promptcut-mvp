@@ -2495,11 +2495,13 @@ test("a pending partial confirmation is safe to restore and clear without a job"
 test("session partial confirmations are signed and bound to their exact version and source edit", () => {
   const session = { id: "session-1", access_token: "browser-readable-token" };
   const secret = "test-only-server-secret-with-at-least-32-bytes";
-  const offered = createConversationConfirmation({ session, expectedVersion: 4, baseJobId: "job-4", supportedPrompt: "Make it cinematic", message: "Review cinematic.", secret });
-  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 4, baseJobId: "job-4", secret }).supportedPrompt, "Make it cinematic");
-  assert.equal(verifyConversationConfirmation({ session, token: `${offered.token}x`, expectedVersion: 4, baseJobId: "job-4", secret }), null, "tampering cannot substitute another supported edit");
-  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 5, baseJobId: "job-4", secret }), null, "a stale version cannot run");
-  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 4, baseJobId: "job-3", secret }), null, "a cross-edit confirmation cannot run");
+  const offered = createConversationConfirmation({ session, expectedVersion: 4, baseJobId: "job-4", supportedPrompt: "Make it cinematic", message: "Review cinematic.", secret, now: 10_000 });
+  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 4, baseJobId: "job-4", secret, now: 10_001 }).supportedPrompt, "Make it cinematic");
+  assert.equal(verifyConversationConfirmation({ session, token: `${offered.token}x`, expectedVersion: 4, baseJobId: "job-4", secret, now: 10_001 }), null, "tampering cannot substitute another supported edit");
+  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 5, baseJobId: "job-4", secret, now: 10_001 }), null, "a stale version cannot run");
+  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 4, baseJobId: "job-3", secret, now: 10_001 }), null, "a cross-edit confirmation cannot run");
+  assert.equal(verifyConversationConfirmation({ session: { ...session, id: "session-2" }, token: offered.token, expectedVersion: 4, baseJobId: "job-4", secret, now: 10_001 }), null, "a cross-session confirmation cannot run");
+  assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 4, baseJobId: "job-4", secret, now: 10_000 + 10 * 60 * 1000 + 1 }), null, "an expired confirmation cannot run");
   assert.throws(() => createConversationConfirmation({ session, expectedVersion: 4, baseJobId: "job-4", supportedPrompt: "Make it cinematic", message: "Review cinematic.", secret: "too-short" }), ConfirmationConfigurationError, "there is no browser-token fallback when server signing is missing");
 });
 
