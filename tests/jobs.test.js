@@ -13,7 +13,7 @@ import { safeSourceMetadata } from "@/lib/jobs/http";
 import { ACTIVE_JOB_STATUSES, canCompleteUndoMediaRestoration, clearPendingPartialEdit, clearTerminalJob, consumeUndo, describeUndoRestoration, discardUndoActiveJob, emptyUndoState, findUndoTurnIndex, getInitialUndoAnchor, hasWorkspacePresentation, invalidateUndoPrevious, isActiveJobStatus, isCurrentPresentationAttempt, isRecoverableJobStatus, loadPendingPartialEdit, loadUndoState, PartUploadError, promoteSuccessfulJob, recordTerminalJob, resolveUndoRestoration, savePendingPartialEdit, saveUndoState, setUndoActiveJob, shouldScheduleUndoOriginalReveal, shouldShowUndoControl, sourcesForTerminalAttempt, terminalAttemptConversation, terminalAttemptMessage, terminalAttemptPresentation, undoMediaReadyAction, undoPreviewMode, UNDO_STATE_VERSION, uploadAndQueueJob, uploadPartWithRetry, waitForBrowserPaint } from "@/lib/client/direct-upload";
 import { browserVideoPreflightError } from "@/lib/client/media-preflight";
 import { EDIT_JOBS_SCHEMA } from "@/lib/jobs/job-store";
-import { ConfirmationConfigurationError, createConversationConfirmation, verifyConversationConfirmation } from "@/lib/editor-core/conversation-confirmation";
+import { ConfirmationConfigurationError, createConversationConfirmation, verifyConversationConfirmation, verifySubmittedConversationConfirmation } from "@/lib/editor-core/conversation-confirmation";
 import { analyzeEditRequestCapabilities, analyzeSpokenRequestCoverage, createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
@@ -2503,6 +2503,13 @@ test("session partial confirmations are signed and bound to their exact version 
   assert.equal(verifyConversationConfirmation({ session: { ...session, id: "session-2" }, token: offered.token, expectedVersion: 4, baseJobId: "job-4", secret, now: 10_001 }), null, "a cross-session confirmation cannot run");
   assert.equal(verifyConversationConfirmation({ session, token: offered.token, expectedVersion: 4, baseJobId: "job-4", secret, now: 10_000 + 10 * 60 * 1000 + 1 }), null, "an expired confirmation cannot run");
   assert.throws(() => createConversationConfirmation({ session, expectedVersion: 4, baseJobId: "job-4", supportedPrompt: "Make it cinematic", message: "Review cinematic.", secret: "too-short" }), ConfirmationConfigurationError, "there is no browser-token fallback when server signing is missing");
+
+  // Reproduce the A/B defect: a genuine action for completed output A must
+  // not be accepted without its base and then applied to newer output B.
+  const outputA = createConversationConfirmation({ session, expectedVersion: 4, baseJobId: "output-a", supportedPrompt: "Make it cinematic", message: "Review cinematic.", secret, now: 20_000 });
+  assert.equal(verifySubmittedConversationConfirmation({ session, token: outputA.token, expectedVersion: 4, baseJobId: undefined, secret, now: 20_001 }), null, "omitting output A cannot fall through to newer output B");
+  assert.equal(verifySubmittedConversationConfirmation({ session, token: outputA.token, expectedVersion: 4, baseJobId: "output-b", secret, now: 20_001 }), null, "output A cannot be replayed against output B");
+  assert.equal(verifySubmittedConversationConfirmation({ session, token: outputA.token, expectedVersion: 4, baseJobId: "output-a", secret, now: 20_001 }).baseJobId, "output-a");
 });
 
 test("semantic spoken ranges override final timestamps and reject conflicting source operations", async () => {

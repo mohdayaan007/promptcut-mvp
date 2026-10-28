@@ -35,3 +35,10 @@ export function verifyConversationConfirmation({ session, token, expectedVersion
   if (baseJobId !== undefined && action.baseJobId !== baseJobId) return null;
   return action;
 }
+
+/** A submitted confirmation must repeat the signed base explicitly. */
+export function verifySubmittedConversationConfirmation({ session, token, expectedVersion, baseJobId, now = Date.now(), secret }) {
+  const action = verifyConversationConfirmation({ session, token, expectedVersion, now, secret });
+  if (!action || typeof baseJobId !== "string" || action.baseJobId !== baseJobId) return null;
+  return action;
+}

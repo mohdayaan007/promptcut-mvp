@@ -1,6 +1,6 @@
 import { applyConversationTurn, validateConversationPlan } from "@/lib/editor-core/conversation-state";
 import { analyzeEditRequestCapabilities } from "@/lib/editor-core/edit-plan";
-import { ConfirmationConfigurationError, createConversationConfirmation, verifyConversationConfirmation } from "@/lib/editor-core/conversation-confirmation";
+import { ConfirmationConfigurationError, createConversationConfirmation, verifyConversationConfirmation, verifySubmittedConversationConfirmation } from "@/lib/editor-core/conversation-confirmation";
 import { createConversationJob, getAuthorizedSession, getSessionHistory } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
 import { signedDownloadUrl } from "@/lib/jobs/storage";
@@ -52,10 +52,11 @@ export async function POST(req, { params }) {
     if (!Number.isInteger(expectedVersion)) throw new PublicRequestError("The editing session version is invalid.");
     const history = await getSessionHistory(session.id);
     if (baseJobId !== undefined && typeof baseJobId !== "string") throw new PublicRequestError("The selected edit is invalid.", 422);
-    const current = [...history].reverse().find((version) => (!baseJobId || version.job_id === baseJobId) && version.status === "completed" && version.plan && Array.isArray(version.source_catalog));
-    if (!current) throw new PublicRequestError("Wait for a successful edit before making another change.", 409);
-    const confirmed = confirmationToken && verifyConversationConfirmation({ session, token: confirmationToken, expectedVersion, baseJobId });
+    const confirmed = confirmationToken && verifySubmittedConversationConfirmation({ session, token: confirmationToken, expectedVersion, baseJobId });
     if (confirmationToken && !confirmed) throw new PublicRequestError("That edit confirmation is no longer valid. Please review the request again.", 409);
+    const executionBaseJobId = confirmed?.baseJobId || baseJobId;
+    const current = [...history].reverse().find((version) => (!executionBaseJobId || version.job_id === executionBaseJobId) && version.status === "completed" && version.plan && Array.isArray(version.source_catalog));
+    if (!current) throw new PublicRequestError("Wait for a successful edit before making another change.", 409);
     const effectivePrompt = confirmed?.supportedPrompt || prompt.trim();
     if (!confirmed) {
       const capability = analyzeEditRequestCapabilities(effectivePrompt, current.source_catalog);
