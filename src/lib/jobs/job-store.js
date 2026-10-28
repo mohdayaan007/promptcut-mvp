@@ -57,6 +57,29 @@ CREATE TABLE IF NOT EXISTS editing_versions (
   PRIMARY KEY (session_id, version)
 );
 CREATE INDEX IF NOT EXISTS editing_sessions_expiry_idx ON editing_sessions (expires_at);
+CREATE TABLE IF NOT EXISTS subscriber_identities (
+  id UUID PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  verified_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS dodo_webhook_events (
+  event_id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  payload_sha256 TEXT NOT NULL,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS dodo_subscriptions (
+  dodo_subscription_id TEXT PRIMARY KEY,
+  product_id TEXT NOT NULL,
+  dodo_customer_id TEXT,
+  customer_email TEXT,
+  subscriber_id UUID REFERENCES subscriber_identities(id),
+  status TEXT NOT NULL CHECK (status IN ('active','past_due','cancelled','expired')),
+  last_event_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS dodo_subscriptions_subscriber_idx ON dodo_subscriptions (subscriber_id, status);
 `;
 
 function newId() { return crypto.randomUUID(); }
@@ -78,9 +101,46 @@ export async function migrateEditJobs() {
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS session_id UUID;");
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS edit_plan JSONB;");
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS source_catalog JSONB;");
+  await database().query("ALTER TABLE dodo_subscriptions ADD COLUMN IF NOT EXISTS last_event_at TIMESTAMPTZ NOT NULL DEFAULT now();");
   await database().query(`ALTER TABLE edit_jobs DROP CONSTRAINT IF EXISTS edit_jobs_status_check;
     ALTER TABLE edit_jobs ADD CONSTRAINT edit_jobs_status_check
     CHECK (status IN ('uploading','queued','analyzing','rendering','completed','failed','cancelled'));`);
+}
+
+/** Inserts before side effects. The unique event id is the replay/idempotency boundary. */
+export async function recordDodoWebhookEvent(eventId, eventType, rawBody) {
+  const payloadHash = crypto.createHash("sha256").update(rawBody).digest("hex");
+  const { rowCount } = await database().query(`INSERT INTO dodo_webhook_events (event_id,event_type,payload_sha256)
+    VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING`, [eventId, eventType, payloadHash]);
+  return rowCount === 1;
+}
+
+/** Payment state is recorded independently from identity verification; this never grants editor access. */
+export async function upsertDodoSubscription({ subscriptionId, productId, customerId, email, status }) {
+  await database().query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,status)
+    VALUES ($1,$2,$3,$4,$5)
+    ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
+      customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),status=EXCLUDED.status,updated_at=now()`,
+  [subscriptionId, productId, customerId, email, status]);
+}
+
+/** Event insertion and state change share one transaction: failed processing stays retryable. */
+export async function processDodoWebhookEvent(eventId, eventType, rawBody, subscription) {
+  const client = await database().connect();
+  try {
+    await client.query("BEGIN");
+    const hash = crypto.createHash("sha256").update(rawBody).digest("hex");
+    const inserted = await client.query(`INSERT INTO dodo_webhook_events (event_id,event_type,payload_sha256)
+      VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING`, [eventId, eventType, hash]);
+    if (!inserted.rowCount) { await client.query("COMMIT"); return false; }
+    if (subscription) await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,status,last_event_at)
+      VALUES ($1,$2,$3,$4,$5,$6)
+      ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
+        customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,updated_at=now()
+      WHERE EXCLUDED.last_event_at >= dodo_subscriptions.last_event_at`,
+    [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt]);
+    await client.query("COMMIT"); return true;
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
 export async function createEditingSession(jobId, initialPrompt) {
   const id = newId(); const accessToken = newToken();
