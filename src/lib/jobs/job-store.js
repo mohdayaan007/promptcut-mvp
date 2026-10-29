@@ -193,14 +193,22 @@ async function bindProviderVerifiedSubscription(client, subscriptionId) {
   return true;
 }
 
-export async function processDodoWebhookEvent(eventId, eventType, rawBody, subscription, payment = null) {
+export async function processDodoWebhookEvent(eventId, eventType, rawBody, subscription, payment = null, ownershipEligible = false, hooks = {}) {
   const client = await database().connect();
   try {
     await client.query("BEGIN");
+    const subscriptionId = subscription?.subscriptionId || payment?.subscriptionId || null;
+    // The payment and subscription handlers use the same provider subscription
+    // identifier, so one transaction always observes the other's committed row.
+    // A single advisory key per event avoids lock-order deadlocks.
+    if (ownershipEligible && subscriptionId) await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [subscriptionId]);
     const hash = crypto.createHash("sha256").update(rawBody).digest("hex");
     const inserted = await client.query(`INSERT INTO dodo_webhook_events (event_id,event_type,payload_sha256)
       VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING`, [eventId, eventType, hash]);
-    if (!inserted.rowCount) { await client.query("COMMIT"); return false; }
+    if (!inserted.rowCount) {
+      if (ownershipEligible && subscriptionId) await bindProviderVerifiedSubscription(client, subscriptionId);
+      await client.query("COMMIT"); return false;
+    }
     if (subscription) await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,status,last_event_at)
       VALUES ($1,$2,$3,$4,$5,$6)
       ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
@@ -212,8 +220,8 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
       WHERE checkout_session_id=$1 AND status IN ('created','payment_verified')
         AND (provider_payment_id IS NULL OR provider_payment_id=$2)
         AND (provider_subscription_id IS NULL OR provider_subscription_id=$3)`, [payment.checkoutSessionId, payment.paymentId, payment.subscriptionId]);
-    if (subscription) await bindProviderVerifiedSubscription(client, subscription.subscriptionId);
-    if (payment) await bindProviderVerifiedSubscription(client, payment.subscriptionId);
+    await hooks.afterEvidence?.();
+    if (ownershipEligible && subscriptionId) await bindProviderVerifiedSubscription(client, subscriptionId);
     await client.query("COMMIT"); return true;
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }

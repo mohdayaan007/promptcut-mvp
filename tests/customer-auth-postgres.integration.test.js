@@ -9,8 +9,9 @@ const workspace = (subject, email, hostedDomain) => ({ subject, email, authority
 const external = (subject, email) => ({ subject, email, authority: "external", hostedDomain: null });
 async function signIn(profile, nonce) { await createGoogleLoginNonce(nonce); return completeGoogleSignIn(profile, nonce); }
 async function subscriberFor(db, subscriptionId) { return (await db.query("SELECT subscriber_id FROM dodo_subscriptions WHERE dodo_subscription_id=$1", [subscriptionId])).rows[0]?.subscriber_id || null; }
-async function processEvent(id, subscription) { return processDodoWebhookEvent(id, "subscription.active", JSON.stringify({ id, subscription }), subscription); }
-async function processPayment(id, payment) { return processDodoWebhookEvent(id, "payment.succeeded", JSON.stringify({ id, payment }), null, payment); }
+async function processEvent(id, subscription, hooks) { return processDodoWebhookEvent(id, "subscription.active", JSON.stringify({ id, subscription }), subscription, null, true, hooks); }
+async function processPayment(id, payment, hooks) { return processDodoWebhookEvent(id, "payment.succeeded", JSON.stringify({ id, payment }), null, payment, true, hooks); }
+function deferred() { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; }
 
 integration("customer-bound checkout correlations remain pending until Dodo proves subscription correlation", async () => {
   process.env.CUSTOMER_AUTH_TOKEN_SECRET = "customer-auth-integration-secret-with-at-least-thirty-two-characters";
@@ -73,6 +74,42 @@ integration("customer-bound checkout correlations remain pending until Dodo prov
     const reference3 = await createCustomerCheckoutCorrelation(workspaceIdentity); await recordCustomerCheckoutSession(workspaceIdentity, reference3, "cs_synthetic_3");
     await processPayment("pay-conflict", { paymentId: "pay_3", checkoutSessionId: "cs_synthetic_3", subscriptionId: "sub_conflict" });
     assert.equal(await subscriberFor(db, "sub_conflict"), otherIdentity, "never transfer a subscription to a different Google account");
+    // Missing business/brand ownership pins fail closed even if both provider IDs match.
+    const reference4 = await createCustomerCheckoutCorrelation(workspaceIdentity); await recordCustomerCheckoutSession(workspaceIdentity, reference4, "cs_unpinned");
+    const unpinnedPayment = { paymentId: "pay_unpinned", checkoutSessionId: "cs_unpinned", subscriptionId: "sub_unpinned" };
+    const unpinnedSubscription = { subscriptionId: "sub_unpinned", productId: "cliponaut-product", customerId: "c-unpinned", email: "member@workspace.example", status: "active", occurredAt: "2026-01-03T00:00:00.000Z" };
+    await processDodoWebhookEvent("evt-unpinned-payment", "payment.succeeded", "unpinned-payment", null, unpinnedPayment, false);
+    await processDodoWebhookEvent("evt-unpinned-subscription", "subscription.active", "unpinned-subscription", unpinnedSubscription, null, false);
+    assert.equal(await subscriberFor(db, "sub_unpinned"), null);
     assert.equal((await db.query("SELECT count(*)::int AS count FROM customer_sessions")).rows[0].count > 0, true);
+  } finally { await db.end(); await closeJobStorePool(); }
+});
+
+integration("overlapping payment and active-subscription transactions converge in either delivery order", async () => {
+  process.env.CUSTOMER_AUTH_TOKEN_SECRET = "customer-auth-integration-secret-with-at-least-thirty-two-characters";
+  process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID = "cliponaut-product";
+  await migrateEditJobs(); const db = new Client({ connectionString: process.env.DATABASE_URL }); await db.connect();
+  try {
+    await db.query("DELETE FROM google_login_nonces; DELETE FROM customer_sessions; DELETE FROM customer_checkout_correlations; DELETE FROM dodo_webhook_events; DELETE FROM dodo_subscriptions; DELETE FROM subscriber_identities;");
+    const session = await signIn(gmail("concurrent-google", "concurrent@gmail.com"), "z".repeat(48));
+    const subscriber = (await getCustomerSession(session)).subscriber_id;
+    for (const paymentFirst of [true, false]) {
+      const suffix = paymentFirst ? "payment-first" : "subscription-first";
+      const reference = await createCustomerCheckoutCorrelation(subscriber); await recordCustomerCheckoutSession(subscriber, reference, `cs-${suffix}`);
+      const pause = deferred(); const firstReady = deferred(); let secondReachedEvidence = false;
+      const payment = { paymentId: `pay-${suffix}`, checkoutSessionId: `cs-${suffix}`, subscriptionId: `sub-${suffix}` };
+      const subscription = { subscriptionId: `sub-${suffix}`, productId: "cliponaut-product", customerId: `customer-${suffix}`, email: "concurrent@gmail.com", status: "active", occurredAt: "2026-01-02T00:00:00.000Z" };
+      const first = paymentFirst
+        ? processPayment(`evt-pay-${suffix}`, payment, { afterEvidence: async () => { firstReady.resolve(); await pause.promise; } })
+        : processEvent(`evt-sub-${suffix}`, subscription, { afterEvidence: async () => { firstReady.resolve(); await pause.promise; } });
+      await firstReady.promise;
+      const second = paymentFirst
+        ? processEvent(`evt-sub-${suffix}`, subscription, { afterEvidence: async () => { secondReachedEvidence = true; } })
+        : processPayment(`evt-pay-${suffix}`, payment, { afterEvidence: async () => { secondReachedEvidence = true; } });
+      await new Promise((done) => setTimeout(done, 30));
+      assert.equal(secondReachedEvidence, false, "second transaction waits on the same provider subscription advisory lock");
+      pause.resolve(); await Promise.all([first, second]);
+      assert.equal(await subscriberFor(db, `sub-${suffix}`), subscriber);
+    }
   } finally { await db.end(); await closeJobStorePool(); }
 });

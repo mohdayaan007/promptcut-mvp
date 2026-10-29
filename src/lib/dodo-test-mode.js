@@ -7,6 +7,11 @@ const MIN_WEBHOOK_SECRET_BYTES = 24;
 export class DodoConfigurationError extends Error {}
 export class DodoWebhookError extends Error {}
 
+/** Customer binding is stricter than harmless founder-only webhook recording. */
+export function customerOwnershipProvenanceConfigured(config) {
+  return Boolean(config?.productId && config?.businessId && config?.brandId);
+}
+
 function configuredUrl(name) {
   const value = process.env[name];
   if (!value) throw new DodoConfigurationError(`${name} is not configured`);
@@ -122,6 +127,6 @@ export function cliponautPaymentEvent(event, config) {
   if (!subscriptionId || subscriptionIds.some((id) => id !== subscriptionId)) throw new DodoWebhookError("Payment subscription correlation is invalid");
   // product_cart is documented as one-time-payment items; the subscription's
   // product is authoritatively checked on the signed subscription event.
-  if (data.product_cart !== undefined && (!Array.isArray(data.product_cart) || data.product_cart.some((item) => !item || typeof item.product_id !== "string"))) throw new DodoWebhookError("Payment product cart is invalid");
+  if (data.product_cart !== undefined && data.product_cart !== null && (!Array.isArray(data.product_cart) || data.product_cart.some((item) => !item || typeof item.product_id !== "string"))) throw new DodoWebhookError("Payment product cart is invalid");
   return { paymentId: data.payment_id, checkoutSessionId: data.checkout_session_id, subscriptionId, occurredAt };
 }

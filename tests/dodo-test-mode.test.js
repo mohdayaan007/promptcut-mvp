@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import crypto from "crypto";
 import test from "node:test";
-import { checkoutRequest, cliponautPaymentEvent, cliponautSubscriptionEvent, createDodoTestCheckout, DodoConfigurationError, DodoWebhookError, parseDodoWebhookEnvelope, verifyDodoWebhook } from "@/lib/dodo-test-mode";
+import { checkoutRequest, cliponautPaymentEvent, cliponautSubscriptionEvent, createDodoTestCheckout, customerOwnershipProvenanceConfigured, DodoConfigurationError, DodoWebhookError, parseDodoWebhookEnvelope, verifyDodoWebhook } from "@/lib/dodo-test-mode";
 
 const secret = `whsec_${Buffer.from("dodo-webhook-test-secret-material-over-thirty-two-bytes").toString("base64")}`;
 const secret24 = `whsec_${Buffer.alloc(24, 7).toString("base64")}`;
@@ -74,5 +74,13 @@ test("documented failed and on_hold events map safely to past_due", () => {
 test("signed payment evidence requires exact checkout and single subscription identifiers", () => {
   const payment = { type: "payment.succeeded", timestamp: "2026-10-28T08:00:00.000Z", business_id: config.businessId, data: { payment_id: "pay_1", checkout_session_id: "cs_1", subscription_id: "sub_1", subscription_ids: ["sub_1"], brand_id: config.brandId, metadata: { cliponaut_checkout_ref: "untrusted-for-linking" } } };
   assert.deepEqual(cliponautPaymentEvent(payment, config), { paymentId: "pay_1", checkoutSessionId: "cs_1", subscriptionId: "sub_1", occurredAt: "2026-10-28T08:00:00.000Z" });
-  for (const data of [{ ...payment.data, checkout_session_id: "" }, { ...payment.data, subscription_ids: ["sub_1", "sub_2"] }, { ...payment.data, brand_id: "brand_bynd" }]) assert.throws(() => cliponautPaymentEvent({ ...payment, data }, config), DodoWebhookError);
+  assert.doesNotThrow(() => cliponautPaymentEvent({ ...payment, data: { ...payment.data, product_cart: null } }, config));
+  assert.doesNotThrow(() => cliponautPaymentEvent({ ...payment, data: { ...payment.data, product_cart: undefined } }, config));
+  for (const data of [{ ...payment.data, checkout_session_id: "" }, { ...payment.data, subscription_ids: ["sub_1", "sub_2"] }, { ...payment.data, brand_id: "brand_bynd" }, { ...payment.data, product_cart: "not-an-array" }]) assert.throws(() => cliponautPaymentEvent({ ...payment, data }, config), DodoWebhookError);
+});
+
+test("customer binding requires explicit business and brand provenance pins", () => {
+  assert.equal(customerOwnershipProvenanceConfigured(config), true);
+  assert.equal(customerOwnershipProvenanceConfigured({ ...config, businessId: null }), false);
+  assert.equal(customerOwnershipProvenanceConfigured({ ...config, brandId: null }), false);
 });
