@@ -147,6 +147,7 @@ function safeRow(row) {
     attemptCount: row.attempt_count, workerId: row.worker_id, claimedAt: row.claimed_at,
     heartbeatAt: row.heartbeat_at, sourceCleanedAt: row.source_cleaned_at,
     outputCleanedAt: row.output_cleaned_at, sessionId: row.session_id, editPlan: row.edit_plan, sourceCatalog: row.source_catalog,
+    subscriberId: row.subscriber_id, quotaReservationId: row.quota_reservation_id,
     createdAt: row.created_at, updatedAt: row.updated_at
   };
 }
@@ -194,6 +195,7 @@ export async function reserveRenderCapacity(subscriberId) {
   } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
 }
 export async function attachReservationToJob(reservationId, jobId, subscriberId) { if (reservationId) await database().query("UPDATE render_quota_reservations SET job_id=$2,updated_at=now() WHERE id=$1 AND subscriber_id=$3 AND state='reserved'", [reservationId, jobId, subscriberId]); }
+export async function releaseUnattachedRenderReservation(reservationId, subscriberId) { if (reservationId && subscriberId) await database().query("UPDATE render_quota_reservations SET state='released',updated_at=now() WHERE id=$1 AND subscriber_id=$2 AND job_id IS NULL AND state='reserved'", [reservationId, subscriberId]); }
 export async function releaseRenderReservation(jobId) { await database().query("UPDATE render_quota_reservations SET state='released',updated_at=now() WHERE job_id=$1 AND state='reserved'", [jobId]); }
 
 /** Inserts before side effects. The unique event id is the replay/idempotency boundary. */
@@ -418,6 +420,11 @@ export async function getAuthorizedJob(id, token) {
   const { rows } = await database().query("SELECT * FROM edit_jobs WHERE id = $1 AND access_token = $2", [id, token]);
   return rows[0] ? safeRow(rows[0]) : null;
 }
+export async function getAuthorizedSubscriberJob(id, token, subscriberId) {
+  if (!UUID_PATTERN.test(id) || !token || !subscriberId) return null;
+  const { rows } = await database().query("SELECT * FROM edit_jobs WHERE id=$1 AND access_token=$2 AND subscriber_id=$3", [id, token, subscriberId]);
+  return rows[0] ? safeRow(rows[0]) : null;
+}
 export async function cancelAuthorizedJob(id, token) {
   if (!UUID_PATTERN.test(id) || !token) return null;
   const client = await database().connect(); let rows;
@@ -448,7 +455,13 @@ export async function queueJob(id, { prompt, exportQuality, sources, reference =
 }
 export async function failUploadJob(id, message) { const client = await database().connect(); try { await client.query("BEGIN"); const { rows } = await client.query("UPDATE edit_jobs SET status='failed', error_message=$2, updated_at=now() WHERE id=$1 AND status='uploading' RETURNING id", [id, message]); if (rows[0]) await client.query("UPDATE render_quota_reservations SET state='released',updated_at=now() WHERE job_id=$1 AND state='reserved'", [id]); await client.query("COMMIT"); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); } }
 export async function claimNextJob(workerId) {
-  const { rows } = await database().query(`WITH next_job AS (SELECT id FROM edit_jobs WHERE status='queued' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE edit_jobs j SET status='analyzing', worker_id=$1, claimed_at=now(), heartbeat_at=now(), attempt_count=attempt_count+1, updated_at=now() FROM next_job WHERE j.id=next_job.id RETURNING j.*`, [workerId]);
+  const { rows } = await database().query(`WITH next_job AS (
+    SELECT j.id FROM edit_jobs j WHERE j.status='queued' AND (j.subscriber_id IS NULL OR EXISTS (
+      SELECT 1 FROM render_quota_reservations r JOIN dodo_subscriptions s ON s.dodo_subscription_id=r.subscription_id
+      WHERE r.id=j.quota_reservation_id AND r.job_id=j.id AND r.state='reserved' AND s.subscriber_id=j.subscriber_id
+        AND s.status='active' AND s.ownership_provenance='verified' AND s.product_id=$2 AND s.billing_period_end > now()
+    )) ORDER BY j.created_at FOR UPDATE SKIP LOCKED LIMIT 1
+  ) UPDATE edit_jobs j SET status='analyzing', worker_id=$1, claimed_at=now(), heartbeat_at=now(), attempt_count=attempt_count+1, updated_at=now() FROM next_job WHERE j.id=next_job.id RETURNING j.*`, [workerId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""]);
   return rows[0] ? safeRow(rows[0]) : null;
 }
 export async function setJobStatus(id, workerId, status) {

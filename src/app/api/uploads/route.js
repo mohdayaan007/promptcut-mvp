@@ -1,5 +1,5 @@
 import { abortMultipartUpload, beginMultipartUpload, referenceObjectKey, sourceObjectKey } from "@/lib/jobs/storage";
-import { createUploadJob, failUploadJob, setUploadSources } from "@/lib/jobs/job-store";
+import { createUploadJob, failUploadJob, releaseUnattachedRenderReservation, setUploadSources } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError, safeJobResponse } from "@/lib/jobs/http";
 import { MULTIPART_PART_SIZE_BYTES, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { authorizePaidEdit } from "@/lib/paid-editing";
@@ -58,6 +58,7 @@ export async function POST(req) {
     });
     await Promise.all(started.map((upload) => abortMultipartUpload(upload).catch(() => {})));
     if (job) await failUploadJob(job.id, "Upload could not be initialized").catch(() => {});
+    else if (authorization?.enforced) await releaseUnattachedRenderReservation(authorization.reservationId, authorization.subscriberId).catch(() => {});
     return jsonError(error);
   }
 }
