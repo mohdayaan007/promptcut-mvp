@@ -253,7 +253,13 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
       ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
         customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),subscriber_id=COALESCE(dodo_subscriptions.subscriber_id, EXCLUDED.subscriber_id),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,
         ownership_provenance=CASE WHEN $7 THEN 'verified' ELSE dodo_subscriptions.ownership_provenance END,billing_period_start=CASE WHEN $7 THEN COALESCE(EXCLUDED.billing_period_start,dodo_subscriptions.billing_period_start) ELSE dodo_subscriptions.billing_period_start END,billing_period_end=CASE WHEN $7 THEN COALESCE(EXCLUDED.billing_period_end,dodo_subscriptions.billing_period_end) ELSE dodo_subscriptions.billing_period_end END,updated_at=now()
-      WHERE EXCLUDED.last_event_at > dodo_subscriptions.last_event_at`,
+      -- Once provider evidence has been verified for this subscription, only
+      -- another correctly pinned event may change its lifecycle state or
+      -- authoritative ordering cursor.  An unpinned receipt is still retained
+      -- in dodo_webhook_events for audit/idempotency, but cannot reactivate a
+      -- cancelled subscription or poison ordering for later verified evidence.
+      WHERE EXCLUDED.last_event_at > dodo_subscriptions.last_event_at
+        AND ($7 OR dodo_subscriptions.ownership_provenance <> 'verified')`,
     [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt, ownershipEligible, subscription.billingStart, subscription.billingEnd]);
     if (payment) await client.query(`UPDATE customer_checkout_correlations
       SET provider_payment_id=$2,provider_subscription_id=$3,payment_provenance=CASE WHEN $4 THEN 'verified' ELSE payment_provenance END,
