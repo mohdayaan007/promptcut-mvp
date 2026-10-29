@@ -7,6 +7,11 @@ const MIN_WEBHOOK_SECRET_BYTES = 24;
 export class DodoConfigurationError extends Error {}
 export class DodoWebhookError extends Error {}
 
+/** Customer binding is stricter than harmless founder-only webhook recording. */
+export function customerOwnershipProvenanceConfigured(config) {
+  return Boolean(config?.productId && config?.businessId && config?.brandId);
+}
+
 function configuredUrl(name) {
   const value = process.env[name];
   if (!value) throw new DodoConfigurationError(`${name} is not configured`);
@@ -28,23 +33,27 @@ export function normalizeEmail(email) {
   return email.trim().toLowerCase();
 }
 
-export function checkoutRequest({ productId, email, returnUrl }) {
-  return {
+export function checkoutRequest({ productId, email, returnUrl, metadata }) {
+  const request = {
     product_cart: [{ product_id: productId, quantity: 1 }],
     customer: { email: normalizeEmail(email) },
     return_url: returnUrl,
     minimal_address: true,
     feature_flags: { single_page: true }
   };
+  // Dodo documents checkout metadata as payment metadata. It is deliberately
+  // not treated as subscription ownership proof unless propagation is proven.
+  if (metadata) request.metadata = metadata;
+  return request;
 }
 
 /** Dodo's documented REST endpoint. Network calls are intentionally injectable for tests. */
-export async function createDodoTestCheckout({ email, fetchImpl = fetch }) {
+export async function createDodoTestCheckout({ email, metadata, fetchImpl = fetch }) {
   const config = dodoTestModeConfig();
   const response = await fetchImpl(`${TEST_API_BASE}/checkouts`, {
     method: "POST",
     headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify(checkoutRequest({ productId: config.productId, email, returnUrl: config.returnUrl }))
+    body: JSON.stringify(checkoutRequest({ productId: config.productId, email, returnUrl: config.returnUrl, metadata }))
   });
   if (!response.ok) throw new DodoConfigurationError("Dodo test checkout could not be created");
   const body = await response.json();
@@ -102,4 +111,22 @@ export function cliponautSubscriptionEvent(event, config) {
   if (typeof data.subscription_id !== "string" || !data.subscription_id || !data.customer || typeof data.customer !== "object" || typeof data.customer.customer_id !== "string" || !data.customer.customer_id || typeof data.status !== "string") throw new DodoWebhookError("Subscription payload is invalid");
   if (data.status !== states[type].provider) throw new DodoWebhookError("Subscription event conflicts with current status");
   return { subscriptionId: data.subscription_id, status: states[type].internal, productId: config.productId, customerId: data.customer.customer_id, email: typeof data.customer.email === "string" ? normalizeEmail(data.customer.email) : null, occurredAt };
+}
+
+/** Signed payment evidence joins a provider checkout session to one subscription. */
+export function cliponautPaymentEvent(event, config) {
+  const { type, data, occurredAt, businessId, envelopeBrandId } = parseDodoWebhookEnvelope(event);
+  if (type !== "payment.succeeded") return null;
+  if (config.businessId && businessId !== config.businessId) throw new DodoWebhookError("Webhook business does not match Cliponaut");
+  if (typeof data.brand_id !== "string" || !data.brand_id) throw new DodoWebhookError("Payment brand is invalid");
+  if (envelopeBrandId && envelopeBrandId !== data.brand_id) throw new DodoWebhookError("Webhook brand provenance conflicts");
+  if (config.brandId && data.brand_id !== config.brandId) throw new DodoWebhookError("Webhook brand does not match Cliponaut");
+  if (typeof data.payment_id !== "string" || !data.payment_id || typeof data.checkout_session_id !== "string" || !data.checkout_session_id) throw new DodoWebhookError("Payment correlation is invalid");
+  const subscriptionIds = Array.isArray(data.subscription_ids) ? data.subscription_ids : [];
+  const subscriptionId = typeof data.subscription_id === "string" && data.subscription_id ? data.subscription_id : subscriptionIds.length === 1 && typeof subscriptionIds[0] === "string" ? subscriptionIds[0] : null;
+  if (!subscriptionId || subscriptionIds.some((id) => id !== subscriptionId)) throw new DodoWebhookError("Payment subscription correlation is invalid");
+  // product_cart is documented as one-time-payment items; the subscription's
+  // product is authoritatively checked on the signed subscription event.
+  if (data.product_cart !== undefined && data.product_cart !== null && (!Array.isArray(data.product_cart) || data.product_cart.some((item) => !item || typeof item.product_id !== "string"))) throw new DodoWebhookError("Payment product cart is invalid");
+  return { paymentId: data.payment_id, checkoutSessionId: data.checkout_session_id, subscriptionId, occurredAt };
 }

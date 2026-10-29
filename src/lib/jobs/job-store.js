@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS dodo_subscriptions (
   dodo_customer_id TEXT,
   customer_email TEXT,
   subscriber_id UUID REFERENCES subscriber_identities(id),
+  ownership_provenance TEXT NOT NULL DEFAULT 'unverified' CHECK (ownership_provenance IN ('unverified','verified','conflicting')),
   status TEXT NOT NULL CHECK (status IN ('active','past_due','cancelled','expired')),
   last_event_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -114,6 +115,19 @@ CREATE TABLE IF NOT EXISTS google_login_nonces (
   expires_at TIMESTAMPTZ NOT NULL,
   consumed_at TIMESTAMPTZ
 );
+CREATE TABLE IF NOT EXISTS customer_checkout_correlations (
+  reference_hash TEXT PRIMARY KEY,
+  subscriber_id UUID NOT NULL REFERENCES subscriber_identities(id) ON DELETE CASCADE,
+  checkout_session_id TEXT UNIQUE,
+  provider_payment_id TEXT UNIQUE,
+  provider_subscription_id TEXT UNIQUE,
+  payment_provenance TEXT NOT NULL DEFAULT 'unverified' CHECK (payment_provenance IN ('unverified','verified','conflicting')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','created','payment_verified','bound','failed','conflicted')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS customer_checkout_correlations_subscriber_idx ON customer_checkout_correlations (subscriber_id, status, expires_at);
 `;
 
 function newId() { return crypto.randomUUID(); }
@@ -141,6 +155,11 @@ export async function migrateEditJobs() {
   // payment ownership until a later, server-verified Google sign-in proves it.
   await database().query("ALTER TABLE subscriber_identities ADD COLUMN IF NOT EXISTS google_email_authority TEXT NOT NULL DEFAULT 'unknown' CHECK (google_email_authority IN ('unknown','gmail','workspace','external'));");
   await database().query("ALTER TABLE subscriber_identities ADD COLUMN IF NOT EXISTS google_hosted_domain TEXT;");
+  await database().query("ALTER TABLE customer_checkout_correlations ADD COLUMN IF NOT EXISTS provider_payment_id TEXT UNIQUE;");
+  await database().query("ALTER TABLE customer_checkout_correlations ADD COLUMN IF NOT EXISTS provider_subscription_id TEXT UNIQUE;");
+  // Historical provider IDs predate provenance validation and must not bind.
+  await database().query("ALTER TABLE dodo_subscriptions ADD COLUMN IF NOT EXISTS ownership_provenance TEXT NOT NULL DEFAULT 'unverified' CHECK (ownership_provenance IN ('unverified','verified','conflicting'));");
+  await database().query("ALTER TABLE customer_checkout_correlations ADD COLUMN IF NOT EXISTS payment_provenance TEXT NOT NULL DEFAULT 'unverified' CHECK (payment_provenance IN ('unverified','verified','conflicting'));");
   await database().query(`ALTER TABLE edit_jobs DROP CONSTRAINT IF EXISTS edit_jobs_status_check;
     ALTER TABLE edit_jobs ADD CONSTRAINT edit_jobs_status_check
     CHECK (status IN ('uploading','queued','analyzing','rendering','completed','failed','cancelled'));`);
@@ -164,21 +183,54 @@ export async function upsertDodoSubscription({ subscriptionId, productId, custom
 }
 
 /** Event insertion and state change share one transaction: failed processing stays retryable. */
-export async function processDodoWebhookEvent(eventId, eventType, rawBody, subscription) {
+async function bindProviderVerifiedSubscription(client, subscriptionId) {
+  const { rows } = await client.query(`SELECT c.subscriber_id,c.status AS correlation_status,c.payment_provenance,s.subscriber_id AS existing_owner,s.status,s.product_id,s.ownership_provenance
+    FROM customer_checkout_correlations c JOIN dodo_subscriptions s ON s.dodo_subscription_id=c.provider_subscription_id
+    WHERE c.provider_subscription_id=$1 AND c.provider_payment_id IS NOT NULL FOR UPDATE`, [subscriptionId]);
+  const row = rows[0];
+  if (!row || row.payment_provenance !== "verified" || row.ownership_provenance !== "verified" || row.status !== "active" || row.product_id !== (process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || "")) return false;
+  if (row.existing_owner && row.existing_owner !== row.subscriber_id) {
+    await client.query("UPDATE customer_checkout_correlations SET status='conflicted',updated_at=now() WHERE provider_subscription_id=$1 AND status <> 'bound'", [subscriptionId]);
+    return false;
+  }
+  await client.query("UPDATE dodo_subscriptions SET subscriber_id=$2,updated_at=now() WHERE dodo_subscription_id=$1 AND subscriber_id IS NULL", [subscriptionId, row.subscriber_id]);
+  await client.query("UPDATE customer_checkout_correlations SET status='bound',updated_at=now() WHERE provider_subscription_id=$1", [subscriptionId]);
+  return true;
+}
+
+export async function processDodoWebhookEvent(eventId, eventType, rawBody, subscription, payment = null, ownershipEligible = false, hooks = {}) {
   const client = await database().connect();
   try {
     await client.query("BEGIN");
+    const subscriptionId = subscription?.subscriptionId || payment?.subscriptionId || null;
+    // The payment and subscription handlers use the same provider subscription
+    // identifier, so one transaction always observes the other's committed row.
+    // A single advisory key per event avoids lock-order deadlocks.
+    if (ownershipEligible && subscriptionId) await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [subscriptionId]);
     const hash = crypto.createHash("sha256").update(rawBody).digest("hex");
     const inserted = await client.query(`INSERT INTO dodo_webhook_events (event_id,event_type,payload_sha256)
       VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING`, [eventId, eventType, hash]);
-    if (!inserted.rowCount) { await client.query("COMMIT"); return false; }
-    if (subscription) await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,subscriber_id,status,last_event_at)
-      SELECT $1,$2,$3,$4,i.id,$5,$6 FROM (SELECT 1) AS present LEFT JOIN subscriber_identities i ON i.email=$4 AND i.verified_at IS NOT NULL
-        AND i.google_email_authority IN ('gmail','workspace') AND $5 = 'active' AND $2 = $7
+    if (!inserted.rowCount) {
+      if (ownershipEligible && subscriptionId) await bindProviderVerifiedSubscription(client, subscriptionId);
+      await client.query("COMMIT"); return false;
+    }
+    if (subscription) await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,status,last_event_at,ownership_provenance)
+      VALUES ($1,$2,$3,$4,$5,$6,CASE WHEN $7 THEN 'verified' ELSE 'unverified' END)
       ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
-        customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),subscriber_id=COALESCE(dodo_subscriptions.subscriber_id, EXCLUDED.subscriber_id),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,updated_at=now()
+        customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),subscriber_id=COALESCE(dodo_subscriptions.subscriber_id, EXCLUDED.subscriber_id),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,
+        ownership_provenance=CASE WHEN $7 THEN 'verified' ELSE dodo_subscriptions.ownership_provenance END,updated_at=now()
       WHERE EXCLUDED.last_event_at > dodo_subscriptions.last_event_at`,
-    [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""]);
+    [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt, ownershipEligible]);
+    if (payment) await client.query(`UPDATE customer_checkout_correlations
+      SET provider_payment_id=$2,provider_subscription_id=$3,payment_provenance=CASE WHEN $4 THEN 'verified' ELSE payment_provenance END,
+        status=CASE WHEN $4 THEN 'payment_verified' ELSE status END,updated_at=now()
+      WHERE checkout_session_id=$1 AND status IN ('created','payment_verified')
+        AND (provider_payment_id IS NULL OR provider_payment_id=$2)
+        AND (provider_subscription_id IS NULL OR provider_subscription_id=$3)`, [payment.checkoutSessionId, payment.paymentId, payment.subscriptionId, ownershipEligible]);
+    if (payment && ownershipEligible) await client.query(`UPDATE customer_checkout_correlations SET payment_provenance='conflicting',status='conflicted',updated_at=now()
+      WHERE checkout_session_id=$1 AND (provider_payment_id IS NOT NULL AND provider_payment_id<>$2 OR provider_subscription_id IS NOT NULL AND provider_subscription_id<>$3)`, [payment.checkoutSessionId, payment.paymentId, payment.subscriptionId]);
+    await hooks.afterEvidence?.();
+    if (ownershipEligible && subscriptionId) await bindProviderVerifiedSubscription(client, subscriptionId);
     await client.query("COMMIT"); return true;
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
@@ -198,6 +250,17 @@ export async function getCustomerSession(token) {
   return rows[0] || null;
 }
 
+export async function getCustomerSubscriptionStatus(subscriberId) {
+  if (!subscriberId) return "not_subscribed";
+  const { rows } = await database().query(`SELECT status FROM dodo_subscriptions
+    WHERE subscriber_id=$1 AND product_id=$2
+    ORDER BY CASE status WHEN 'active' THEN 1 WHEN 'past_due' THEN 2 WHEN 'cancelled' THEN 3 ELSE 4 END, updated_at DESC LIMIT 1`, [subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""]);
+  if (rows[0]?.status) return rows[0].status;
+  const pending = await database().query(`SELECT 1 FROM customer_checkout_correlations
+    WHERE subscriber_id=$1 AND status IN ('pending','created','payment_verified') AND expires_at > now() LIMIT 1`, [subscriberId]);
+  return pending.rowCount ? "pending_verification" : "not_subscribed";
+}
+
 export async function revokeCustomerSession(token) {
   if (!token) return;
   await database().query("UPDATE customer_sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL", [customerTokenHash(token)]);
@@ -205,6 +268,27 @@ export async function revokeCustomerSession(token) {
 
 export async function createGoogleLoginNonce(token) {
   await database().query("INSERT INTO google_login_nonces (token_hash,expires_at) VALUES ($1,now() + interval '10 minutes')", [customerTokenHash(token)]);
+}
+
+/** The provider receives the raw value; only a server HMAC is persisted. */
+export async function createCustomerCheckoutCorrelation(subscriberId) {
+  if (!subscriberId) throw new Error("Customer identity is required");
+  const reference = newToken();
+  await database().query(`INSERT INTO customer_checkout_correlations (reference_hash,subscriber_id,expires_at)
+    VALUES ($1,$2,now() + interval '7 days')`, [customerTokenHash(reference), subscriberId]);
+  return reference;
+}
+
+export async function recordCustomerCheckoutSession(subscriberId, reference, checkoutSessionId) {
+  const { rowCount } = await database().query(`UPDATE customer_checkout_correlations
+    SET checkout_session_id=$3,status='created',updated_at=now()
+    WHERE reference_hash=$1 AND subscriber_id=$2 AND status='pending' AND expires_at > now()`, [customerTokenHash(reference), subscriberId, checkoutSessionId]);
+  if (!rowCount) throw new Error("Customer checkout correlation could not be recorded");
+}
+
+export async function failCustomerCheckoutCorrelation(subscriberId, reference) {
+  await database().query(`UPDATE customer_checkout_correlations SET status='failed',updated_at=now()
+    WHERE reference_hash=$1 AND subscriber_id=$2 AND status='pending'`, [customerTokenHash(reference), subscriberId]);
 }
 
 /** Atomically consumes a Google-bound nonce, resolves stable-subject ownership, and creates a server session. */
@@ -227,10 +311,8 @@ export async function completeGoogleSignIn({ subject, email, authority, hostedDo
     } else {
       identity = (await client.query("INSERT INTO subscriber_identities (id,email,google_subject,google_email_authority,google_hosted_domain,verified_at) VALUES ($1,$2,$3,$4,$5,now()) RETURNING id", [newId(), email, subject, authority, hostedDomain || null])).rows[0];
     }
-    const productId = process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || "";
-    if (!productId) throw new Error("DODO_TEST_CLIPONAUT_PRODUCT_ID is not configured");
-    if (authority === "gmail" || authority === "workspace") await client.query(`UPDATE dodo_subscriptions SET subscriber_id=$1,updated_at=now()
-      WHERE customer_email=$2 AND product_id=$3 AND status='active' AND subscriber_id IS NULL`, [identity.id, email, productId]);
+    // Payment ownership is never inferred from a Google/Dodo email match. A
+    // Stage 2B checkout correlation must be provider-proven before linking.
     const session = newToken();
     await client.query(`INSERT INTO customer_sessions (id,subscriber_id,token_hash,expires_at) VALUES ($1,$2,$3,now() + ($4 * interval '1 day'))`, [newId(), identity.id, customerTokenHash(session), CUSTOMER_SESSION_DAYS]);
     await client.query("COMMIT"); return session;

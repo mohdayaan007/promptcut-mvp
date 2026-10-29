@@ -1,4 +1,4 @@
-import { cliponautSubscriptionEvent, dodoTestModeConfig, DodoWebhookError, parseDodoWebhookEnvelope, verifyDodoWebhook } from "@/lib/dodo-test-mode";
+import { cliponautPaymentEvent, cliponautSubscriptionEvent, customerOwnershipProvenanceConfigured, dodoTestModeConfig, DodoWebhookError, parseDodoWebhookEnvelope, verifyDodoWebhook } from "@/lib/dodo-test-mode";
 import { processDodoWebhookEvent } from "@/lib/jobs/job-store";
 
 export const runtime = "nodejs";
@@ -11,7 +11,8 @@ export async function POST(req) {
     const envelope = parseDodoWebhookEnvelope(event);
     const config = dodoTestModeConfig();
     const subscription = cliponautSubscriptionEvent(event, config);
-    const firstSeen = await processDodoWebhookEvent(id, envelope.type, rawBody, subscription);
+    const payment = cliponautPaymentEvent(event, config);
+    const firstSeen = await processDodoWebhookEvent(id, envelope.type, rawBody, subscription, payment, customerOwnershipProvenanceConfigured(config));
     if (!firstSeen) return Response.json({ received: true, duplicate: true });
     return Response.json({ received: true });
   } catch (error) {
