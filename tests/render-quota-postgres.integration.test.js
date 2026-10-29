@@ -10,7 +10,7 @@ integration("PostgreSQL render reservations serialize capacity and isolate subsc
   await migrateEditJobs(); const db = new Client({ connectionString: process.env.DATABASE_URL }); await db.connect();
   try {
     await db.query("DELETE FROM render_quota_reservations; DELETE FROM edit_jobs; DELETE FROM dodo_subscriptions; DELETE FROM subscriber_identities;");
-    for (const id of ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"]) await db.query("INSERT INTO subscriber_identities (id,email) VALUES ($1,$2)", [id, `${id}@example.test`]);
+    for (const id of ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"]) await db.query("INSERT INTO subscriber_identities (id,email,google_subject,verified_at) VALUES ($1,$2,$3,now())", [id, `${id}@example.test`, `google-${id}`]);
     for (const [sub, owner] of [["sub-a","11111111-1111-4111-8111-111111111111"],["sub-b","22222222-2222-4222-8222-222222222222"]]) await db.query("INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,subscriber_id,ownership_provenance,status,billing_period_start,billing_period_end) VALUES ($1,'cliponaut-product',$2,'verified','active',now()-interval '1 day',now()+interval '29 days')", [sub, owner]);
     const owner = "11111111-1111-4111-8111-111111111111";
     const results = await Promise.all(Array.from({ length: 20 }, () => reserveRenderCapacity(owner)));
@@ -28,7 +28,7 @@ async function quotaFixture() {
   process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID = "cliponaut-product"; process.env.PAID_RENDER_ALLOWANCE = "15";
   await migrateEditJobs(); const db = new Client({ connectionString: process.env.DATABASE_URL }); await db.connect();
   await db.query("DELETE FROM render_quota_reservations; DELETE FROM edit_jobs; DELETE FROM dodo_subscriptions; DELETE FROM subscriber_identities;");
-  await db.query("INSERT INTO subscriber_identities (id,email) VALUES ($1,'quota@example.test')", [OWNER]);
+  await db.query("INSERT INTO subscriber_identities (id,email,google_subject,verified_at) VALUES ($1,'quota@example.test','google-quota',now())", [OWNER]);
   await db.query("INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,subscriber_id,ownership_provenance,status,billing_period_start,billing_period_end) VALUES ('sub-quota','cliponaut-product',$1,'verified','active',now()-interval '1 day',now()+interval '29 days')", [OWNER]);
   return db;
 }

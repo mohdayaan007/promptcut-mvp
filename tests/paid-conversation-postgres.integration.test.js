@@ -9,7 +9,7 @@ async function fixture() {
   process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID = "cliponaut-product"; process.env.PAID_RENDER_ALLOWANCE = "15";
   await migrateEditJobs(); const db = new Client({ connectionString: process.env.DATABASE_URL }); await db.connect();
   await db.query("DELETE FROM render_quota_reservations; DELETE FROM editing_versions; DELETE FROM editing_sessions; DELETE FROM edit_jobs; DELETE FROM dodo_subscriptions; DELETE FROM subscriber_identities;");
-  for (const id of [A, B]) await db.query("INSERT INTO subscriber_identities (id,email) VALUES ($1,$2)", [id, `${id}@test.local`]);
+  for (const id of [A, B]) await db.query("INSERT INTO subscriber_identities (id,email,google_subject,verified_at) VALUES ($1,$2,$3,now())", [id, `${id}@test.local`, `google-${id}`]);
   for (const [id, sub] of [[A,"sub-a"],[B,"sub-b"]]) await db.query("INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,subscriber_id,ownership_provenance,status,billing_period_start,billing_period_end) VALUES ($1,'cliponaut-product',$2,'verified','active',now()-interval '1 day',now()+interval '29 days')", [sub,id]);
   const reservation = await reserveRenderCapacity(A); const initial = await createUploadJob([], null, { subscriberId: A, reservationId: reservation });
   await db.query("UPDATE edit_jobs SET status='completed',source_catalog='[]',edit_plan='{}',worker_id='w' WHERE id=$1", [initial.job.id]);

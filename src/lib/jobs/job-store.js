@@ -183,12 +183,12 @@ export async function getEditingEntitlement(subscriberId) {
   if (!subscriberId) return null;
   const { rows } = await database().query(`SELECT * FROM dodo_subscriptions WHERE subscriber_id=$1 AND product_id=$2 AND status='active'
     AND ownership_provenance='verified' AND billing_period_start IS NOT NULL AND billing_period_end IS NOT NULL
-    AND billing_period_start < billing_period_end AND billing_period_end > now() ORDER BY billing_period_end DESC LIMIT 1`, [subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""]);
+    AND billing_period_start <= now() AND billing_period_start < billing_period_end AND billing_period_end > now() ORDER BY billing_period_end DESC LIMIT 1`, [subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""]);
   return rows[0] || null;
 }
 export async function reserveRenderCapacity(subscriberId) {
   const client = await database().connect(); try { await client.query("BEGIN");
-    const entitlement = (await client.query(`SELECT * FROM dodo_subscriptions WHERE subscriber_id=$1 AND product_id=$2 AND status='active' AND ownership_provenance='verified' AND billing_period_start IS NOT NULL AND billing_period_end > now() FOR UPDATE`, [subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""])).rows[0];
+    const entitlement = (await client.query(`SELECT s.* FROM dodo_subscriptions s JOIN subscriber_identities i ON i.id=s.subscriber_id WHERE s.subscriber_id=$1 AND s.product_id=$2 AND s.status='active' AND s.ownership_provenance='verified' AND s.billing_period_start IS NOT NULL AND s.billing_period_start <= now() AND s.billing_period_end > now() AND i.verified_at IS NOT NULL AND i.google_subject IS NOT NULL FOR UPDATE`, [subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""])).rows[0];
     if (!entitlement || !(new Date(entitlement.billing_period_start) < new Date(entitlement.billing_period_end))) { await client.query("ROLLBACK"); return null; }
     const used = (await client.query("SELECT count(*)::int count FROM render_quota_reservations WHERE subscriber_id=$1 AND subscription_id=$2 AND period_start=$3 AND state IN ('reserved','consumed')", [subscriberId, entitlement.dodo_subscription_id, entitlement.billing_period_start])).rows[0].count;
     if (used >= allowance()) { await client.query("ROLLBACK"); return null; }
@@ -252,7 +252,7 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
       VALUES ($1,$2,$3,$4,$5,$6,CASE WHEN $7 THEN 'verified' ELSE 'unverified' END,$8,$9)
       ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
         customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),subscriber_id=COALESCE(dodo_subscriptions.subscriber_id, EXCLUDED.subscriber_id),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,
-        ownership_provenance=CASE WHEN $7 THEN 'verified' ELSE dodo_subscriptions.ownership_provenance END,billing_period_start=COALESCE(EXCLUDED.billing_period_start,dodo_subscriptions.billing_period_start),billing_period_end=COALESCE(EXCLUDED.billing_period_end,dodo_subscriptions.billing_period_end),updated_at=now()
+        ownership_provenance=CASE WHEN $7 THEN 'verified' ELSE dodo_subscriptions.ownership_provenance END,billing_period_start=CASE WHEN $7 THEN COALESCE(EXCLUDED.billing_period_start,dodo_subscriptions.billing_period_start) ELSE dodo_subscriptions.billing_period_start END,billing_period_end=CASE WHEN $7 THEN COALESCE(EXCLUDED.billing_period_end,dodo_subscriptions.billing_period_end) ELSE dodo_subscriptions.billing_period_end END,updated_at=now()
       WHERE EXCLUDED.last_event_at > dodo_subscriptions.last_event_at`,
     [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt, ownershipEligible, subscription.billingStart, subscription.billingEnd]);
     if (payment) await client.query(`UPDATE customer_checkout_correlations
@@ -280,7 +280,7 @@ const CUSTOMER_SESSION_DAYS = 30;
 export async function getCustomerSession(token) {
   if (!token) return null;
   const { rows } = await database().query(`SELECT s.subscriber_id,i.email FROM customer_sessions s JOIN subscriber_identities i ON i.id=s.subscriber_id
-    WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at > now()`, [customerTokenHash(token)]);
+    WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at > now() AND i.verified_at IS NOT NULL AND i.google_subject IS NOT NULL`, [customerTokenHash(token)]);
   return rows[0] || null;
 }
 
@@ -463,12 +463,13 @@ export async function queueJob(id, { prompt, exportQuality, sources, reference =
 export async function failUploadJob(id, message) { const client = await database().connect(); try { await client.query("BEGIN"); const { rows } = await client.query("UPDATE edit_jobs SET status='failed', error_message=$2, updated_at=now() WHERE id=$1 AND status='uploading' RETURNING id", [id, message]); if (rows[0]) await client.query("UPDATE render_quota_reservations SET state='released',updated_at=now() WHERE job_id=$1 AND state='reserved'", [id]); await client.query("COMMIT"); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); } }
 export async function claimNextJob(workerId) {
   const { rows } = await database().query(`WITH next_job AS (
-    SELECT j.id FROM edit_jobs j WHERE j.status='queued' AND (j.subscriber_id IS NULL OR EXISTS (
-      SELECT 1 FROM render_quota_reservations r JOIN dodo_subscriptions s ON s.dodo_subscription_id=r.subscription_id
+    SELECT j.id FROM edit_jobs j WHERE j.status='queued' AND (($3 = false AND j.subscriber_id IS NULL) OR EXISTS (
+      SELECT 1 FROM render_quota_reservations r JOIN dodo_subscriptions s ON s.dodo_subscription_id=r.subscription_id JOIN subscriber_identities i ON i.id=j.subscriber_id
       WHERE r.id=j.quota_reservation_id AND r.job_id=j.id AND r.state='reserved' AND s.subscriber_id=j.subscriber_id
         AND s.status='active' AND s.ownership_provenance='verified' AND s.product_id=$2 AND s.billing_period_end > now()
+        AND s.billing_period_start <= now() AND i.verified_at IS NOT NULL AND i.google_subject IS NOT NULL
     )) ORDER BY j.created_at FOR UPDATE SKIP LOCKED LIMIT 1
-  ) UPDATE edit_jobs j SET status='analyzing', worker_id=$1, claimed_at=now(), heartbeat_at=now(), attempt_count=attempt_count+1, updated_at=now() FROM next_job WHERE j.id=next_job.id RETURNING j.*`, [workerId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""]);
+  ) UPDATE edit_jobs j SET status='analyzing', worker_id=$1, claimed_at=now(), heartbeat_at=now(), attempt_count=attempt_count+1, updated_at=now() FROM next_job WHERE j.id=next_job.id RETURNING j.*`, [workerId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || "", paidEditingEnforced()]);
   return rows[0] ? safeRow(rows[0]) : null;
 }
 export async function setJobStatus(id, workerId, status) {
