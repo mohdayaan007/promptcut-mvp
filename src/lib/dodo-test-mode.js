@@ -110,7 +110,11 @@ export function cliponautSubscriptionEvent(event, config) {
   if (!states[type]) throw new DodoWebhookError("Unsupported subscription event");
   if (typeof data.subscription_id !== "string" || !data.subscription_id || !data.customer || typeof data.customer !== "object" || typeof data.customer.customer_id !== "string" || !data.customer.customer_id || typeof data.status !== "string") throw new DodoWebhookError("Subscription payload is invalid");
   if (data.status !== states[type].provider) throw new DodoWebhookError("Subscription event conflicts with current status");
-  return { subscriptionId: data.subscription_id, status: states[type].internal, productId: config.productId, customerId: data.customer.customer_id, email: typeof data.customer.email === "string" ? normalizeEmail(data.customer.email) : null, occurredAt };
+  const billingStart = data.previous_billing_date; const billingEnd = data.next_billing_date;
+  if (billingStart !== undefined || billingEnd !== undefined) {
+    if (typeof billingStart !== "string" || typeof billingEnd !== "string" || !Number.isFinite(Date.parse(billingStart)) || !Number.isFinite(Date.parse(billingEnd)) || Date.parse(billingStart) >= Date.parse(billingEnd)) throw new DodoWebhookError("Subscription billing period is invalid");
+  }
+  return { subscriptionId: data.subscription_id, status: states[type].internal, productId: config.productId, customerId: data.customer.customer_id, email: typeof data.customer.email === "string" ? normalizeEmail(data.customer.email) : null, occurredAt, billingStart: billingStart ? new Date(billingStart).toISOString() : null, billingEnd: billingEnd ? new Date(billingEnd).toISOString() : null };
 }
 
 /** Signed payment evidence joins a provider checkout session to one subscription. */

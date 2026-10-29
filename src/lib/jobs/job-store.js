@@ -91,6 +91,14 @@ CREATE TABLE IF NOT EXISTS dodo_subscriptions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS dodo_subscriptions_subscriber_idx ON dodo_subscriptions (subscriber_id, status);
+ALTER TABLE dodo_subscriptions ADD COLUMN IF NOT EXISTS billing_period_start TIMESTAMPTZ;
+ALTER TABLE dodo_subscriptions ADD COLUMN IF NOT EXISTS billing_period_end TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS render_quota_reservations (
+  id UUID PRIMARY KEY, subscriber_id UUID NOT NULL REFERENCES subscriber_identities(id), subscription_id TEXT NOT NULL REFERENCES dodo_subscriptions(dodo_subscription_id),
+  period_start TIMESTAMPTZ NOT NULL, period_end TIMESTAMPTZ NOT NULL, job_id UUID UNIQUE REFERENCES edit_jobs(id),
+  state TEXT NOT NULL CHECK (state IN ('reserved','consumed','released')), created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS render_quota_reservations_period_idx ON render_quota_reservations (subscriber_id, subscription_id, period_start, state);
 CREATE TABLE IF NOT EXISTS customer_verification_tokens (
   id UUID PRIMARY KEY,
   email TEXT NOT NULL,
@@ -149,6 +157,8 @@ export async function migrateEditJobs() {
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS session_id UUID;");
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS edit_plan JSONB;");
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS source_catalog JSONB;");
+  await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS subscriber_id UUID REFERENCES subscriber_identities(id);");
+  await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS quota_reservation_id UUID;");
   await database().query("ALTER TABLE dodo_subscriptions ADD COLUMN IF NOT EXISTS last_event_at TIMESTAMPTZ NOT NULL DEFAULT now();");
   await database().query("ALTER TABLE subscriber_identities ADD COLUMN IF NOT EXISTS google_subject TEXT UNIQUE;");
   // Existing identities predate Google authority evidence. They must not gain
@@ -164,6 +174,27 @@ export async function migrateEditJobs() {
     ALTER TABLE edit_jobs ADD CONSTRAINT edit_jobs_status_check
     CHECK (status IN ('uploading','queued','analyzing','rendering','completed','failed','cancelled'));`);
 }
+
+export function paidEditingEnforced() { return process.env.PAID_EDITING_ENFORCEMENT_ENABLED === "true"; }
+function allowance() { const value = Number(process.env.PAID_RENDER_ALLOWANCE || 15); return Number.isInteger(value) && value > 0 ? value : 15; }
+export async function getEditingEntitlement(subscriberId) {
+  if (!subscriberId) return null;
+  const { rows } = await database().query(`SELECT * FROM dodo_subscriptions WHERE subscriber_id=$1 AND product_id=$2 AND status='active'
+    AND ownership_provenance='verified' AND billing_period_start IS NOT NULL AND billing_period_end IS NOT NULL
+    AND billing_period_start < billing_period_end AND billing_period_end > now() ORDER BY billing_period_end DESC LIMIT 1`, [subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""]);
+  return rows[0] || null;
+}
+export async function reserveRenderCapacity(subscriberId) {
+  const client = await database().connect(); try { await client.query("BEGIN");
+    const entitlement = (await client.query(`SELECT * FROM dodo_subscriptions WHERE subscriber_id=$1 AND product_id=$2 AND status='active' AND ownership_provenance='verified' AND billing_period_start IS NOT NULL AND billing_period_end > now() FOR UPDATE`, [subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""])).rows[0];
+    if (!entitlement || !(new Date(entitlement.billing_period_start) < new Date(entitlement.billing_period_end))) { await client.query("ROLLBACK"); return null; }
+    const used = (await client.query("SELECT count(*)::int count FROM render_quota_reservations WHERE subscriber_id=$1 AND subscription_id=$2 AND period_start=$3 AND state IN ('reserved','consumed')", [subscriberId, entitlement.dodo_subscription_id, entitlement.billing_period_start])).rows[0].count;
+    if (used >= allowance()) { await client.query("ROLLBACK"); return null; }
+    const id = newId(); await client.query("INSERT INTO render_quota_reservations (id,subscriber_id,subscription_id,period_start,period_end,state) VALUES ($1,$2,$3,$4,$5,'reserved')", [id, subscriberId, entitlement.dodo_subscription_id, entitlement.billing_period_start, entitlement.billing_period_end]); await client.query("COMMIT"); return id;
+  } catch (e) { await client.query("ROLLBACK"); throw e; } finally { client.release(); }
+}
+export async function attachReservationToJob(reservationId, jobId, subscriberId) { if (reservationId) await database().query("UPDATE render_quota_reservations SET job_id=$2,updated_at=now() WHERE id=$1 AND subscriber_id=$3 AND state='reserved'", [reservationId, jobId, subscriberId]); }
+export async function releaseRenderReservation(jobId) { await database().query("UPDATE render_quota_reservations SET state='released',updated_at=now() WHERE job_id=$1 AND state='reserved'", [jobId]); }
 
 /** Inserts before side effects. The unique event id is the replay/idempotency boundary. */
 export async function recordDodoWebhookEvent(eventId, eventType, rawBody) {
@@ -214,13 +245,13 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
       if (ownershipEligible && subscriptionId) await bindProviderVerifiedSubscription(client, subscriptionId);
       await client.query("COMMIT"); return false;
     }
-    if (subscription) await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,status,last_event_at,ownership_provenance)
-      VALUES ($1,$2,$3,$4,$5,$6,CASE WHEN $7 THEN 'verified' ELSE 'unverified' END)
+    if (subscription) await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,status,last_event_at,ownership_provenance,billing_period_start,billing_period_end)
+      VALUES ($1,$2,$3,$4,$5,$6,CASE WHEN $7 THEN 'verified' ELSE 'unverified' END,$8,$9)
       ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
         customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),subscriber_id=COALESCE(dodo_subscriptions.subscriber_id, EXCLUDED.subscriber_id),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,
-        ownership_provenance=CASE WHEN $7 THEN 'verified' ELSE dodo_subscriptions.ownership_provenance END,updated_at=now()
+        ownership_provenance=CASE WHEN $7 THEN 'verified' ELSE dodo_subscriptions.ownership_provenance END,billing_period_start=COALESCE(EXCLUDED.billing_period_start,dodo_subscriptions.billing_period_start),billing_period_end=COALESCE(EXCLUDED.billing_period_end,dodo_subscriptions.billing_period_end),updated_at=now()
       WHERE EXCLUDED.last_event_at > dodo_subscriptions.last_event_at`,
-    [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt, ownershipEligible]);
+    [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt, ownershipEligible, subscription.billingStart, subscription.billingEnd]);
     if (payment) await client.query(`UPDATE customer_checkout_correlations
       SET provider_payment_id=$2,provider_subscription_id=$3,payment_provenance=CASE WHEN $4 THEN 'verified' ELSE payment_provenance END,
         status=CASE WHEN $4 THEN 'payment_verified' ELSE status END,updated_at=now()
@@ -376,9 +407,10 @@ export async function getJobConfirmation(id) {
   const { rows } = await database().query("SELECT confirmation FROM editing_versions WHERE job_id=$1", [id]);
   return rows[0]?.confirmation || null;
 }
-export async function createUploadJob(sources, reference = null) {
+export async function createUploadJob(sources, reference = null, { subscriberId = null, reservationId = null } = {}) {
   const id = newId(); const accessToken = newToken();
-  const { rows } = await database().query("INSERT INTO edit_jobs (id, access_token, status, sources, reference) VALUES ($1,$2,'uploading',$3::jsonb,$4::jsonb) RETURNING *", [id, accessToken, JSON.stringify(sources), JSON.stringify(reference)]);
+  const { rows } = await database().query("INSERT INTO edit_jobs (id, access_token, status, sources, reference, subscriber_id, quota_reservation_id) VALUES ($1,$2,'uploading',$3::jsonb,$4::jsonb,$5,$6) RETURNING *", [id, accessToken, JSON.stringify(sources), JSON.stringify(reference), subscriberId, reservationId]);
+  await attachReservationToJob(reservationId, id, subscriberId);
   return { job: safeRow(rows[0]), accessToken };
 }
 export async function getAuthorizedJob(id, token) {
@@ -388,12 +420,17 @@ export async function getAuthorizedJob(id, token) {
 }
 export async function cancelAuthorizedJob(id, token) {
   if (!UUID_PATTERN.test(id) || !token) return null;
-  const { rows } = await database().query(`UPDATE edit_jobs SET status='cancelled', error_message=NULL, updated_at=now()
-    WHERE id=$1 AND access_token=$2 AND status IN ('uploading','queued','analyzing','rendering') RETURNING *`, [id, token]);
+  const client = await database().connect(); let rows;
+  try { await client.query("BEGIN");
+  ({ rows } = await client.query(`UPDATE edit_jobs SET status='cancelled', error_message=NULL, updated_at=now()
+    WHERE id=$1 AND access_token=$2 AND status IN ('uploading','queued','analyzing','rendering') RETURNING *`, [id, token]));
   if (rows[0]) {
-    await database().query("UPDATE editing_versions SET status='cancelled' WHERE job_id=$1", [id]);
-    return { job: safeRow(rows[0]), cancelled: true };
+    await client.query("UPDATE render_quota_reservations SET state='released',updated_at=now() WHERE job_id=$1 AND state='reserved'", [id]);
+    await client.query("UPDATE editing_versions SET status='cancelled' WHERE job_id=$1", [id]);
+    await client.query("COMMIT"); return { job: safeRow(rows[0]), cancelled: true };
   }
+  await client.query("COMMIT");
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
   const job = await getAuthorizedJob(id, token);
   return job ? { job, cancelled: false } : null;
 }
@@ -409,7 +446,7 @@ export async function queueJob(id, { prompt, exportQuality, sources, reference =
   const { rows } = await database().query(`UPDATE edit_jobs SET status='queued', prompt=$2, export_quality=$3, sources=$4::jsonb, reference=$5::jsonb, error_message=NULL, worker_id=NULL, claimed_at=NULL, heartbeat_at=NULL, updated_at=now() WHERE id=$1 AND status='uploading' RETURNING *`, [id, prompt, exportQuality, JSON.stringify(sources), JSON.stringify(reference)]);
   return rows[0] ? safeRow(rows[0]) : null;
 }
-export async function failUploadJob(id, message) { await database().query("UPDATE edit_jobs SET status='failed', error_message=$2, updated_at=now() WHERE id=$1 AND status='uploading'", [id, message]); }
+export async function failUploadJob(id, message) { const client = await database().connect(); try { await client.query("BEGIN"); const { rows } = await client.query("UPDATE edit_jobs SET status='failed', error_message=$2, updated_at=now() WHERE id=$1 AND status='uploading' RETURNING id", [id, message]); if (rows[0]) await client.query("UPDATE render_quota_reservations SET state='released',updated_at=now() WHERE job_id=$1 AND state='reserved'", [id]); await client.query("COMMIT"); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); } }
 export async function claimNextJob(workerId) {
   const { rows } = await database().query(`WITH next_job AS (SELECT id FROM edit_jobs WHERE status='queued' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE edit_jobs j SET status='analyzing', worker_id=$1, claimed_at=now(), heartbeat_at=now(), attempt_count=attempt_count+1, updated_at=now() FROM next_job WHERE j.id=next_job.id RETURNING j.*`, [workerId]);
   return rows[0] ? safeRow(rows[0]) : null;
@@ -420,21 +457,37 @@ export async function setJobStatus(id, workerId, status) {
 }
 export async function heartbeatJob(id, workerId) { await database().query("UPDATE edit_jobs SET heartbeat_at=now(), updated_at=now() WHERE id=$1 AND worker_id=$2 AND status IN ('analyzing','rendering')", [id, workerId]); }
 export async function completeJob(id, workerId, outputKey) {
-  const { rows } = await database().query("UPDATE edit_jobs SET status='completed', output_key=$3, error_message=NULL, heartbeat_at=now(), updated_at=now() WHERE id=$1 AND worker_id=$2 AND status='rendering' RETURNING *", [id, workerId, outputKey]);
-  return rows[0] ? safeRow(rows[0]) : null;
+  const client = await database().connect();
+  try {
+    await client.query("BEGIN");
+    const { rows } = await client.query("UPDATE edit_jobs SET status='completed', output_key=$3, error_message=NULL, heartbeat_at=now(), updated_at=now() WHERE id=$1 AND worker_id=$2 AND status='rendering' RETURNING *", [id, workerId, outputKey]);
+    if (rows[0] && rows[0].quota_reservation_id) {
+      const consumed = await client.query("UPDATE render_quota_reservations SET state='consumed',updated_at=now() WHERE id=$1 AND job_id=$2 AND state='reserved' RETURNING id", [rows[0].quota_reservation_id, id]);
+      if (!consumed.rowCount) throw new Error("Render quota reservation is unavailable");
+    }
+    await client.query("COMMIT"); return rows[0] ? safeRow(rows[0]) : null;
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
-export async function failJob(id, workerId, message) { await database().query("UPDATE edit_jobs SET status='failed', error_message=$3, heartbeat_at=now(), updated_at=now() WHERE id=$1 AND worker_id=$2 AND status IN ('analyzing','rendering')", [id, workerId, message]); }
+export async function failJob(id, workerId, message) {
+  const client = await database().connect(); try { await client.query("BEGIN");
+    const { rows } = await client.query("UPDATE edit_jobs SET status='failed', error_message=$3, heartbeat_at=now(), updated_at=now() WHERE id=$1 AND worker_id=$2 AND status IN ('analyzing','rendering') RETURNING id", [id, workerId, message]);
+    if (rows[0]) await client.query("UPDATE render_quota_reservations SET state='released',updated_at=now() WHERE job_id=$1 AND state='reserved'", [id]);
+    await client.query("COMMIT");
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+}
 export async function recoverStaleJobs({ staleAfterMs, maxAttempts }) {
-  const { rows } = await database().query(`UPDATE edit_jobs SET status=CASE WHEN attempt_count >= $2 THEN 'failed' ELSE 'queued' END, error_message=CASE WHEN attempt_count >= $2 THEN 'Processing was interrupted. Please submit the edit again.' ELSE NULL END, worker_id=NULL, claimed_at=NULL, heartbeat_at=NULL, updated_at=now() WHERE status IN ('analyzing','rendering') AND heartbeat_at < now() - ($1 * interval '1 millisecond') RETURNING *`, [staleAfterMs, maxAttempts]);
-  return rows.map(safeRow);
+  const client = await database().connect(); try { await client.query("BEGIN");
+    const { rows } = await client.query(`UPDATE edit_jobs SET status=CASE WHEN attempt_count >= $2 THEN 'failed' ELSE 'queued' END, error_message=CASE WHEN attempt_count >= $2 THEN 'Processing was interrupted. Please submit the edit again.' ELSE NULL END, worker_id=NULL, claimed_at=NULL, heartbeat_at=NULL, updated_at=now() WHERE status IN ('analyzing','rendering') AND heartbeat_at < now() - ($1 * interval '1 millisecond') RETURNING *`, [staleAfterMs, maxAttempts]);
+    const failed = rows.filter((row) => row.status === "failed").map((row) => row.id);
+    if (failed.length) await client.query("UPDATE render_quota_reservations SET state='released',updated_at=now() WHERE job_id = ANY($1::uuid[]) AND state='reserved'", [failed]);
+    await client.query("COMMIT"); return rows.map(safeRow);
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
 export async function getAbandonedUploads(sourceRetentionHours) {
   const { rows } = await database().query("SELECT * FROM edit_jobs WHERE status='uploading' AND updated_at < now() - ($1 * interval '1 hour') LIMIT 25", [sourceRetentionHours]);
   return rows.map(safeRow);
 }
-export async function expireUploadJob(id) {
-  await database().query("UPDATE edit_jobs SET status='failed', error_message='Upload expired before it was completed', updated_at=now() WHERE id=$1 AND status='uploading'", [id]);
-}
+export async function expireUploadJob(id) { return failUploadJob(id, "Upload expired before it was completed"); }
 export async function getJobsForCleanup({ sourceRetentionHours, outputRetentionHours }) {
   const { rows } = await database().query(`SELECT j.* FROM edit_jobs j LEFT JOIN editing_sessions s ON s.id=j.session_id WHERE ((j.status IN ('completed','failed','cancelled') AND j.source_cleaned_at IS NULL AND j.updated_at < now() - ($1 * interval '1 hour') AND (j.session_id IS NULL OR s.expires_at <= now())) OR (j.status='completed' AND j.output_key IS NOT NULL AND j.output_cleaned_at IS NULL AND j.updated_at < now() - ($2 * interval '1 hour'))) LIMIT 25`, [sourceRetentionHours, outputRetentionHours]);
   return rows.map(safeRow);

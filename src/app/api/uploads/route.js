@@ -2,6 +2,7 @@ import { abortMultipartUpload, beginMultipartUpload, referenceObjectKey, sourceO
 import { createUploadJob, failUploadJob, setUploadSources } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError, safeJobResponse } from "@/lib/jobs/http";
 import { MULTIPART_PART_SIZE_BYTES, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { authorizePaidEdit } from "@/lib/paid-editing";
 
 export const runtime = "nodejs";
 
@@ -9,14 +10,16 @@ export async function POST(req) {
   let job;
   const started = [];
   let stage = "request parsing";
+  let authorization;
   try {
+    authorization = await authorizePaidEdit(req);
     const { files, reference: requestedReference } = await req.json();
     let initialReference;
     try { validateUploadManifest(files); initialReference = validateReferenceManifest(requestedReference); } catch (error) { throw new PublicRequestError(error.message); }
     console.info("upload-session: request validated", { sourceCount: files.length });
     const initialSources = files.map((file, index) => ({ index, name: file.name, type: file.type, size: file.size }));
     stage = "database job creation";
-    const created = await createUploadJob(initialSources, initialReference);
+    const created = await createUploadJob(initialSources, initialReference, { subscriberId: authorization.subscriberId, reservationId: authorization.reservationId });
     job = created.job;
     console.info("upload-session: database job created", { jobId: job.id, sourceCount: initialSources.length });
     const sources = [];
