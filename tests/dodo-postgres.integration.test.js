@@ -24,9 +24,27 @@ integration("Dodo handler migration, duplicate idempotency, and out-of-order del
     const bound = payload({ timestamp: "2026-10-28T08:02:00.000Z" }).replace('"sub_1"', '"sub_bound"');
     assert.equal((await POST(request(bound, "evt_subscription_bound"))).status, 200);
     assert.equal((await db.query("SELECT subscriber_id FROM dodo_subscriptions WHERE dodo_subscription_id='sub_bound' ")).rows[0].subscriber_id, subscriber);
+    // Historical evidence received without pins stays unverified forever; a
+    // later configuration change and duplicate event cannot promote it.
+    const historicalPayment = JSON.stringify({ type: "payment.succeeded", timestamp: "2026-10-28T08:03:00.000Z", business_id: "biz_foreign", data: { payment_id: "pay_hist_a", checkout_session_id: "cs_hist_a", subscription_id: "sub_hist_a", subscription_ids: ["sub_hist_a"], brand_id: "brand_foreign" } });
+    const historicalSubscription = JSON.stringify({ type: "subscription.active", timestamp: "2026-10-28T08:04:00.000Z", business_id: "biz_foreign", data: { subscription_id: "sub_hist_b", product_id: productId, brand_id: "brand_foreign", status: "active", customer: { customer_id: "cus_hist", email: "bound@gmail.com" } } });
+    const intendedPayment = JSON.stringify({ type: "payment.succeeded", timestamp: "2026-10-28T08:05:00.000Z", business_id: "biz_cliponaut", data: { payment_id: "pay_hist_b", checkout_session_id: "cs_hist_b", subscription_id: "sub_hist_b", subscription_ids: ["sub_hist_b"], brand_id: "brand_cliponaut" } });
+    const intendedSubscription = JSON.stringify({ type: "subscription.active", timestamp: "2026-10-28T08:06:00.000Z", business_id: "biz_cliponaut", data: { subscription_id: "sub_hist_a", product_id: productId, brand_id: "brand_cliponaut", status: "active", customer: { customer_id: "cus_hist", email: "bound@gmail.com" } } });
+    const refA = await createCustomerCheckoutCorrelation(subscriber); await recordCustomerCheckoutSession(subscriber, refA, "cs_hist_a");
+    const refB = await createCustomerCheckoutCorrelation(subscriber); await recordCustomerCheckoutSession(subscriber, refB, "cs_hist_b");
+    delete process.env.DODO_TEST_BUSINESS_ID; delete process.env.DODO_TEST_BRAND_ID;
+    assert.equal((await POST(request(historicalPayment, "evt_hist_payment"))).status, 200);
+    assert.equal((await POST(request(historicalSubscription, "evt_hist_subscription"))).status, 200);
+    Object.assign(process.env, { DODO_TEST_BUSINESS_ID: "biz_cliponaut", DODO_TEST_BRAND_ID: "brand_cliponaut" });
+    assert.equal((await POST(request(intendedSubscription, "evt_hist_intended_subscription"))).status, 200);
+    assert.equal((await POST(request(intendedSubscription, "evt_hist_intended_subscription"))).status, 200);
+    assert.equal((await POST(request(intendedPayment, "evt_hist_intended_payment"))).status, 200);
+    assert.equal((await POST(request(intendedPayment, "evt_hist_intended_payment"))).status, 200);
+    assert.equal((await db.query("SELECT subscriber_id FROM dodo_subscriptions WHERE dodo_subscription_id='sub_hist_a' ")).rows[0].subscriber_id, null);
+    assert.equal((await db.query("SELECT subscriber_id FROM dodo_subscriptions WHERE dodo_subscription_id='sub_hist_b' ")).rows[0].subscriber_id, null);
     assert.equal((await POST(request(payload({ type: "subscription.cancelled", status: "cancelled", timestamp: "2026-10-28T09:00:00.000Z" }), "evt_cancelled"))).status, 200);
     assert.equal((await POST(request(active, "evt_late"))).status, 200);
     assert.equal((await db.query("SELECT status FROM dodo_subscriptions WHERE dodo_subscription_id='sub_1'")).rows[0].status, "cancelled");
-    assert.equal((await db.query("SELECT count(*)::int AS count FROM dodo_webhook_events")).rows[0].count, 5);
+    assert.equal((await db.query("SELECT count(*)::int AS count FROM dodo_webhook_events")).rows[0].count, 9);
   } finally { await db.end(); }
 });

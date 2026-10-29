@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS dodo_subscriptions (
   dodo_customer_id TEXT,
   customer_email TEXT,
   subscriber_id UUID REFERENCES subscriber_identities(id),
+  ownership_provenance TEXT NOT NULL DEFAULT 'unverified' CHECK (ownership_provenance IN ('unverified','verified','conflicting')),
   status TEXT NOT NULL CHECK (status IN ('active','past_due','cancelled','expired')),
   last_event_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -120,6 +121,7 @@ CREATE TABLE IF NOT EXISTS customer_checkout_correlations (
   checkout_session_id TEXT UNIQUE,
   provider_payment_id TEXT UNIQUE,
   provider_subscription_id TEXT UNIQUE,
+  payment_provenance TEXT NOT NULL DEFAULT 'unverified' CHECK (payment_provenance IN ('unverified','verified','conflicting')),
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','created','payment_verified','bound','failed','conflicted')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   expires_at TIMESTAMPTZ NOT NULL,
@@ -155,6 +157,9 @@ export async function migrateEditJobs() {
   await database().query("ALTER TABLE subscriber_identities ADD COLUMN IF NOT EXISTS google_hosted_domain TEXT;");
   await database().query("ALTER TABLE customer_checkout_correlations ADD COLUMN IF NOT EXISTS provider_payment_id TEXT UNIQUE;");
   await database().query("ALTER TABLE customer_checkout_correlations ADD COLUMN IF NOT EXISTS provider_subscription_id TEXT UNIQUE;");
+  // Historical provider IDs predate provenance validation and must not bind.
+  await database().query("ALTER TABLE dodo_subscriptions ADD COLUMN IF NOT EXISTS ownership_provenance TEXT NOT NULL DEFAULT 'unverified' CHECK (ownership_provenance IN ('unverified','verified','conflicting'));");
+  await database().query("ALTER TABLE customer_checkout_correlations ADD COLUMN IF NOT EXISTS payment_provenance TEXT NOT NULL DEFAULT 'unverified' CHECK (payment_provenance IN ('unverified','verified','conflicting'));");
   await database().query(`ALTER TABLE edit_jobs DROP CONSTRAINT IF EXISTS edit_jobs_status_check;
     ALTER TABLE edit_jobs ADD CONSTRAINT edit_jobs_status_check
     CHECK (status IN ('uploading','queued','analyzing','rendering','completed','failed','cancelled'));`);
@@ -179,11 +184,11 @@ export async function upsertDodoSubscription({ subscriptionId, productId, custom
 
 /** Event insertion and state change share one transaction: failed processing stays retryable. */
 async function bindProviderVerifiedSubscription(client, subscriptionId) {
-  const { rows } = await client.query(`SELECT c.subscriber_id,c.status AS correlation_status,s.subscriber_id AS existing_owner,s.status,s.product_id
+  const { rows } = await client.query(`SELECT c.subscriber_id,c.status AS correlation_status,c.payment_provenance,s.subscriber_id AS existing_owner,s.status,s.product_id,s.ownership_provenance
     FROM customer_checkout_correlations c JOIN dodo_subscriptions s ON s.dodo_subscription_id=c.provider_subscription_id
     WHERE c.provider_subscription_id=$1 AND c.provider_payment_id IS NOT NULL FOR UPDATE`, [subscriptionId]);
   const row = rows[0];
-  if (!row || row.status !== "active" || row.product_id !== (process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || "")) return false;
+  if (!row || row.payment_provenance !== "verified" || row.ownership_provenance !== "verified" || row.status !== "active" || row.product_id !== (process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || "")) return false;
   if (row.existing_owner && row.existing_owner !== row.subscriber_id) {
     await client.query("UPDATE customer_checkout_correlations SET status='conflicted',updated_at=now() WHERE provider_subscription_id=$1 AND status <> 'bound'", [subscriptionId]);
     return false;
@@ -209,17 +214,21 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
       if (ownershipEligible && subscriptionId) await bindProviderVerifiedSubscription(client, subscriptionId);
       await client.query("COMMIT"); return false;
     }
-    if (subscription) await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,status,last_event_at)
-      VALUES ($1,$2,$3,$4,$5,$6)
+    if (subscription) await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,status,last_event_at,ownership_provenance)
+      VALUES ($1,$2,$3,$4,$5,$6,CASE WHEN $7 THEN 'verified' ELSE 'unverified' END)
       ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
-        customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),subscriber_id=COALESCE(dodo_subscriptions.subscriber_id, EXCLUDED.subscriber_id),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,updated_at=now()
+        customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),subscriber_id=COALESCE(dodo_subscriptions.subscriber_id, EXCLUDED.subscriber_id),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,
+        ownership_provenance=CASE WHEN $7 THEN 'verified' ELSE dodo_subscriptions.ownership_provenance END,updated_at=now()
       WHERE EXCLUDED.last_event_at > dodo_subscriptions.last_event_at`,
-    [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt]);
+    [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt, ownershipEligible]);
     if (payment) await client.query(`UPDATE customer_checkout_correlations
-      SET provider_payment_id=$2,provider_subscription_id=$3,status='payment_verified',updated_at=now()
+      SET provider_payment_id=$2,provider_subscription_id=$3,payment_provenance=CASE WHEN $4 THEN 'verified' ELSE payment_provenance END,
+        status=CASE WHEN $4 THEN 'payment_verified' ELSE status END,updated_at=now()
       WHERE checkout_session_id=$1 AND status IN ('created','payment_verified')
         AND (provider_payment_id IS NULL OR provider_payment_id=$2)
-        AND (provider_subscription_id IS NULL OR provider_subscription_id=$3)`, [payment.checkoutSessionId, payment.paymentId, payment.subscriptionId]);
+        AND (provider_subscription_id IS NULL OR provider_subscription_id=$3)`, [payment.checkoutSessionId, payment.paymentId, payment.subscriptionId, ownershipEligible]);
+    if (payment && ownershipEligible) await client.query(`UPDATE customer_checkout_correlations SET payment_provenance='conflicting',status='conflicted',updated_at=now()
+      WHERE checkout_session_id=$1 AND (provider_payment_id IS NOT NULL AND provider_payment_id<>$2 OR provider_subscription_id IS NOT NULL AND provider_subscription_id<>$3)`, [payment.checkoutSessionId, payment.paymentId, payment.subscriptionId]);
     await hooks.afterEvidence?.();
     if (ownershipEligible && subscriptionId) await bindProviderVerifiedSubscription(client, subscriptionId);
     await client.query("COMMIT"); return true;
