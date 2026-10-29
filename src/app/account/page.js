@@ -4,6 +4,11 @@ import { MarketingLayout } from "@/components/cliponaut/MarketingLayout";
 import { createGoogleSignInCoordinator, loadGoogleIdentityScript } from "@/lib/google-sign-in-client";
 
 const clientId = process.env.NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID;
+const subscriptionCopy = {
+  not_subscribed: "No confirmed Cliponaut Pro subscription.", pending_verification: "Checkout is pending provider verification.",
+  active: "Cliponaut Pro subscription confirmed.", past_due: "Subscription needs attention.",
+  cancelled: "Subscription cancelled.", expired: "Subscription expired."
+};
 
 export default function AccountPage() {
   const button = useRef(null); const started = useRef(false);
@@ -37,5 +42,5 @@ export default function AccountPage() {
   }, [account]);
   async function logout() { await fetch("/api/auth/logout", { method: "POST" }); started.current = false; setAccount({ signedIn: false }); }
   function retry() { started.current = true; coordinator.current.retry(); }
-  return <MarketingLayout><section className="cliponaut-empty-state"><p className="cliponaut-marketing-eyebrow">Account</p><h1>Continue with Google</h1>{account?.signedIn ? <><p>Signed in as {account.email}.</p><button type="button" className="cliponaut-primary-button" onClick={logout}>Sign out</button></> : <><p>Use your Google account to securely sign in to Cliponaut.</p>{!clientId ? <p role="status">Google sign-in is not configured yet.</p> : <>{signIn.phase === "loading" && <p role="status">Preparing secure sign-in…</p>}<div ref={button} />{signIn.error && <p role="alert">{signIn.error} <button type="button" onClick={retry}>Retry</button></p>}</>}</>}</section></MarketingLayout>;
+  return <MarketingLayout><section className="cliponaut-empty-state"><p className="cliponaut-marketing-eyebrow">Account</p><h1>Continue with Google</h1>{account?.signedIn ? <><p>Signed in as {account.email}.</p><p role="status">{subscriptionCopy[account.subscriptionStatus] || subscriptionCopy.not_subscribed}</p><button type="button" className="cliponaut-primary-button" onClick={logout}>Sign out</button></> : <><p>Use your Google account to securely sign in to Cliponaut.</p>{!clientId ? <p role="status">Google sign-in is not configured yet.</p> : <>{signIn.phase === "loading" && <p role="status">Preparing secure sign-in…</p>}<div ref={button} />{signIn.error && <p role="alert">{signIn.error} <button type="button" onClick={retry}>Retry</button></p>}</>}</>}</section></MarketingLayout>;
 }
