@@ -31,7 +31,7 @@ function restoredPendingConfirmation(session, history, value) {
 export async function GET(req, { params }) {
   try {
     const { id } = await params;
-    const paid = await authorizePaidSession(req, id, token(req));
+    const paid = await authorizePaidSession(req, id, token(req), { requireCurrentEntitlement: false });
     if (!paid && !hasFounderTestAccess(req)) throw new PublicRequestError("Editing session was not found", 404);
     const session = paid?.session || await getAuthorizedSession(id, token(req));
     if (!session) throw new PublicRequestError("Editing session was not found", 404);

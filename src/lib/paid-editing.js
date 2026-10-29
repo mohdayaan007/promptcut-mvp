@@ -21,11 +21,11 @@ export async function authorizePaidJob(request, id, token, { requireCurrentEntit
   if (!job) throw new PublicRequestError("Edit job was not found", 404);
   return job;
 }
-export async function authorizePaidSession(request, id, token) {
+export async function authorizePaidSession(request, id, token, { requireCurrentEntitlement = true } = {}) {
   if (!paidEditingEnforced()) return null;
   const customer = await getCustomerSession(customerSessionToken(request));
   if (!customer) throw new PublicRequestError("Sign in with Google to access this edit.", 401);
-  if (!await getEditingEntitlement(customer.subscriber_id)) throw new PublicRequestError("An active Cliponaut subscription is required.", 403);
+  if (requireCurrentEntitlement && !await getEditingEntitlement(customer.subscriber_id)) throw new PublicRequestError("An active Cliponaut subscription is required.", 403);
   const session = await getAuthorizedSubscriberSession(id, token, customer.subscriber_id);
   if (!session) throw new PublicRequestError("Editing session was not found", 404);
   return { session, subscriberId: customer.subscriber_id };
