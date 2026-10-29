@@ -160,6 +160,7 @@ export async function migrateEditJobs() {
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS source_catalog JSONB;");
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS subscriber_id UUID REFERENCES subscriber_identities(id);");
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS quota_reservation_id UUID;");
+  await database().query("ALTER TABLE editing_sessions ADD COLUMN IF NOT EXISTS subscriber_id UUID REFERENCES subscriber_identities(id);");
   await database().query("ALTER TABLE dodo_subscriptions ADD COLUMN IF NOT EXISTS last_event_at TIMESTAMPTZ NOT NULL DEFAULT now();");
   await database().query("ALTER TABLE subscriber_identities ADD COLUMN IF NOT EXISTS google_subject TEXT UNIQUE;");
   // Existing identities predate Google authority evidence. They must not gain
@@ -351,10 +352,10 @@ export async function completeGoogleSignIn({ subject, email, authority, hostedDo
     await client.query("COMMIT"); return session;
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
-export async function createEditingSession(jobId, initialPrompt) {
+export async function createEditingSession(jobId, initialPrompt, subscriberId = null) {
   const id = newId(); const accessToken = newToken();
-  const { rows } = await database().query(`INSERT INTO editing_sessions (id, access_token, source_job_id, latest_version)
-    VALUES ($1,$2,$3,1) RETURNING *`, [id, accessToken, jobId]);
+  const { rows } = await database().query(`INSERT INTO editing_sessions (id, access_token, source_job_id, subscriber_id, latest_version)
+    VALUES ($1,$2,$3,$4,1) RETURNING *`, [id, accessToken, jobId, subscriberId]);
   await database().query("UPDATE edit_jobs SET session_id=$2 WHERE id=$1", [jobId, id]);
   await database().query("INSERT INTO editing_versions (session_id, version, job_id, prompt, status) VALUES ($1,1,$2,$3,'queued')", [id, jobId, initialPrompt]);
   return { id: rows[0].id, accessToken, version: 1 };
@@ -364,12 +365,17 @@ export async function getAuthorizedSession(id, token) {
   const { rows } = await database().query("SELECT * FROM editing_sessions WHERE id=$1 AND access_token=$2 AND expires_at > now()", [id, token]);
   return rows[0] || null;
 }
+export async function getAuthorizedSubscriberSession(id, token, subscriberId) {
+  if (!UUID_PATTERN.test(id) || !token || !subscriberId) return null;
+  const { rows } = await database().query("SELECT * FROM editing_sessions WHERE id=$1 AND access_token=$2 AND subscriber_id=$3 AND expires_at > now()", [id, token, subscriberId]);
+  return rows[0] || null;
+}
 export async function getSessionHistory(id) {
   const { rows } = await database().query(`SELECT v.version,v.job_id,v.prompt,v.plan,v.confirmation,v.status,v.created_at,j.output_key,j.output_cleaned_at,j.source_catalog
     FROM editing_versions v JOIN edit_jobs j ON j.id=v.job_id WHERE v.session_id=$1 ORDER BY v.version`, [id]);
   return rows;
 }
-export async function createConversationJob(session, { prompt, plan, confirmation, expectedVersion }) {
+export async function createConversationJob(session, { prompt, plan, confirmation, expectedVersion, subscriberId = null, reservationId = null }) {
   const client = await database().connect();
   try {
     await client.query("BEGIN");
@@ -390,8 +396,9 @@ export async function createConversationJob(session, { prompt, plan, confirmatio
     const source = await client.query("SELECT * FROM edit_jobs WHERE id=$1", [locked.rows[0].source_job_id]);
     if (!source.rows[0]) throw new Error("Original media is no longer available");
     const id = newId(); const accessToken = newToken(); const version = locked.rows[0].latest_version + 1;
-    const result = await client.query(`INSERT INTO edit_jobs (id,access_token,status,prompt,export_quality,sources,reference,session_id,edit_plan,source_catalog)
-      VALUES ($1,$2,'queued',$3,$4,$5::jsonb,$6::jsonb,$7,$8::jsonb,$9::jsonb) RETURNING *`, [id, accessToken, prompt, source.rows[0].export_quality, JSON.stringify(source.rows[0].sources), JSON.stringify(source.rows[0].reference), session.id, JSON.stringify(plan), JSON.stringify(source.rows[0].source_catalog)]);
+    const result = await client.query(`INSERT INTO edit_jobs (id,access_token,status,prompt,export_quality,sources,reference,session_id,edit_plan,source_catalog,subscriber_id,quota_reservation_id)
+      VALUES ($1,$2,'queued',$3,$4,$5::jsonb,$6::jsonb,$7,$8::jsonb,$9::jsonb,$10,$11) RETURNING *`, [id, accessToken, prompt, source.rows[0].export_quality, JSON.stringify(source.rows[0].sources), JSON.stringify(source.rows[0].reference), session.id, JSON.stringify(plan), JSON.stringify(source.rows[0].source_catalog), subscriberId, reservationId]);
+    if (reservationId) { const attached = await client.query("UPDATE render_quota_reservations SET job_id=$2,updated_at=now() WHERE id=$1 AND subscriber_id=$3 AND job_id IS NULL AND state='reserved' RETURNING id", [reservationId, id, subscriberId]); if (!attached.rowCount) throw new Error("Render quota reservation is unavailable"); }
     await client.query("INSERT INTO editing_versions (session_id,version,job_id,prompt,plan,confirmation,status) VALUES ($1,$2,$3,$4,$5::jsonb,$6,'queued')", [session.id, version, id, prompt, JSON.stringify(plan), confirmation]);
     await client.query("UPDATE editing_sessions SET latest_version=$2, updated_at=now() WHERE id=$1", [session.id, version]);
     await client.query("COMMIT");

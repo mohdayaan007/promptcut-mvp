@@ -4,6 +4,7 @@ import { jsonError, jobToken, PublicRequestError, safeJobResponse } from "@/lib/
 import { validateJobRequest, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { hasFounderTestAccess } from "@/lib/founder-test-access";
 import { authorizePaidJob } from "@/lib/paid-editing";
+import { paidEditingEnforced } from "@/lib/jobs/job-store";
 
 export const runtime = "nodejs";
 
@@ -52,7 +53,9 @@ export async function POST(req, { params }) {
     // Conversational sessions are intentionally unavailable unless the
     // server-verified, short-lived founder test cookie is present. Ordinary
     // uploads keep their established single-edit response shape.
-    const session = hasFounderTestAccess(req) ? await createEditingSession(queued.id, prompt.trim()) : null;
+    const session = paidEditingEnforced()
+      ? await createEditingSession(queued.id, prompt.trim(), job.subscriberId)
+      : hasFounderTestAccess(req) ? await createEditingSession(queued.id, prompt.trim()) : null;
     return Response.json({ ...safeJobResponse(queued), ...(session ? { session } : {}) });
   } catch (error) {
     return jsonError(error);

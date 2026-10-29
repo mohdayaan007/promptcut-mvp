@@ -1,10 +1,11 @@
 import { applyConversationTurn, validateConversationPlan } from "@/lib/editor-core/conversation-state";
 import { analyzeEditRequestCapabilities } from "@/lib/editor-core/edit-plan";
 import { ConfirmationConfigurationError, createConversationConfirmation, verifyConversationConfirmation, verifySubmittedConversationConfirmation } from "@/lib/editor-core/conversation-confirmation";
-import { createConversationJob, getAuthorizedSession, getSessionHistory } from "@/lib/jobs/job-store";
+import { createConversationJob, getAuthorizedSession, getSessionHistory, paidEditingEnforced, releaseUnattachedRenderReservation, reserveRenderCapacity } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
 import { signedDownloadUrl } from "@/lib/jobs/storage";
 import { hasFounderTestAccess } from "@/lib/founder-test-access";
+import { authorizePaidSession } from "@/lib/paid-editing";
 
 export const runtime = "nodejs";
 
@@ -29,9 +30,10 @@ function restoredPendingConfirmation(session, history, value) {
 
 export async function GET(req, { params }) {
   try {
-    if (!hasFounderTestAccess(req)) throw new PublicRequestError("Editing session was not found", 404);
     const { id } = await params;
-    const session = await getAuthorizedSession(id, token(req));
+    const paid = await authorizePaidSession(req, id, token(req));
+    if (!paid && !hasFounderTestAccess(req)) throw new PublicRequestError("Editing session was not found", 404);
+    const session = paid?.session || await getAuthorizedSession(id, token(req));
     if (!session) throw new PublicRequestError("Editing session was not found", 404);
     const history = await historyResponse(session);
     return Response.json({ id: session.id, latestVersion: session.latest_version, history, pendingConfirmation: restoredPendingConfirmation(session, history, req.headers.get("x-cliponaut-pending-confirmation")) }, { headers: { "Cache-Control": "no-store" } });
@@ -43,9 +45,10 @@ export async function GET(req, { params }) {
 
 export async function POST(req, { params }) {
   try {
-    if (!hasFounderTestAccess(req)) throw new PublicRequestError("Editing session was not found", 404);
     const { id } = await params;
-    const session = await getAuthorizedSession(id, token(req));
+    const paid = await authorizePaidSession(req, id, token(req));
+    if (!paid && !hasFounderTestAccess(req)) throw new PublicRequestError("Editing session was not found", 404);
+    const session = paid?.session || await getAuthorizedSession(id, token(req));
     if (!session) throw new PublicRequestError("Editing session was not found", 404);
     const { prompt, expectedVersion, baseJobId, confirmationToken } = await req.json();
     if (typeof prompt !== "string" || !prompt.trim() || prompt.length > 1000) throw new PublicRequestError("Enter an editing instruction");
@@ -87,7 +90,12 @@ export async function POST(req, { params }) {
         : "I couldn’t safely apply that change to the current edit.";
       throw new PublicRequestError(message, 422);
     }
-    const next = await createConversationJob(session, { prompt: effectivePrompt, plan, confirmation, expectedVersion });
+    const reservationId = paid ? await reserveRenderCapacity(paid.subscriberId) : null;
+    if (paid && !reservationId) throw new PublicRequestError("No renders are currently available for this billing period.", 429);
+    let next;
+    try { next = await createConversationJob(session, { prompt: effectivePrompt, plan, confirmation, expectedVersion, subscriberId: paid?.subscriberId || null, reservationId }); }
+    catch (error) { if (reservationId) await releaseUnattachedRenderReservation(reservationId, paid.subscriberId); throw error; }
+    if (!next && reservationId) await releaseUnattachedRenderReservation(reservationId, paid.subscriberId);
     if (!next) throw new PublicRequestError("A newer edit is already in progress. Refresh the conversation and try again.", 409);
     return Response.json({ id: next.job.id, status: next.job.status, accessToken: next.accessToken, version: next.version, confirmation });
   } catch (error) {
