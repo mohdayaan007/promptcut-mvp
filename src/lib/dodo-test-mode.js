@@ -45,7 +45,7 @@ function parseScheduledCancellation(subscription, config, expectedSubscriptionId
     || typeof subscription.previous_billing_date !== "string" || typeof subscription.next_billing_date !== "string"
     || !Number.isFinite(Date.parse(subscription.previous_billing_date)) || !Number.isFinite(Date.parse(subscription.next_billing_date))
     || Date.parse(subscription.previous_billing_date) >= Date.parse(subscription.next_billing_date)) {
-    throw new DodoCancellationError("Dodo did not confirm a valid period-end cancellation");
+    throw new DodoCancellationError("Dodo did not confirm a valid period-end cancellation", { uncertain: true });
   }
   return { subscriptionId: subscription.subscription_id, billingStart: new Date(subscription.previous_billing_date).toISOString(), billingEnd: new Date(subscription.next_billing_date).toISOString() };
 }
@@ -61,8 +61,13 @@ export async function scheduleDodoTestCancellation({ subscriptionId, fetchImpl =
       body: JSON.stringify({ cancel_at_next_billing_date: true })
     });
   } catch { throw new DodoCancellationError("Cancellation outcome is uncertain. Check your account before retrying.", { uncertain: true }); }
-  if (!response.ok) throw new DodoCancellationError("Dodo could not schedule cancellation");
-  let body; try { body = await response.json(); } catch { throw new DodoCancellationError("Dodo returned an invalid cancellation response"); }
+  if (!response.ok) {
+    // A gateway/server response is post-dispatch ambiguity. Only documented
+    // client rejections are safe to retry without provider reconciliation.
+    const definite = [400, 401, 403, 404, 422].includes(response.status);
+    throw new DodoCancellationError("Dodo could not schedule cancellation", { uncertain: !definite });
+  }
+  let body; try { body = await response.json(); } catch { throw new DodoCancellationError("Dodo returned an invalid cancellation response", { uncertain: true }); }
   return parseScheduledCancellation(body, config, subscriptionId);
 }
 

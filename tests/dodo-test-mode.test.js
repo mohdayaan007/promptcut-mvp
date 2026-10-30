@@ -101,3 +101,11 @@ test("period-end cancellation uses the documented PATCH shape and validates the 
     await assert.rejects(scheduleDodoTestCancellation({ subscriptionId: "sub_1", fetchImpl: async () => Response.json({ subscription_id: "sub_1", product_id: config.productId, brand_id: config.brandId, status: "cancelled", cancel_at_next_billing_date: true, previous_billing_date: "2026-10-01T00:00:00.000Z", next_billing_date: "2026-11-01T00:00:00.000Z" }) }));
   } finally { for (const key of ["DODO_TEST_MODE_ENABLED", "DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED", "DODO_TEST_API_KEY", "DODO_TEST_CLIPONAUT_PRODUCT_ID", "DODO_TEST_RETURN_URL", "DODO_TEST_BUSINESS_ID", "DODO_TEST_BRAND_ID"]) old[key] === undefined ? delete process.env[key] : process.env[key] = old[key]; }
 });
+
+test("post-dispatch cancellation ambiguity is retained while explicit client rejection is retryable", async () => {
+  const old = { ...process.env }; Object.assign(process.env, { DODO_TEST_MODE_ENABLED: "true", DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED: "true", DODO_TEST_API_KEY: "synthetic", DODO_TEST_CLIPONAUT_PRODUCT_ID: config.productId, DODO_TEST_RETURN_URL: "http://localhost:3000/return", DODO_TEST_BUSINESS_ID: config.businessId, DODO_TEST_BRAND_ID: config.brandId });
+  try {
+    for (const response of [new Response(null, { status: 500 }), new Response("not json", { status: 200 }), Response.json({ subscription_id: "sub_1" })]) await assert.rejects(scheduleDodoTestCancellation({ subscriptionId: "sub_1", fetchImpl: async () => response }), (error) => error.uncertain === true);
+    await assert.rejects(scheduleDodoTestCancellation({ subscriptionId: "sub_1", fetchImpl: async () => new Response(null, { status: 422 }) }), (error) => error.uncertain === false);
+  } finally { for (const key of ["DODO_TEST_MODE_ENABLED", "DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED", "DODO_TEST_API_KEY", "DODO_TEST_CLIPONAUT_PRODUCT_ID", "DODO_TEST_RETURN_URL", "DODO_TEST_BUSINESS_ID", "DODO_TEST_BRAND_ID"]) old[key] === undefined ? delete process.env[key] : process.env[key] = old[key]; }
+});
