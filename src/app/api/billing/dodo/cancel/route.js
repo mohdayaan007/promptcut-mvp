@@ -1,5 +1,5 @@
 import { customerSessionToken } from "@/lib/customer-auth";
-import { DodoCancellationError, DodoConfigurationError, periodEndCancellationEnabled, scheduleDodoTestCancellation } from "@/lib/dodo-test-mode";
+import { DodoCancellationError, DodoConfigurationError, dodoTestCancellationConfig, periodEndCancellationEnabled, scheduleDodoTestCancellation } from "@/lib/dodo-test-mode";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
 import { beginCustomerPeriodEndCancellation, clearCustomerPeriodEndCancellationRequest, confirmCustomerPeriodEndCancellation, getCustomerCancellableSubscription, getCustomerSession } from "@/lib/jobs/job-store";
 
@@ -16,6 +16,9 @@ export function createCancellationHandler({ schedule = scheduleDodoTestCancellat
   try {
     requireSameOrigin(req);
     if (!periodEndCancellationEnabled()) throw new PublicRequestError("Subscription cancellation is unavailable in this environment.", 503);
+    // Configuration errors are proven pre-dispatch failures. Validate before
+    // acquiring the durable gate so a corrected configuration can be retried.
+    dodoTestCancellationConfig();
     const customer = await getCustomerSession(customerSessionToken(req));
     if (!customer) throw new PublicRequestError("Sign in is required.", 401);
     subscription = await getCustomerCancellableSubscription(customer.subscriber_id);
