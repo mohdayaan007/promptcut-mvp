@@ -2,6 +2,7 @@ export const subscriptionCopy = {
   not_subscribed: { title: "No Cliponaut Pro subscription", detail: "Your account is ready when founder-approved checkout becomes available." },
   pending_verification: { title: "Checkout pending verification", detail: "We are waiting for provider-confirmed subscription evidence." },
   active: { title: "Provider subscription active", detail: "We still verify current billing-period evidence before enabling a new render." },
+  cancellation_scheduled: { title: "Cancellation scheduled", detail: "Renewal will stop at the verified end of your current billing period. Your existing Pro access remains available until then." },
   past_due: { title: "Subscription needs attention", detail: "New paid renders are paused while the subscription is past due." },
   cancelled: { title: "Subscription cancelled", detail: "Completed work remains available, but new paid renders are unavailable." },
   expired: { title: "Subscription expired", detail: "New paid renders are unavailable until a verified subscription is active." }
@@ -18,7 +19,7 @@ export function billingPeriodState(usage, now = Date.now()) {
 }
 export function usageState(usage, now) { return billingPeriodState(usage, now); }
 export function editingReadiness(status, usage, now) {
-  if (status !== "active") return { title: "New renders unavailable", detail: "A current active subscription is required before another paid render can start." };
+  if (!["active", "cancellation_scheduled"].includes(status)) return { title: "New renders unavailable", detail: "A current active subscription is required before another paid render can start." };
   const period = billingPeriodState(usage, now);
   if (!period.available) return { title: "Editing availability unavailable", detail: "We cannot verify a current billing period yet, so new renders remain unavailable." };
   if (period.timing !== "current") return { title: "No current verified billing period", detail: period.timing === "future" ? "Your verified billing period has not started yet." : "Your verified billing period has ended." };

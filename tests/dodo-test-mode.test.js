@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import crypto from "crypto";
 import test from "node:test";
-import { checkoutRequest, cliponautPaymentEvent, cliponautSubscriptionEvent, createDodoTestCheckout, customerOwnershipProvenanceConfigured, DodoConfigurationError, DodoWebhookError, parseDodoWebhookEnvelope, verifyDodoWebhook } from "@/lib/dodo-test-mode";
+import { checkoutRequest, cliponautPaymentEvent, cliponautSubscriptionEvent, createDodoTestCheckout, customerOwnershipProvenanceConfigured, DodoConfigurationError, DodoWebhookError, parseDodoWebhookEnvelope, scheduleDodoTestCancellation, verifyDodoWebhook } from "@/lib/dodo-test-mode";
 
 const secret = `whsec_${Buffer.from("dodo-webhook-test-secret-material-over-thirty-two-bytes").toString("base64")}`;
 const secret24 = `whsec_${Buffer.alloc(24, 7).toString("base64")}`;
@@ -52,6 +52,12 @@ test("past_due maps explicitly and contradictions are rejected", () => {
   assert.throws(() => cliponautSubscriptionEvent({ ...base(), data: { ...base().data, status: "cancelled" } }, config), DodoWebhookError);
 });
 
+test("signed subscription.updated can record a scheduled period-end cancellation without changing active status", () => {
+  const event = { ...base(), type: "subscription.updated", data: { ...base().data, cancel_at_next_billing_date: true } };
+  const parsed = cliponautSubscriptionEvent(event, config);
+  assert.equal(parsed.status, "active"); assert.equal(parsed.cancellationScheduled, true);
+});
+
 test("malformed subscriptions reject before recording; valid non-subscription events stay supported", () => {
   assert.throws(() => cliponautSubscriptionEvent({ ...base(), data: { ...base().data, subscription_id: "" } }, config), DodoWebhookError);
   assert.equal(cliponautSubscriptionEvent({ type: "payment.succeeded", timestamp: "2026-10-28T08:00:00.000Z", business_id: "biz_cliponaut", data: {} }, config), null);
@@ -83,4 +89,15 @@ test("customer binding requires explicit business and brand provenance pins", ()
   assert.equal(customerOwnershipProvenanceConfigured(config), true);
   assert.equal(customerOwnershipProvenanceConfigured({ ...config, businessId: null }), false);
   assert.equal(customerOwnershipProvenanceConfigured({ ...config, brandId: null }), false);
+});
+
+test("period-end cancellation uses the documented PATCH shape and validates the provider response", async () => {
+  const old = { ...process.env }; Object.assign(process.env, { DODO_TEST_MODE_ENABLED: "true", DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED: "true", DODO_TEST_API_KEY: "synthetic", DODO_TEST_CLIPONAUT_PRODUCT_ID: config.productId, DODO_TEST_RETURN_URL: "http://localhost:3000/return", DODO_TEST_BUSINESS_ID: config.businessId, DODO_TEST_BRAND_ID: config.brandId });
+  try {
+    let request;
+    const result = await scheduleDodoTestCancellation({ subscriptionId: "sub_1", fetchImpl: async (url, options) => { request = { url, options }; return Response.json({ subscription_id: "sub_1", product_id: config.productId, brand_id: config.brandId, status: "active", cancel_at_next_billing_date: true, previous_billing_date: "2026-10-01T00:00:00.000Z", next_billing_date: "2026-11-01T00:00:00.000Z" }); } });
+    assert.equal(request.options.method, "PATCH"); assert.deepEqual(JSON.parse(request.options.body), { cancel_at_next_billing_date: true });
+    assert.equal(result.billingEnd, "2026-11-01T00:00:00.000Z");
+    await assert.rejects(scheduleDodoTestCancellation({ subscriptionId: "sub_1", fetchImpl: async () => Response.json({ subscription_id: "sub_1", product_id: config.productId, brand_id: config.brandId, status: "cancelled", cancel_at_next_billing_date: true, previous_billing_date: "2026-10-01T00:00:00.000Z", next_billing_date: "2026-11-01T00:00:00.000Z" }) }));
+  } finally { for (const key of ["DODO_TEST_MODE_ENABLED", "DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED", "DODO_TEST_API_KEY", "DODO_TEST_CLIPONAUT_PRODUCT_ID", "DODO_TEST_RETURN_URL", "DODO_TEST_BUSINESS_ID", "DODO_TEST_BRAND_ID"]) old[key] === undefined ? delete process.env[key] : process.env[key] = old[key]; }
 });

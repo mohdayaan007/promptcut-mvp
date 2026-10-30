@@ -6,6 +6,7 @@ const MIN_WEBHOOK_SECRET_BYTES = 24;
 
 export class DodoConfigurationError extends Error {}
 export class DodoWebhookError extends Error {}
+export class DodoCancellationError extends Error { constructor(message, { uncertain = false } = {}) { super(message); this.uncertain = uncertain; } }
 
 /** Customer binding is stricter than harmless founder-only webhook recording. */
 export function customerOwnershipProvenanceConfigured(config) {
@@ -26,6 +27,43 @@ export function dodoTestModeConfig() {
   const productId = process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || "";
   if (!apiKey || !productId) throw new DodoConfigurationError("Dodo test checkout is not configured");
   return { apiKey, productId, returnUrl: configuredUrl("DODO_TEST_RETURN_URL"), businessId: process.env.DODO_TEST_BUSINESS_ID || null, brandId: process.env.DODO_TEST_BRAND_ID || null };
+}
+
+/** Cancellation is a separate, default-off Test Mode capability. */
+export function dodoTestCancellationConfig() {
+  const config = dodoTestModeConfig();
+  if (process.env.DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED !== "true") throw new DodoConfigurationError("Dodo Test Mode subscription cancellation is disabled");
+  if (!customerOwnershipProvenanceConfigured(config)) throw new DodoConfigurationError("Dodo Test Mode cancellation provenance is not configured");
+  return config;
+}
+export function periodEndCancellationEnabled() { return process.env.DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED === "true"; }
+
+function parseScheduledCancellation(subscription, config, expectedSubscriptionId) {
+  if (!subscription || typeof subscription !== "object" || subscription.subscription_id !== expectedSubscriptionId
+    || subscription.product_id !== config.productId || subscription.brand_id !== config.brandId
+    || subscription.status !== "active" || subscription.cancel_at_next_billing_date !== true
+    || typeof subscription.previous_billing_date !== "string" || typeof subscription.next_billing_date !== "string"
+    || !Number.isFinite(Date.parse(subscription.previous_billing_date)) || !Number.isFinite(Date.parse(subscription.next_billing_date))
+    || Date.parse(subscription.previous_billing_date) >= Date.parse(subscription.next_billing_date)) {
+    throw new DodoCancellationError("Dodo did not confirm a valid period-end cancellation");
+  }
+  return { subscriptionId: subscription.subscription_id, billingStart: new Date(subscription.previous_billing_date).toISOString(), billingEnd: new Date(subscription.next_billing_date).toISOString() };
+}
+
+/** Current SDK v2.59.0: PATCH /subscriptions/{id}; period-end policy uses the documented flag only. */
+export async function scheduleDodoTestCancellation({ subscriptionId, fetchImpl = fetch }) {
+  const config = dodoTestCancellationConfig();
+  if (typeof subscriptionId !== "string" || !subscriptionId) throw new DodoCancellationError("Subscription is invalid");
+  let response;
+  try {
+    response = await fetchImpl(`${TEST_API_BASE}/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+      method: "PATCH", headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ cancel_at_next_billing_date: true })
+    });
+  } catch { throw new DodoCancellationError("Cancellation outcome is uncertain. Check your account before retrying.", { uncertain: true }); }
+  if (!response.ok) throw new DodoCancellationError("Dodo could not schedule cancellation");
+  let body; try { body = await response.json(); } catch { throw new DodoCancellationError("Dodo returned an invalid cancellation response"); }
+  return parseScheduledCancellation(body, config, subscriptionId);
 }
 
 export function normalizeEmail(email) {
@@ -103,7 +141,7 @@ export function cliponautSubscriptionEvent(event, config) {
   const secondaryProducts = [...(Array.isArray(data.product_ids) ? data.product_ids : []), ...(Array.isArray(data.items) ? data.items.map((item) => item?.product_id) : [])];
   if (secondaryProducts.some((productId) => productId !== config.productId)) throw new DodoWebhookError("Webhook contains a conflicting product");
   const states = {
-    "subscription.active": { provider: "active", internal: "active" }, "subscription.renewed": { provider: "active", internal: "active" },
+    "subscription.active": { provider: "active", internal: "active" }, "subscription.renewed": { provider: "active", internal: "active" }, "subscription.updated": { provider: "active", internal: "active" },
     "subscription.past_due": { provider: "past_due", internal: "past_due" }, "subscription.failed": { provider: "failed", internal: "past_due" },
     "subscription.on_hold": { provider: "on_hold", internal: "past_due" }, "subscription.cancelled": { provider: "cancelled", internal: "cancelled" }, "subscription.expired": { provider: "expired", internal: "expired" }
   };
@@ -114,7 +152,8 @@ export function cliponautSubscriptionEvent(event, config) {
   if (billingStart !== undefined || billingEnd !== undefined) {
     if (typeof billingStart !== "string" || typeof billingEnd !== "string" || !Number.isFinite(Date.parse(billingStart)) || !Number.isFinite(Date.parse(billingEnd)) || Date.parse(billingStart) >= Date.parse(billingEnd)) throw new DodoWebhookError("Subscription billing period is invalid");
   }
-  return { subscriptionId: data.subscription_id, status: states[type].internal, productId: config.productId, customerId: data.customer.customer_id, email: typeof data.customer.email === "string" ? normalizeEmail(data.customer.email) : null, occurredAt, billingStart: billingStart ? new Date(billingStart).toISOString() : null, billingEnd: billingEnd ? new Date(billingEnd).toISOString() : null };
+  if (data.cancel_at_next_billing_date !== undefined && typeof data.cancel_at_next_billing_date !== "boolean") throw new DodoWebhookError("Subscription cancellation state is invalid");
+  return { subscriptionId: data.subscription_id, status: states[type].internal, productId: config.productId, customerId: data.customer.customer_id, email: typeof data.customer.email === "string" ? normalizeEmail(data.customer.email) : null, occurredAt, billingStart: billingStart ? new Date(billingStart).toISOString() : null, billingEnd: billingEnd ? new Date(billingEnd).toISOString() : null, cancellationScheduled: data.cancel_at_next_billing_date === true };
 }
 
 /** Signed payment evidence joins a provider checkout session to one subscription. */
