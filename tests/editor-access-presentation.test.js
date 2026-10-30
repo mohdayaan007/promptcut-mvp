@@ -29,4 +29,7 @@ test("customer editor integration leaves existing 4K eligibility computation int
   const page = fs.readFileSync(new URL("../src/app/page.js", import.meta.url), "utf8");
   assert.match(page, /const canExport4k = videos\.length > 0 && videoMetadata\.length === videos\.length && videoMetadata\.every\(is4kCapable\)/);
   assert.match(page, /onExportQualityChange=\{setExportQuality\}/);
+  assert.match(page, /onSession: \(session\) => \{[\s\S]*?refreshEditorAccess\(\);/, "initial upload session creation refreshes the notice before multipart completion");
+  assert.match(page, /catch \(processingError\) \{[\s\S]*?refreshEditorAccess\(\);/, "upload failure or abort refreshes released capacity");
+  assert.match(page, /request === editorAccessRequestRef\.current/, "older access reads cannot overwrite newer ledger responses");
 });

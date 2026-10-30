@@ -113,6 +113,7 @@ export default function HomePage() {
   const originalRevealScheduledRef = useRef(false);
   const turnIdRef = useRef(0);
   const presentationAttemptRef = useRef(0);
+  const editorAccessRequestRef = useRef(0);
   // Keep terminal handling stable while retaining the latest completed preview.
   const resultUrlRef = useRef(null);
 
@@ -128,12 +129,18 @@ export default function HomePage() {
   const canStartNewRender = !accessState.blocking;
 
   const refreshEditorAccess = useCallback(async () => {
+    const request = ++editorAccessRequestRef.current;
     setEditorAccess((current) => ({ ...current, phase: "loading" }));
     try {
       const response = await fetch("/api/editor-access");
       if (!response.ok) throw new Error("Editor access is unavailable");
-      setEditorAccess({ phase: "ready", ...await response.json() });
-    } catch { setEditorAccess((current) => ({ ...current, phase: "error" })); }
+      const access = await response.json();
+      // An older read can complete after a reservation-changing request. Keep
+      // the most recently requested server-authoritative view instead.
+      if (request === editorAccessRequestRef.current) setEditorAccess({ phase: "ready", ...access });
+    } catch {
+      if (request === editorAccessRequestRef.current) setEditorAccess((current) => ({ ...current, phase: "error" }));
+    }
   }, []);
 
   useEffect(() => { refreshEditorAccess(); }, [refreshEditorAccess]);
@@ -492,6 +499,10 @@ export default function HomePage() {
           setMessages((currentMessages) => currentMessages.map((message) => message.turnId === turnId ? { ...message, jobId: session.id } : message));
           setActiveJob(session);
           history.replaceState(null, "", `/?job=${session.id}`);
+          // POST /api/uploads has already created the paid reservation before
+          // it returns this session. Refresh during multipart upload rather
+          // than waiting for its completion to show the ledger-backed count.
+          refreshEditorAccess();
         }
       });
       if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
@@ -510,8 +521,11 @@ export default function HomePage() {
       setPrompt("");
       refreshEditorAccess();
     } catch (processingError) {
+      // uploadAndQueueJob aborts the server upload session before rejecting,
+      // which can release its reservation. Always re-read the ledger; this is
+      // deliberately asynchronous and does not interfere with the upload.
+      refreshEditorAccess();
       if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
-      if ([401, 403, 429].includes(processingError?.status)) refreshEditorAccess();
       persistUndoState(discardUndoActiveJob(undoStateRef.current || emptyUndoState()));
       showTerminalAttempt({ status: "failed", error: processingError.message });
       setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: terminalAttemptMessage({ status: "failed" }, Boolean(undoStateRef.current?.current)) }]);
