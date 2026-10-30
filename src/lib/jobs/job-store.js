@@ -283,7 +283,13 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
       VALUES ($1,$2,$3,$4,$5,$6,CASE WHEN $7 THEN 'verified' ELSE 'unverified' END,$8,$9,CASE WHEN $7 THEN $10 ELSE false END,CASE WHEN $7 AND $10 THEN now() ELSE NULL END)
       ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
         customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),subscriber_id=COALESCE(dodo_subscriptions.subscriber_id, EXCLUDED.subscriber_id),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,
-        ownership_provenance=CASE WHEN $7 THEN 'verified' ELSE dodo_subscriptions.ownership_provenance END,billing_period_start=CASE WHEN $7 THEN COALESCE(EXCLUDED.billing_period_start,dodo_subscriptions.billing_period_start) ELSE dodo_subscriptions.billing_period_start END,billing_period_end=CASE WHEN $7 THEN COALESCE(EXCLUDED.billing_period_end,dodo_subscriptions.billing_period_end) ELSE dodo_subscriptions.billing_period_end END,cancellation_scheduled=CASE WHEN $7 THEN $10 ELSE dodo_subscriptions.cancellation_scheduled END,cancellation_confirmed_at=CASE WHEN $7 AND $10 THEN now() WHEN $7 THEN NULL ELSE dodo_subscriptions.cancellation_confirmed_at END,updated_at=now()
+        ownership_provenance=CASE WHEN $7 THEN 'verified' ELSE dodo_subscriptions.ownership_provenance END,billing_period_start=CASE WHEN $7 THEN COALESCE(EXCLUDED.billing_period_start,dodo_subscriptions.billing_period_start) ELSE dodo_subscriptions.billing_period_start END,billing_period_end=CASE WHEN $7 THEN COALESCE(EXCLUDED.billing_period_end,dodo_subscriptions.billing_period_end) ELSE dodo_subscriptions.billing_period_end END,
+        -- API confirmation has no provider occurrence timestamp. A later-delivered
+        -- active snapshot without scheduling evidence may predate that confirmation,
+        -- so it cannot erase the safer confirmed schedule. Terminal provider states
+        -- still update status and revoke entitlement through the normal lifecycle.
+        cancellation_scheduled=CASE WHEN $7 AND dodo_subscriptions.cancellation_scheduled=true AND dodo_subscriptions.cancellation_confirmed_at IS NOT NULL AND EXCLUDED.cancellation_scheduled=false AND EXCLUDED.status='active' THEN true WHEN $7 THEN $10 ELSE dodo_subscriptions.cancellation_scheduled END,
+        cancellation_confirmed_at=CASE WHEN $7 AND $10 THEN COALESCE(dodo_subscriptions.cancellation_confirmed_at,now()) WHEN $7 AND EXCLUDED.status='active' AND dodo_subscriptions.cancellation_confirmed_at IS NOT NULL THEN dodo_subscriptions.cancellation_confirmed_at WHEN $7 THEN NULL ELSE dodo_subscriptions.cancellation_confirmed_at END,updated_at=now()
       -- Once provider evidence has been verified for this subscription, only
       -- another correctly pinned event may change its lifecycle state or
       -- authoritative ordering cursor.  An unpinned receipt is still retained
