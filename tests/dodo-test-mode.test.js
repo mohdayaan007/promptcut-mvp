@@ -58,6 +58,12 @@ test("signed subscription.updated can record a scheduled period-end cancellation
   assert.equal(parsed.status, "active"); assert.equal(parsed.cancellationScheduled, true);
 });
 
+test("generic subscription.updated maps documented nonactive statuses fail-closed", () => {
+  const expected = { active:"active",cancelled:"cancelled",expired:"expired",pending:"past_due",on_hold:"past_due",paused:"past_due",failed:"past_due",past_due:"past_due" };
+  for (const [status, internal] of Object.entries(expected)) assert.equal(cliponautSubscriptionEvent({ ...base(), type:"subscription.updated", data:{...base().data,status} },config).status,internal);
+  assert.throws(()=>cliponautSubscriptionEvent({ ...base(), type:"subscription.updated", data:{...base().data,status:"unknown"} },config),DodoWebhookError);
+});
+
 test("malformed subscriptions reject before recording; valid non-subscription events stay supported", () => {
   assert.throws(() => cliponautSubscriptionEvent({ ...base(), data: { ...base().data, subscription_id: "" } }, config), DodoWebhookError);
   assert.equal(cliponautSubscriptionEvent({ type: "payment.succeeded", timestamp: "2026-10-28T08:00:00.000Z", business_id: "biz_cliponaut", data: {} }, config), null);

@@ -156,10 +156,15 @@ export function cliponautSubscriptionEvent(event, config) {
   const secondaryProducts = [...(Array.isArray(data.product_ids) ? data.product_ids : []), ...(Array.isArray(data.items) ? data.items.map((item) => item?.product_id) : [])];
   if (secondaryProducts.some((productId) => productId !== config.productId)) throw new DodoWebhookError("Webhook contains a conflicting product");
   const states = {
-    "subscription.active": { provider: "active", internal: "active" }, "subscription.renewed": { provider: "active", internal: "active" }, "subscription.updated": { provider: "active", internal: "active" },
+    "subscription.active": { provider: "active", internal: "active" }, "subscription.renewed": { provider: "active", internal: "active" },
     "subscription.past_due": { provider: "past_due", internal: "past_due" }, "subscription.failed": { provider: "failed", internal: "past_due" },
     "subscription.on_hold": { provider: "on_hold", internal: "past_due" }, "subscription.cancelled": { provider: "cancelled", internal: "cancelled" }, "subscription.expired": { provider: "expired", internal: "expired" }
   };
+  if (type === "subscription.updated") {
+    const updated = { active: "active", cancelled: "cancelled", expired: "expired", pending: "past_due", on_hold: "past_due", paused: "past_due", failed: "past_due", past_due: "past_due" };
+    if (typeof data.status !== "string" || !Object.hasOwn(updated, data.status)) throw new DodoWebhookError("Subscription event conflicts with current status");
+    states[type] = { provider: data.status, internal: updated[data.status] };
+  }
   if (!states[type]) throw new DodoWebhookError("Unsupported subscription event");
   if (typeof data.subscription_id !== "string" || !data.subscription_id || !data.customer || typeof data.customer !== "object" || typeof data.customer.customer_id !== "string" || !data.customer.customer_id || typeof data.status !== "string") throw new DodoWebhookError("Subscription payload is invalid");
   if (data.status !== states[type].provider) throw new DodoWebhookError("Subscription event conflicts with current status");
