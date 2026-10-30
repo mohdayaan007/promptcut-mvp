@@ -38,16 +38,16 @@ export function dodoTestCancellationConfig() {
 }
 export function periodEndCancellationEnabled() { return process.env.DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED === "true"; }
 
-function parseScheduledCancellation(subscription, config, expectedSubscriptionId) {
+function parseCancellationSubscription(subscription, config, expectedSubscriptionId, { requireScheduled = false } = {}) {
   if (!subscription || typeof subscription !== "object" || subscription.subscription_id !== expectedSubscriptionId
     || subscription.product_id !== config.productId || subscription.brand_id !== config.brandId
-    || subscription.status !== "active" || subscription.cancel_at_next_billing_date !== true
+    || subscription.status !== "active" || (requireScheduled && subscription.cancel_at_next_billing_date !== true)
     || typeof subscription.previous_billing_date !== "string" || typeof subscription.next_billing_date !== "string"
     || !Number.isFinite(Date.parse(subscription.previous_billing_date)) || !Number.isFinite(Date.parse(subscription.next_billing_date))
     || Date.parse(subscription.previous_billing_date) >= Date.parse(subscription.next_billing_date)) {
     throw new DodoCancellationError("Dodo did not confirm a valid period-end cancellation", { uncertain: true });
   }
-  return { subscriptionId: subscription.subscription_id, billingStart: new Date(subscription.previous_billing_date).toISOString(), billingEnd: new Date(subscription.next_billing_date).toISOString() };
+  return { subscriptionId: subscription.subscription_id, billingStart: new Date(subscription.previous_billing_date).toISOString(), billingEnd: new Date(subscription.next_billing_date).toISOString(), scheduled: subscription.cancel_at_next_billing_date === true };
 }
 
 /** Current SDK v2.59.0: PATCH /subscriptions/{id}; period-end policy uses the documented flag only. */
@@ -68,7 +68,17 @@ export async function scheduleDodoTestCancellation({ subscriptionId, fetchImpl =
     throw new DodoCancellationError("Dodo could not schedule cancellation", { uncertain: !definite });
   }
   let body; try { body = await response.json(); } catch { throw new DodoCancellationError("Dodo returned an invalid cancellation response", { uncertain: true }); }
-  return parseScheduledCancellation(body, config, subscriptionId);
+  return parseCancellationSubscription(body, config, subscriptionId, { requireScheduled: true });
+}
+
+/** Read-only reconciliation. An unscheduled snapshot is never treated as proof a prior PATCH failed. */
+export async function getDodoTestCancellationState({ subscriptionId, fetchImpl = fetch }) {
+  const config = dodoTestCancellationConfig();
+  if (typeof subscriptionId !== "string" || !subscriptionId) throw new DodoCancellationError("Subscription is invalid");
+  let response; try { response = await fetchImpl(`${TEST_API_BASE}/subscriptions/${encodeURIComponent(subscriptionId)}`, { headers: { Authorization: `Bearer ${config.apiKey}` } }); } catch { throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true }); }
+  if (!response.ok) throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true });
+  let body; try { body = await response.json(); } catch { throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true }); }
+  try { return parseCancellationSubscription(body, config, subscriptionId); } catch { throw new DodoCancellationError("Cancellation status requires review.", { uncertain: true }); }
 }
 
 export function normalizeEmail(email) {
