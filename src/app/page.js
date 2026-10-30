@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AppHeader } from "@/components/cliponaut/AppHeader";
 import { EmptyEditorState } from "@/components/cliponaut/EmptyEditorState";
+import { EditorAccessNotice } from "@/components/cliponaut/EditorAccessNotice";
 import { PromptComposer } from "@/components/cliponaut/PromptComposer";
 import { PromptSuggestions } from "@/components/cliponaut/PromptSuggestions";
 import { Workspace } from "@/components/cliponaut/Workspace";
@@ -49,6 +50,7 @@ import {
   waitForBrowserPaint,
 } from "@/lib/client/direct-upload";
 import { browserVideoPreflightError } from "@/lib/client/media-preflight";
+import { editorAccessState } from "@/lib/editor-access-presentation";
 
 const MAX_VIDEO_COUNT = 5;
 
@@ -101,6 +103,7 @@ export default function HomePage() {
   const [undoAnchor, setUndoAnchor] = useState(null);
   const [editingSession, setEditingSession] = useState(null);
   const [pendingPartialEdit, setPendingPartialEdit] = useState(null);
+  const [editorAccess, setEditorAccess] = useState({ phase: "loading" });
 
   const videoInputRef = useRef(null);
   const imageInputRef = useRef(null);
@@ -121,6 +124,19 @@ export default function HomePage() {
   const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
   const isProcessing = isActiveJobStatus(status);
   const previewMode = undoPreviewMode({ isRestoring: isRestoringPrevious, current: undoState?.current, localVideoCount: videos.length });
+  const accessState = editorAccessState(editorAccess);
+  const canStartNewRender = !accessState.blocking;
+
+  const refreshEditorAccess = useCallback(async () => {
+    setEditorAccess((current) => ({ ...current, phase: "loading" }));
+    try {
+      const response = await fetch("/api/editor-access");
+      if (!response.ok) throw new Error("Editor access is unavailable");
+      setEditorAccess({ phase: "ready", ...await response.json() });
+    } catch { setEditorAccess((current) => ({ ...current, phase: "error" })); }
+  }, []);
+
+  useEffect(() => { refreshEditorAccess(); }, [refreshEditorAccess]);
 
   const persistUndoState = useCallback((nextState) => {
     const saved = saveUndoState(nextState);
@@ -314,6 +330,7 @@ export default function HomePage() {
           showTerminalAttempt(job);
           setMessages((current) => [...current, { role: "assistant", text: terminalAttemptMessage(job, Boolean(undoStateRef.current?.current)) }]);
         }
+        if (["completed", "failed", "cancelled"].includes(job.status)) refreshEditorAccess();
       } catch (statusError) {
         if (!stopped && isCurrentPresentationAttempt(pollingAttempt, presentationAttemptRef.current)) setError(statusError.message);
       } finally {
@@ -323,7 +340,7 @@ export default function HomePage() {
     check();
     const timer = setInterval(check, 3_000);
     return () => { stopped = true; clearInterval(timer); };
-  }, [activeJob, persistUndoState, showCompletedJob, showTerminalAttempt, status]);
+  }, [activeJob, persistUndoState, refreshEditorAccess, showCompletedJob, showTerminalAttempt, status]);
 
   useEffect(() => {
     return () => {
@@ -353,6 +370,7 @@ export default function HomePage() {
   };
 
   const handleVideosChange = async (event) => {
+    if (!canStartNewRender) { setError(accessState.detail || "Editing access is unavailable."); event.target.value = ""; return; }
     const addedVideos = Array.from(event.target.files || []);
     event.target.value = "";
     if (!addedVideos.length) return;
@@ -374,6 +392,7 @@ export default function HomePage() {
   };
 
   const handleImagesChange = (event) => {
+    if (!canStartNewRender) { setError(accessState.detail || "Editing access is unavailable."); event.target.value = ""; return; }
     const image = event.target.files?.[0];
     if (!image) return;
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(image.type)) {
@@ -393,6 +412,7 @@ export default function HomePage() {
 
   const handleGenerate = async () => {
     if ((!videos.length && !editingSession) || !prompt.trim() || isProcessing) return;
+    if (!canStartNewRender) { setError(accessState.detail || "Editing access is unavailable."); return; }
 
     let submittedPrompt = prompt;
     const confirmation = /^(?:yes|yes\s*,?\s*proceed|proceed|continue|go ahead|okay|ok)$/i.test(submittedPrompt.trim());
@@ -451,6 +471,7 @@ export default function HomePage() {
         setActiveJob(turn.job);
         setStatus("queued");
         setPrompt("");
+        refreshEditorAccess();
         return;
       }
       const capability = await preflightEditingCapabilities(submittedPrompt, controller.signal);
@@ -487,8 +508,10 @@ export default function HomePage() {
       setStatus(job.status);
       setUploadProgress(null);
       setPrompt("");
+      refreshEditorAccess();
     } catch (processingError) {
       if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
+      if ([401, 403, 429].includes(processingError?.status)) refreshEditorAccess();
       persistUndoState(discardUndoActiveJob(undoStateRef.current || emptyUndoState()));
       showTerminalAttempt({ status: "failed", error: processingError.message });
       setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: terminalAttemptMessage({ status: "failed" }, Boolean(undoStateRef.current?.current)) }]);
@@ -678,6 +701,7 @@ export default function HomePage() {
   return (
     <main className={`cliponaut-shell ${hasWorkspace ? "is-workspace" : "is-empty"}`}>
       <AppHeader />
+      <EditorAccessNotice state={accessState} onRetry={refreshEditorAccess} />
 
       <input
         ref={videoInputRef}
@@ -685,6 +709,7 @@ export default function HomePage() {
         accept="video/*"
         multiple
         className="cliponaut-visually-hidden"
+        disabled={accessState.blocking}
         onChange={handleVideosChange}
       />
       <input
@@ -692,6 +717,7 @@ export default function HomePage() {
         type="file"
         accept="image/jpeg,image/png,image/webp"
         className="cliponaut-visually-hidden"
+        disabled={accessState.blocking}
         onChange={handleImagesChange}
       />
 
@@ -709,8 +735,8 @@ export default function HomePage() {
             exportQuality={exportQuality}
             canExport4k={canExport4k}
             onExportQualityChange={setExportQuality}
-            onSelectVideos={() => videoInputRef.current?.click()}
-            onSelectReferenceImage={() => imageInputRef.current?.click()}
+            onSelectVideos={() => canStartNewRender ? videoInputRef.current?.click() : setError(accessState.detail || "Editing access is unavailable.")}
+            onSelectReferenceImage={() => canStartNewRender ? imageInputRef.current?.click() : setError(accessState.detail || "Editing access is unavailable.")}
             onRemoveVideo={handleRemoveVideo}
             onRemoveReferenceImage={() => setReferenceImage(null)}
             onEditAgain={handleEditAgain}
@@ -728,6 +754,7 @@ export default function HomePage() {
             isUndoing={isUndoing}
             onUndo={handleUndo}
             onBack={handleBackToEmptyState}
+            editingDisabled={accessState.blocking}
           />
           <div className="cliponaut-workspace-prompt-area">
             <PromptSuggestions className="is-workspace" onSelect={setPrompt} />
@@ -738,7 +765,8 @@ export default function HomePage() {
                 onPromptChange={setPrompt}
                 onSubmit={handleGenerate}
                 isProcessing={isProcessing}
-                canGenerate={Boolean((videos.length || editingSession) && prompt.trim())}
+                canGenerate={Boolean((videos.length || editingSession) && prompt.trim() && canStartNewRender)}
+                disabled={accessState.blocking}
                 compact
               />
             </div>
@@ -753,6 +781,7 @@ export default function HomePage() {
           onSelectSuggestion={setPrompt}
           imageCount={referenceImage ? 1 : 0}
           error={error}
+          disabled={accessState.blocking}
         />
       )}
       {recovery ? (

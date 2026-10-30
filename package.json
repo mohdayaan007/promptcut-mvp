@@ -24,6 +24,8 @@
     "test:paid-conversation-integration": "tsx --test tests/paid-conversation-postgres.integration.test.js",
     "test:account-ui": "tsx --test tests/account-presentation.test.js",
     "test:account-usage-integration": "tsx --test tests/account-usage-postgres.integration.test.js",
+    "test:editor-access": "tsx --test tests/editor-access-presentation.test.js",
+    "test:editor-access-integration": "tsx --test tests/editor-access-postgres.integration.test.js",
     "test:session-integration": "tsx --test tests/session-postgres.integration.test.js",
     "test:session-worker-storage": "tsx --test tests/session-worker-storage.integration.test.js",
     "test:browser-phase4": "tsx --test tests/browser-phase4.acceptance.test.js",

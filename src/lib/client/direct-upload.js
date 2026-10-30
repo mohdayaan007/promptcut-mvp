@@ -11,6 +11,7 @@ async function requestJson(url, options = {}, fetchFn = fetch) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(body.error || "Request failed");
+    error.status = response.status;
     if (body.partial) error.partial = body.partial;
     throw error;
   }

@@ -1331,6 +1331,15 @@ body {
 .cliponaut-account-error p { margin: 0 0 8px; color: #5d5046; }
 .cliponaut-account-error button { border: 0; border-bottom: 1px solid #5d5046; padding: 0; background: transparent; color: #322c27; font: inherit; cursor: pointer; }
 
+.cliponaut-editor-access { display: flex; align-items: center; justify-content: space-between; gap: 18px; width: min(100% - 48px, 1120px); margin: 18px auto -4px; border: 1px solid #d8d1ca; padding: 13px 16px; background: #fffdf9; color: #3d3935; }
+.cliponaut-editor-access strong { display: block; font-size: 0.83rem; }
+.cliponaut-editor-access p { margin: 4px 0 0; color: #625d58; font-size: 0.78rem; line-height: 1.4; }
+.cliponaut-editor-access a, .cliponaut-editor-access button { flex: 0 0 auto; border: 0; border-bottom: 1px solid currentColor; padding: 0; background: transparent; color: #3d3935; font: inherit; font-size: 0.78rem; font-weight: 700; text-decoration: none; cursor: pointer; }
+.cliponaut-editor-access.is-ready { border-color: #b8c7b7; background: #f4f8f1; }
+.cliponaut-editor-access.is-error { border-color: #b98d79; background: #f8eee8; }
+.cliponaut-editor-access.is-loading { border-color: transparent; background: transparent; padding-top: 0; padding-bottom: 0; }
+.cliponaut-editor-access.is-loading strong { color: #756f69; font-weight: 500; }
+
 .cliponaut-feature-section,
 .cliponaut-details-grid,
 .cliponaut-faq {
@@ -1403,6 +1412,7 @@ body {
   .cliponaut-faq,
   .cliponaut-policy { width: min(100% - 32px, 760px); }
   .cliponaut-account-page { width: min(100% - 32px, 960px); }
+  .cliponaut-editor-access { width: min(100% - 32px, 1120px); align-items: flex-start; flex-direction: column; gap: 8px; }
   .cliponaut-account-stack { grid-template-columns: 1fr; }
   .cliponaut-pricing-hero { padding-top: 73px; }
   .cliponaut-pricing-hero h1 { font-size: clamp(3.05rem, 14vw, 4.4rem); line-height: 0.96; white-space: normal; }
