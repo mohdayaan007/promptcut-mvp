@@ -18,6 +18,13 @@ export function billingPeriodState(usage, now = Date.now()) {
   return { available: true, timing: "current", ...usage };
 }
 export function usageState(usage, now) { return billingPeriodState(usage, now); }
+export function cancellationManagementState(cancellation, now = Date.now()) {
+  const periodEnd = cancellation?.periodEnd && Date.parse(cancellation.periodEnd);
+  const currentEnd = Number.isFinite(periodEnd) && periodEnd > now ? new Date(periodEnd).toISOString() : null;
+  if (!cancellation?.enabled) return { enabled: false, state: "none", periodEnd: null };
+  if (!currentEnd) return { enabled: true, state: "none", periodEnd: null };
+  return { enabled: true, state: ["pending", "scheduled"].includes(cancellation.state) ? cancellation.state : "none", periodEnd: currentEnd };
+}
 export function editingReadiness(status, usage, now) {
   if (!["active", "cancellation_scheduled"].includes(status)) return { title: "New renders unavailable", detail: "A current active subscription is required before another paid render can start." };
   const period = billingPeriodState(usage, now);

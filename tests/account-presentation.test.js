@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
-import { accountState, billingPeriodState, editingReadiness, performLogout, usageState } from "@/lib/account-presentation";
+import { accountState, billingPeriodState, cancellationManagementState, editingReadiness, performLogout, usageState } from "@/lib/account-presentation";
 
 test("account presentation covers subscription and unavailable usage states", () => {
   for (const status of ["not_subscribed", "pending_verification", "active", "past_due", "cancelled", "expired"]) assert.ok(accountState(status).title);
@@ -24,6 +24,14 @@ test("logout confirmation preserves authenticated state on HTTP and network fail
   await assert.rejects(() => performLogout(async () => new Response(null, { status: 500 })), /could not sign you out/i);
   await assert.rejects(() => performLogout(async () => { throw new Error("network down"); }), /network down/);
   assert.equal(await performLogout(async () => new Response(null, { status: 204 })), true);
+});
+
+test("cancellation management only presents verified current-period state", () => {
+  const now = Date.parse("2026-10-30T12:00:00.000Z"); const end = "2026-11-01T12:00:00.000Z";
+  assert.deepEqual(cancellationManagementState({ enabled: false, state: "scheduled", periodEnd: end }, now), { enabled: false, state: "none", periodEnd: null });
+  assert.deepEqual(cancellationManagementState({ enabled: true, state: "pending", periodEnd: end }, now), { enabled: true, state: "pending", periodEnd: end });
+  assert.deepEqual(cancellationManagementState({ enabled: true, state: "scheduled", periodEnd: end }, now), { enabled: true, state: "scheduled", periodEnd: end });
+  assert.deepEqual(cancellationManagementState({ enabled: true, state: "scheduled", periodEnd: "2026-10-01T12:00:00.000Z" }, now), { enabled: true, state: "none", periodEnd: null });
 });
 
 function luminance(hex) { const values = hex.match(/[a-f\d]{2}/gi).map((value) => { const channel = parseInt(value, 16) / 255; return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4; }); return 0.2126 * values[0] + 0.7152 * values[1] + 0.0722 * values[2]; }

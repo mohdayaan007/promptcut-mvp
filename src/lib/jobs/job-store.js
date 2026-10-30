@@ -341,6 +341,22 @@ export async function getCustomerSubscriptionStatus(subscriberId) {
   return pending.rowCount ? "pending_verification" : "not_subscribed";
 }
 
+/** Read-only cancellation-management state for the authenticated owner only. */
+export async function getCustomerCancellationManagementState(subscriberId) {
+  if (!subscriberId) return { state: "none", periodEnd: null };
+  const { rows } = await database().query(`SELECT cancellation_scheduled,cancellation_request_started_at,billing_period_end
+    FROM dodo_subscriptions WHERE subscriber_id=$1 AND product_id=$2 AND ownership_provenance='verified'
+      AND status='active' AND billing_period_start IS NOT NULL AND billing_period_end IS NOT NULL
+      AND billing_period_start <= now() AND billing_period_start < billing_period_end AND billing_period_end > now()
+    ORDER BY billing_period_end DESC LIMIT 1`, [subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""]);
+  const subscription = rows[0];
+  if (!subscription) return { state: "none", periodEnd: null };
+  return {
+    state: subscription.cancellation_scheduled ? "scheduled" : subscription.cancellation_request_started_at ? "pending" : "none",
+    periodEnd: new Date(subscription.billing_period_end).toISOString()
+  };
+}
+
 /** Read-only account data: all figures come from the server-owned quota ledger. */
 export async function getCustomerRenderUsage(subscriberId) {
   const allowanceValue = allowance();
