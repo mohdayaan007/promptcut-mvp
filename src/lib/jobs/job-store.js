@@ -301,6 +301,31 @@ export async function getCustomerSubscriptionStatus(subscriberId) {
   return pending.rowCount ? "pending_verification" : "not_subscribed";
 }
 
+/** Read-only account data: all figures come from the server-owned quota ledger. */
+export async function getCustomerRenderUsage(subscriberId) {
+  const allowanceValue = allowance();
+  if (!subscriberId) return { allowance: allowanceValue, billingPeriod: null, successfulRenders: null, reservedRenders: null, remainingRenders: null };
+  const { rows } = await database().query(`SELECT dodo_subscription_id,status,ownership_provenance,billing_period_start,billing_period_end
+    FROM dodo_subscriptions WHERE subscriber_id=$1 AND product_id=$2 AND ownership_provenance='verified'
+    ORDER BY CASE status WHEN 'active' THEN 1 WHEN 'past_due' THEN 2 WHEN 'cancelled' THEN 3 ELSE 4 END, updated_at DESC LIMIT 1`, [subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""]);
+  const subscription = rows[0];
+  const validPeriod = subscription?.ownership_provenance === "verified" && subscription.billing_period_start && subscription.billing_period_end
+    && new Date(subscription.billing_period_start) < new Date(subscription.billing_period_end);
+  if (!validPeriod) return { allowance: allowanceValue, billingPeriod: null, successfulRenders: null, reservedRenders: null, remainingRenders: null };
+  const counts = await database().query(`SELECT count(*) FILTER (WHERE state='consumed')::int AS successful,
+    count(*) FILTER (WHERE state='reserved')::int AS reserved
+    FROM render_quota_reservations WHERE subscriber_id=$1 AND subscription_id=$2 AND period_start=$3`, [subscriberId, subscription.dodo_subscription_id, subscription.billing_period_start]);
+  const successful = counts.rows[0].successful; const reserved = counts.rows[0].reserved;
+  const current = subscription.status === "active" && new Date(subscription.billing_period_start) <= new Date() && new Date(subscription.billing_period_end) > new Date();
+  return {
+    allowance: allowanceValue,
+    billingPeriod: { start: new Date(subscription.billing_period_start).toISOString(), end: new Date(subscription.billing_period_end).toISOString() },
+    successfulRenders: successful,
+    reservedRenders: reserved,
+    remainingRenders: current ? Math.max(0, allowanceValue - successful - reserved) : null
+  };
+}
+
 export async function revokeCustomerSession(token) {
   if (!token) return;
   await database().query("UPDATE customer_sessions SET revoked_at=now() WHERE token_hash=$1 AND revoked_at IS NULL", [customerTokenHash(token)]);

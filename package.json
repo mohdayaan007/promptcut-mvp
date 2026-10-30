@@ -22,6 +22,8 @@
     "test:render-quota-integration": "tsx --test tests/render-quota-postgres.integration.test.js",
     "test:render-quota-recovery-integration": "tsx --test tests/render-quota-recovery-postgres.integration.test.js",
     "test:paid-conversation-integration": "tsx --test tests/paid-conversation-postgres.integration.test.js",
+    "test:account-ui": "tsx --test tests/account-presentation.test.js",
+    "test:account-usage-integration": "tsx --test tests/account-usage-postgres.integration.test.js",
     "test:session-integration": "tsx --test tests/session-postgres.integration.test.js",
     "test:session-worker-storage": "tsx --test tests/session-worker-storage.integration.test.js",
     "test:browser-phase4": "tsx --test tests/browser-phase4.acceptance.test.js",

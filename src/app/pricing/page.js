@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { CheckoutButton } from "@/components/cliponaut/CheckoutButton";
 import { MarketingLayout } from "@/components/cliponaut/MarketingLayout";
 
 const features = [
@@ -44,9 +45,10 @@ export default function PricingPage() {
             <li>Cancel future renewals any time</li>
           </ul>
           <div className="cliponaut-subscribe-pending" role="status">
-            <strong>Checkout is not live yet.</strong>
-            <span>Subscription access will open after payment setup is ready.</span>
+            <strong>Founder-approved Test Mode only.</strong>
+            <span>Checkout remains unavailable unless the server authorizes this environment.</span>
           </div>
+          <CheckoutButton signedIn={false} />
         </div>
       </section>
 
