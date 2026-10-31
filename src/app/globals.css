@@ -1172,3 +1172,256 @@ body {
     transition-duration: 1ms !important;
   }
 }
+
+
+/* Marketing and policy pages */
+.cliponaut-marketing-shell {
+  min-height: 100svh;
+  overflow: hidden;
+  background: #faf8f5;
+  color: #171717;
+}
+
+.cliponaut-marketing-shell .cliponaut-header {
+  border-bottom: 1px solid #e9e4de;
+}
+
+.cliponaut-marketing-eyebrow {
+  margin: 0 0 14px;
+  color: #77716c;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.cliponaut-pricing-hero {
+  width: min(100% - 48px, 900px);
+  margin: 0 auto;
+  padding: clamp(72px, 11vw, 142px) 0 clamp(38px, 6vw, 72px);
+  text-align: center;
+}
+
+.cliponaut-section-heading h2,
+.cliponaut-details-grid h2,
+.cliponaut-faq h2,
+.cliponaut-policy h1 {
+  margin: 0;
+  font-family: var(--font-display), "Iowan Old Style", "Times New Roman", serif;
+  font-weight: 400;
+  letter-spacing: -0.055em;
+  line-height: 0.94;
+}
+
+.cliponaut-pricing-hero h1 {
+  margin: 0;
+  font-family: var(--font-display), "Iowan Old Style", "Times New Roman", serif;
+  font-size: clamp(2.75rem, 4.5vw, 4.25rem);
+  font-weight: 400;
+  letter-spacing: -0.055em;
+  line-height: 1;
+  white-space: normal;
+}
+
+.cliponaut-pricing-hero > p:last-child {
+  max-width: 500px;
+  margin: 25px auto 0;
+  color: #6d6863;
+  font-size: clamp(1rem, 1.5vw, 1.125rem);
+  line-height: 1.55;
+}
+
+.cliponaut-plan-wrap {
+  width: min(100% - 48px, 620px);
+  margin: 0 auto;
+}
+
+.cliponaut-plan-card {
+  padding: clamp(28px, 5vw, 46px);
+  border: 1px solid #252321;
+  border-radius: 4px;
+  background: #1d1c1a;
+  color: #f8f5f0;
+  box-shadow: 10px 10px 0 #ded8d0;
+}
+
+.cliponaut-plan-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.cliponaut-member-badge {
+  display: inline-flex;
+  border: 1px solid #8e877e;
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: #e9ddd0;
+  font-size: 0.67rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cliponaut-member-note {
+  margin: 13px 0 0;
+  color: #c6c0b8;
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.cliponaut-plan-topline p,
+.cliponaut-plan-note { margin: 0; color: #bcb5ac; font-size: 0.78rem; }
+.cliponaut-plan-card h2 { margin: 30px 0 8px; font-size: 1.35rem; }
+.cliponaut-plan-summary { margin: 0; color: #c6c0b8; line-height: 1.45; }
+.cliponaut-price { margin: 32px 0 5px; color: #d6d0c8; font-size: 1rem; }
+.cliponaut-price span { color: #fffdf9; font-family: var(--font-display), Georgia, serif; font-size: clamp(4.1rem, 12vw, 5.8rem); letter-spacing: -0.07em; line-height: 0.7; }
+.cliponaut-plan-rule { height: 1px; margin: 30px 0; background: #504c47; }
+.cliponaut-plan-list { display: grid; gap: 13px; margin: 0; padding: 0; list-style: none; color: #eee9e1; font-size: 0.9rem; line-height: 1.4; }
+.cliponaut-plan-list li { position: relative; padding-left: 20px; }
+.cliponaut-plan-list li::before { position: absolute; left: 0; color: #d6b896; content: "✦"; }
+
+.cliponaut-subscribe-pending {
+  display: grid;
+  gap: 4px;
+  margin-top: 32px;
+  border: 1px solid #605a53;
+  padding: 14px;
+  color: #d5cec5;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.cliponaut-subscribe-pending strong { color: #fffdf9; font-size: 0.8rem; }
+.cliponaut-checkout-control { display: grid; gap: 10px; margin-top: 18px; }
+.cliponaut-checkout-control p { margin: 0; color: #e2dbd2; font-size: 0.76rem; line-height: 1.45; }
+.cliponaut-account-card .cliponaut-checkout-control p { color: #554f49; }
+.cliponaut-checkout-control.is-compact { margin-top: 22px; }
+.cliponaut-marketing-shell .cliponaut-primary-button { display: inline-flex; width: fit-content; align-items: center; justify-content: center; min-height: 42px; border: 1px solid #ded8d0; border-radius: 2px; padding: 0 16px; background: #f7f2ec; color: #1d1c1a; font: inherit; font-size: 0.84rem; font-weight: 700; text-decoration: none; cursor: pointer; }
+.cliponaut-marketing-shell .cliponaut-primary-button:hover { background: #fffdf9; }
+.cliponaut-marketing-shell .cliponaut-primary-button:disabled { cursor: wait; opacity: 0.7; }
+
+.cliponaut-account-page { width: min(100% - 48px, 960px); margin: 0 auto; padding: clamp(72px, 11vw, 130px) 0; }
+.cliponaut-account-page > h1 { max-width: 680px; margin: 0 0 38px; font-family: var(--font-display), Georgia, serif; font-size: clamp(2.9rem, 6vw, 5.25rem); font-weight: 400; letter-spacing: -0.06em; line-height: 0.95; }
+.cliponaut-account-stack { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.cliponaut-account-card { min-width: 0; border: 1px solid #d8d1ca; padding: clamp(22px, 4vw, 34px); background: #fffdf9; }
+.cliponaut-account-card h2 { margin: 0; font-family: var(--font-display), Georgia, serif; font-size: clamp(1.65rem, 3vw, 2.4rem); font-weight: 400; letter-spacing: -0.045em; line-height: 1; overflow-wrap: anywhere; }
+.cliponaut-account-card > p { color: #6d6863; line-height: 1.55; }
+.cliponaut-account-status { margin-top: 26px; border-left: 2px solid #a1734f; padding: 2px 0 2px 14px; }
+.cliponaut-account-status strong { font-size: 0.92rem; }
+.cliponaut-account-status p { margin: 6px 0 0; color: #6d6863; font-size: 0.86rem; line-height: 1.5; }
+.cliponaut-text-button { margin-top: 24px; border: 0; border-bottom: 1px solid #766f68; padding: 0 0 2px; background: transparent; color: #373431; font: inherit; font-size: 0.82rem; cursor: pointer; }
+.cliponaut-text-button:disabled { cursor: wait; opacity: 0.65; }
+.cliponaut-account-inline-error { margin: 12px 0 0; color: #554038; font-size: 0.8rem; line-height: 1.45; }
+.cliponaut-account-inline-error button { border: 0; border-bottom: 1px solid currentColor; padding: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; cursor: pointer; }
+.cliponaut-usage-card { display: grid; align-content: start; gap: 26px; }
+.cliponaut-usage-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.cliponaut-usage-grid p { display: grid; gap: 7px; margin: 0; border-top: 1px solid #ded7d0; padding-top: 12px; }
+.cliponaut-usage-grid strong { font-family: var(--font-display), Georgia, serif; font-size: 2.25rem; font-weight: 400; letter-spacing: -0.06em; line-height: 0.9; }
+.cliponaut-usage-grid span { color: #756f69; font-size: 0.7rem; line-height: 1.35; }
+.cliponaut-account-note { margin: 0; color: #756f69; font-size: 0.76rem; line-height: 1.5; }
+.cliponaut-account-error { max-width: 580px; margin: 0 0 24px; border-left: 2px solid #a1734f; padding: 12px 15px; background: #f0e7dd; }
+.cliponaut-account-error p { margin: 0 0 8px; color: #5d5046; }
+.cliponaut-account-error button { border: 0; border-bottom: 1px solid #5d5046; padding: 0; background: transparent; color: #322c27; font: inherit; cursor: pointer; }
+
+.cliponaut-editor-access { display: flex; align-items: center; justify-content: space-between; gap: 18px; width: min(100% - 48px, 1120px); margin: 18px auto -4px; border: 1px solid #d8d1ca; padding: 13px 16px; background: #fffdf9; color: #3d3935; }
+.cliponaut-editor-access strong { display: block; font-size: 0.83rem; }
+.cliponaut-editor-access p { margin: 4px 0 0; color: #625d58; font-size: 0.78rem; line-height: 1.4; }
+.cliponaut-editor-access a, .cliponaut-editor-access button { flex: 0 0 auto; border: 0; border-bottom: 1px solid currentColor; padding: 0; background: transparent; color: #3d3935; font: inherit; font-size: 0.78rem; font-weight: 700; text-decoration: none; cursor: pointer; }
+.cliponaut-editor-access.is-ready { border-color: #b8c7b7; background: #f4f8f1; }
+.cliponaut-editor-access.is-error { border-color: #b98d79; background: #f8eee8; }
+.cliponaut-editor-access.is-loading { border-color: transparent; background: transparent; padding-top: 0; padding-bottom: 0; }
+.cliponaut-editor-access.is-loading strong { color: #756f69; font-weight: 500; }
+
+.cliponaut-feature-section,
+.cliponaut-details-grid,
+.cliponaut-faq {
+  width: min(100% - 48px, 1180px);
+  margin-right: auto;
+  margin-left: auto;
+}
+.cliponaut-feature-section { padding: clamp(88px, 13vw, 164px) 0; }
+.cliponaut-section-heading { max-width: 580px; margin-bottom: 47px; }
+.cliponaut-section-heading h2,
+.cliponaut-details-grid h2,
+.cliponaut-faq h2 { font-size: clamp(2.7rem, 5vw, 4.75rem); }
+
+.cliponaut-feature-grid { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid #dcd6d0; border-left: 1px solid #dcd6d0; }
+.cliponaut-feature { min-height: 204px; border-right: 1px solid #dcd6d0; border-bottom: 1px solid #dcd6d0; padding: 23px; }
+.cliponaut-feature > span { display: block; color: #9a928a; font-family: monospace; font-size: 0.69rem; }
+.cliponaut-feature h3 { margin: 40px 0 9px; font-size: 0.98rem; line-height: 1.25; }
+.cliponaut-feature p { margin: 0; color: #756f69; font-size: 0.84rem; line-height: 1.45; }
+
+.cliponaut-details-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #dad3cc; }
+.cliponaut-details-grid > article { padding: clamp(30px, 5vw, 55px); background: #e9e3dc; }
+.cliponaut-details-grid h2 { max-width: 440px; margin-bottom: 22px; font-size: clamp(2.35rem, 4vw, 3.75rem); }
+.cliponaut-details-grid article > p:last-of-type { max-width: 490px; margin: 0; color: #625d58; line-height: 1.6; }
+.cliponaut-guarantee { background: #e3d7cb !important; }
+.cliponaut-guarantee a { display: inline-block; margin-top: 25px; color: #171717; font-size: 0.83rem; font-weight: 700; text-underline-offset: 4px; }
+
+.cliponaut-faq { padding: clamp(88px, 13vw, 160px) 0; max-width: 780px; }
+.cliponaut-faq > .cliponaut-marketing-eyebrow { margin-bottom: 12px; }
+.cliponaut-faq h2 { margin-bottom: 42px; }
+.cliponaut-faq details { border-top: 1px solid #d9d3cd; padding: 19px 0; }
+.cliponaut-faq details:last-child { border-bottom: 1px solid #d9d3cd; }
+.cliponaut-faq summary { display: flex; justify-content: space-between; cursor: pointer; font-weight: 650; list-style: none; }
+.cliponaut-faq summary::-webkit-details-marker { display: none; }
+.cliponaut-faq summary::after { color: #756f69; content: "+"; font-size: 1.25rem; font-weight: 400; }
+.cliponaut-faq details[open] summary::after { content: "−"; }
+.cliponaut-faq details p { max-width: 600px; margin: 13px 28px 0 0; color: #706a65; line-height: 1.55; }
+
+.cliponaut-footer { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 20px; border-top: 1px solid #e4ded7; padding: 28px clamp(24px, 5vw, 72px); color: #766f68; font-size: 0.72rem; }
+.cliponaut-footer-brand { color: #171717; font-family: var(--font-display), Georgia, serif; font-size: 1.45rem; letter-spacing: -0.06em; text-decoration: none; }
+.cliponaut-footer-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; }
+.cliponaut-footer-links a { color: inherit; text-decoration: none; }
+.cliponaut-footer-links a:hover { color: #171717; text-decoration: underline; text-underline-offset: 3px; }
+.cliponaut-footer > p { margin: 0; text-align: right; }
+
+.cliponaut-policy { width: min(100% - 48px, 760px); padding: clamp(70px, 12vw, 140px) 0; margin: 0 auto; }
+.cliponaut-policy h1 { max-width: 620px; font-size: clamp(3.6rem, 8vw, 6.5rem); }
+.cliponaut-policy-updated { margin: 23px 0 55px; color: #706a64; font-size: 0.8rem; }
+.cliponaut-policy-body > p:first-child { margin-top: 0; color: #4e4a46; font-size: 1.08rem; line-height: 1.65; }
+.cliponaut-policy-body h2 { margin: 42px 0 12px; font-size: 1.1rem; }
+.cliponaut-policy-body p { color: #645f5a; line-height: 1.65; }
+.cliponaut-policy-body a { color: #171717; font-weight: 700; text-underline-offset: 3px; }
+.cliponaut-legal-review { margin-top: 54px; border-left: 2px solid #a1734f; background: #f0e7dd; padding: 21px 22px; }
+.cliponaut-legal-review strong { font-size: 0.83rem; }
+.cliponaut-legal-review p { margin: 6px 0 0; color: #6b625b; font-size: 0.84rem; line-height: 1.5; }
+
+@media (max-width: 820px) {
+  .cliponaut-feature-grid { grid-template-columns: repeat(2, 1fr); }
+  .cliponaut-details-grid { grid-template-columns: 1fr; }
+  .cliponaut-footer { grid-template-columns: 1fr; text-align: center; }
+  .cliponaut-footer > p { text-align: center; }
+}
+
+@media (max-width: 640px) {
+  .cliponaut-header-links { gap: 12px; }
+  .cliponaut-header-links a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 2px; font-size: 0.78rem; }
+  .cliponaut-pricing-hero,
+  .cliponaut-plan-wrap,
+  .cliponaut-feature-section,
+  .cliponaut-details-grid,
+  .cliponaut-faq,
+  .cliponaut-policy { width: min(100% - 32px, 760px); }
+  .cliponaut-account-page { width: min(100% - 32px, 960px); }
+  .cliponaut-editor-access { width: min(100% - 32px, 1120px); align-items: flex-start; flex-direction: column; gap: 8px; }
+  .cliponaut-account-stack { grid-template-columns: 1fr; }
+  .cliponaut-pricing-hero { padding-top: 73px; }
+  .cliponaut-pricing-hero h1 { font-size: clamp(3.05rem, 14vw, 4.4rem); line-height: 0.96; white-space: normal; }
+  .cliponaut-pricing-hero > p:last-child { margin-top: 19px; font-size: 0.9375rem; }
+  .cliponaut-plan-card { box-shadow: 6px 6px 0 #ded8d0; }
+  .cliponaut-feature { min-height: 184px; padding: 18px; }
+  .cliponaut-feature h3 { margin-top: 30px; }
+  .cliponaut-footer-links { gap: 11px 15px; }
+}
+
+@media (max-width: 380px) {
+  .cliponaut-header { align-items: flex-start; }
+  .cliponaut-header-links { gap: 9px; padding-top: 3px; }
+  .cliponaut-header-links a { font-size: 0.7rem; }
+  .cliponaut-brand img { width: 96px; }
+  .cliponaut-plan-topline { align-items: flex-start; flex-direction: column; }
+  .cliponaut-feature-grid { grid-template-columns: 1fr; }
+  .cliponaut-price span { font-size: 4.25rem; }
+}
