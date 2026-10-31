@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import crypto from "crypto";
 import test from "node:test";
-import { checkoutRequest, cliponautPaymentEvent, cliponautSubscriptionEvent, createDodoTestCheckout, customerOwnershipProvenanceConfigured, DodoConfigurationError, DodoWebhookError, parseDodoWebhookEnvelope, scheduleDodoTestCancellation, verifyDodoWebhook } from "@/lib/dodo-test-mode";
+import { checkoutRequest, cliponautPaymentEvent, cliponautSubscriptionEvent, createDodoTestCheckout, customerOwnershipProvenanceConfigured, DodoConfigurationError, DodoWebhookError, getDodoTestCancellationState, parseDodoWebhookEnvelope, scheduleDodoTestCancellation, verifyDodoWebhook } from "@/lib/dodo-test-mode";
 
 const secret = `whsec_${Buffer.from("dodo-webhook-test-secret-material-over-thirty-two-bytes").toString("base64")}`;
 const secret24 = `whsec_${Buffer.alloc(24, 7).toString("base64")}`;
@@ -20,6 +20,11 @@ test("checkout uses one product, minimal address, and documented session_id/chec
     await assert.rejects(createDodoTestCheckout({ email: "a@b.test", fetchImpl: async () => new Response(JSON.stringify({ id: "wrong", url: "https://checkout.example" })) }), DodoConfigurationError);
     await assert.rejects(createDodoTestCheckout({ email: "a@b.test", fetchImpl: async () => new Response(JSON.stringify({ session_id: "cs_1", checkout_url: "https://" })) }), DodoConfigurationError);
   } finally { for (const key of ["DODO_TEST_MODE_ENABLED", "DODO_TEST_API_KEY", "DODO_TEST_CLIPONAUT_PRODUCT_ID", "DODO_TEST_RETURN_URL"]) old[key] === undefined ? delete process.env[key] : process.env[key] = old[key]; }
+});
+
+test("read-only cancellation retrieval aborts a stalled provider read", async () => {
+  const old = { ...process.env }; Object.assign(process.env, { DODO_TEST_MODE_ENABLED: "true", DODO_TEST_API_KEY: "test", DODO_TEST_CLIPONAUT_PRODUCT_ID: config.productId, DODO_TEST_RETURN_URL: "http://localhost:3000/return", DODO_TEST_BUSINESS_ID: config.businessId, DODO_TEST_BRAND_ID: config.brandId, DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED: "true", DODO_TEST_RECOVERY_READ_TIMEOUT_MS: "100" });
+  try { await assert.rejects(() => getDodoTestCancellationState({ subscriptionId: "sub_timeout", fetchImpl: async () => new Promise(() => {}) }), /uncertain/i); } finally { process.env = old; }
 });
 
 test("canonical 24-byte and 32-byte webhook secrets verify signatures", () => {

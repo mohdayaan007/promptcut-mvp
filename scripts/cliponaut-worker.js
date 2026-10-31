@@ -18,9 +18,10 @@ import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
 import { jobConfig } from "@/lib/jobs/job-config";
 import {
   claimNextJob, completeJob, expireUploadJob, failJob, getAbandonedUploads, getJobsForCleanup, heartbeatJob, isJobCancelled, markOutputCleaned,
-  markSourcesCleaned, recoverStaleJobs, saveJobPlan, setJobStatus, syncVersionStatus, leaseDueCancellationRecoveryCases, recordCancellationRecoveryEvidence, confirmCustomerPeriodEndCancellation
+  markSourcesCleaned, recoverStaleJobs, saveJobPlan, setJobStatus, syncVersionStatus, leaseDueCancellationRecoveryCases, recordCancellationRecoveryEvidence, confirmCancellationRecoveryCase
 } from "@/lib/jobs/job-store";
 import { cancellationRecoveryEnabled, getDodoTestCancellationState } from "@/lib/dodo-test-mode";
+import { createCancellationRecoveryMaintenance } from "@/lib/cancellation-recovery-maintenance";
 import { abortMultipartUpload, deleteObjects, downloadObject, outputObjectKey, uploadOutput } from "@/lib/jobs/storage";
 
 const config = jobConfig();
@@ -79,13 +80,12 @@ async function cleanExpiredObjects() {
   }
 }
 async function reconcileCancellationRecoveryCases() {
-  if (!cancellationRecoveryEnabled()) return;
+  if (!cancellationRecoveryEnabled() || stopping) return;
   for (const recovery of await leaseDueCancellationRecoveryCases()) {
     try {
       const provider = await getDodoTestCancellationState({ subscriptionId: recovery.subscription_id });
-      let confirmed = null;
-      if (provider.scheduled) confirmed = await confirmCustomerPeriodEndCancellation(recovery.subscriber_id, provider.subscriptionId, provider.billingStart, provider.billingEnd);
-      await recordCancellationRecoveryEvidence(recovery.id, recovery.leaseToken, confirmed ? { confirmed: true, subscriptionId: provider.subscriptionId, billingStart: provider.billingStart, billingEnd: provider.billingEnd } : { confirmed: false });
+      const confirmed = provider.scheduled && await confirmCancellationRecoveryCase(recovery.id, recovery.leaseToken, provider, { productId: process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID, businessId: process.env.DODO_TEST_BUSINESS_ID, brandId: process.env.DODO_TEST_BRAND_ID });
+      if (!confirmed) await recordCancellationRecoveryEvidence(recovery.id, recovery.leaseToken, { confirmed: false });
     } catch { await recordCancellationRecoveryEvidence(recovery.id, recovery.leaseToken, { confirmed: false }).catch(() => {}); }
   }
 }
@@ -269,10 +269,12 @@ async function processJob(job) {
 async function run() {
   if (config.workerConcurrency !== 1) throw new Error("Only one worker process is supported initially; set JOB_WORKER_CONCURRENCY=1");
   console.log(`Cliponaut worker ${workerId} started.`);
+  const recoveryMaintenance = createCancellationRecoveryMaintenance({ enabled: cancellationRecoveryEnabled, reconcile: reconcileCancellationRecoveryCases, onError: (error) => console.error("Cancellation recovery maintenance failed:", error.message) });
+  const recoveryTimer = recoveryMaintenance.start(); recoveryTimer.unref?.();
   while (!stopping) {
     try {
       await recoverStaleJobs(config);
-      if (Date.now() - lastCancellationRecovery > 60_000) { await reconcileCancellationRecoveryCases(); lastCancellationRecovery = Date.now(); }
+      if (Date.now() - lastCancellationRecovery > 60_000) { recoveryMaintenance.tick(); lastCancellationRecovery = Date.now(); }
       if (Date.now() - lastCleanup > 60 * 60 * 1_000) {
         await cleanExpiredObjects();
         lastCleanup = Date.now();
@@ -285,6 +287,7 @@ async function run() {
       await sleep(config.pollIntervalMs);
     }
   }
+  recoveryMaintenance.stop();
 }
 
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });

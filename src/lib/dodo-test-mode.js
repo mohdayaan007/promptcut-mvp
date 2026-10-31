@@ -3,6 +3,7 @@ import crypto from "crypto";
 const TEST_API_BASE = "https://test.dodopayments.com";
 const MAX_WEBHOOK_AGE_SECONDS = 5 * 60;
 const MIN_WEBHOOK_SECRET_BYTES = 24;
+const DEFAULT_RECOVERY_READ_TIMEOUT_MS = 5_000;
 
 export class DodoConfigurationError extends Error {}
 export class DodoWebhookError extends Error {}
@@ -44,6 +45,7 @@ export function dodoTestCancellationRecoveryConfig() {
   if (!cancellationRecoveryEnabled()) throw new DodoConfigurationError("Dodo Test Mode cancellation recovery is disabled");
   return config;
 }
+function recoveryReadTimeoutMs() { const value = Number(process.env.DODO_TEST_RECOVERY_READ_TIMEOUT_MS || DEFAULT_RECOVERY_READ_TIMEOUT_MS); return Number.isFinite(value) ? Math.min(Math.max(value, 100), 30_000) : DEFAULT_RECOVERY_READ_TIMEOUT_MS; }
 
 function parseCancellationSubscription(subscription, config, expectedSubscriptionId, { requireScheduled = false } = {}) {
   if (!subscription || typeof subscription !== "object" || subscription.subscription_id !== expectedSubscriptionId
@@ -54,7 +56,7 @@ function parseCancellationSubscription(subscription, config, expectedSubscriptio
     || Date.parse(subscription.previous_billing_date) >= Date.parse(subscription.next_billing_date)) {
     throw new DodoCancellationError("Dodo did not confirm a valid period-end cancellation", { uncertain: true });
   }
-  return { subscriptionId: subscription.subscription_id, billingStart: new Date(subscription.previous_billing_date).toISOString(), billingEnd: new Date(subscription.next_billing_date).toISOString(), scheduled: subscription.cancel_at_next_billing_date === true };
+  return { subscriptionId: subscription.subscription_id, customerId: typeof subscription.customer?.customer_id === "string" ? subscription.customer.customer_id : null, productId: subscription.product_id, brandId: subscription.brand_id, businessId: subscription.business_id || null, billingStart: new Date(subscription.previous_billing_date).toISOString(), billingEnd: new Date(subscription.next_billing_date).toISOString(), scheduled: subscription.cancel_at_next_billing_date === true };
 }
 
 /** Current SDK v2.59.0: PATCH /subscriptions/{id}; period-end policy uses the documented flag only. */
@@ -82,7 +84,11 @@ export async function scheduleDodoTestCancellation({ subscriptionId, fetchImpl =
 export async function getDodoTestCancellationState({ subscriptionId, fetchImpl = fetch }) {
   const config = dodoTestCancellationConfig();
   if (typeof subscriptionId !== "string" || !subscriptionId) throw new DodoCancellationError("Subscription is invalid");
-  let response; try { response = await fetchImpl(`${TEST_API_BASE}/subscriptions/${encodeURIComponent(subscriptionId)}`, { headers: { Authorization: `Bearer ${config.apiKey}` } }); } catch { throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true }); }
+  const controller = new AbortController(); let timer;
+  let response; try {
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true })); }, recoveryReadTimeoutMs()); });
+    response = await Promise.race([fetchImpl(`${TEST_API_BASE}/subscriptions/${encodeURIComponent(subscriptionId)}`, { headers: { Authorization: `Bearer ${config.apiKey}` }, signal: controller.signal }), timeout]);
+  } catch { throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true }); } finally { clearTimeout(timer); }
   if (!response.ok) throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true });
   let body; try { body = await response.json(); } catch { throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true }); }
   try { return parseCancellationSubscription(body, config, subscriptionId); } catch { throw new DodoCancellationError("Cancellation status requires review.", { uncertain: true }); }

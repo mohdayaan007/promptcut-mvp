@@ -236,7 +236,7 @@ export async function beginCustomerPeriodEndCancellation(subscriberId, subscript
     if (subscription && provenance) {
       if (!subscription.dodo_customer_id || !provenance.businessId || !provenance.brandId) throw new Error("Cancellation recovery provenance is incomplete");
       await client.query(`INSERT INTO cancellation_recovery_cases (id,subscriber_id,subscription_id,dodo_customer_id,product_id,business_id,brand_id,billing_period_start,billing_period_end,review_deadline_at,audit)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,GREATEST(now()+interval '15 minutes',$9::timestamptz-interval '24 hours'),jsonb_build_array(jsonb_build_object('at',now(),'event','request_started')))
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,LEAST($9::timestamptz,GREATEST(now()+interval '15 minutes',$9::timestamptz-interval '24 hours')),jsonb_build_array(jsonb_build_object('at',now(),'event','request_started')))
         ON CONFLICT (subscription_id,billing_period_start) DO NOTHING`, [newId(),subscriberId,subscription.dodo_subscription_id,subscription.dodo_customer_id,subscription.product_id,provenance.businessId,provenance.brandId,subscription.billing_period_start,subscription.billing_period_end]);
     }
     await client.query("COMMIT"); return subscription || null;
@@ -252,6 +252,17 @@ export async function recordCancellationRecoveryEvidence(caseId, leaseToken, evi
   const confirmed = evidence?.confirmed === true; const { rows } = await database().query(`UPDATE cancellation_recovery_cases SET state=CASE WHEN $3 THEN 'confirmed' ELSE state END,last_verified_at=now(),next_reconciliation_at=CASE WHEN $3 THEN next_reconciliation_at ELSE now()+interval '30 minutes' END,lease_token=NULL,lease_until=NULL,resolution_evidence=CASE WHEN $3 THEN $4::jsonb ELSE resolution_evidence END,audit=audit||jsonb_build_array(jsonb_build_object('at',now(),'event',CASE WHEN $3 THEN 'provider_confirmed' ELSE 'provider_unresolved' END)),updated_at=now()
     WHERE id=$1 AND lease_token=$2 AND state='unresolved' RETURNING *`, [caseId,leaseToken,confirmed,JSON.stringify(confirmed ? evidence : {})]);
   return rows[0] || null;
+}
+/** Confirmation is bound to the immutable case, not the latest subscription period or current config alone. */
+export async function confirmCancellationRecoveryCase(caseId, leaseToken, evidence, provenance) {
+  const client = await database().connect(); try { await client.query("BEGIN");
+    const { rows } = await client.query(`SELECT c.*,s.subscriber_id,s.dodo_customer_id,s.product_id,s.ownership_provenance,s.status,s.billing_period_start AS current_start,s.billing_period_end AS current_end FROM cancellation_recovery_cases c JOIN dodo_subscriptions s ON s.dodo_subscription_id=c.subscription_id WHERE c.id=$1 AND c.lease_token=$2 AND c.state='unresolved' FOR UPDATE`, [caseId,leaseToken]);
+    const recovery = rows[0]; const same = recovery && evidence?.scheduled === true && recovery.subscription_id === evidence.subscriptionId && recovery.dodo_customer_id === evidence.customerId && recovery.product_id === evidence.productId && recovery.brand_id === evidence.brandId && recovery.business_id === provenance?.businessId && recovery.brand_id === provenance?.brandId && recovery.product_id === provenance?.productId && recovery.ownership_provenance === 'verified' && recovery.status === 'active' && new Date(recovery.billing_period_start).getTime() === new Date(evidence.billingStart).getTime() && new Date(recovery.billing_period_end).getTime() === new Date(evidence.billingEnd).getTime() && new Date(recovery.current_start).getTime() === new Date(recovery.billing_period_start).getTime() && new Date(recovery.current_end).getTime() === new Date(recovery.billing_period_end).getTime();
+    if (!same) { await client.query("ROLLBACK"); return null; }
+    await client.query("UPDATE dodo_subscriptions SET cancellation_scheduled=true,cancellation_confirmed_at=now(),cancellation_request_started_at=NULL,updated_at=now() WHERE dodo_subscription_id=$1", [recovery.subscription_id]);
+    const confirmed = await client.query("UPDATE cancellation_recovery_cases SET state='confirmed',last_verified_at=now(),lease_token=NULL,lease_until=NULL,resolution_evidence=$3::jsonb,audit=audit||jsonb_build_array(jsonb_build_object('at',now(),'event','provider_confirmed')),updated_at=now() WHERE id=$1 AND lease_token=$2 RETURNING *", [caseId,leaseToken,JSON.stringify(evidence)]);
+    await client.query("COMMIT"); return confirmed.rows[0] || null;
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
 export async function listUnresolvedCancellationRecoveryCases() {
   const { rows } = await database().query(`SELECT id,subscription_id,billing_period_end,cancellation_requested_at,state,last_verified_at,review_deadline_at,notification_state FROM cancellation_recovery_cases WHERE state='unresolved' ORDER BY review_deadline_at ASC LIMIT 50`);
@@ -400,6 +411,11 @@ export async function getCustomerCancellationManagementState(subscriberId) {
     state: subscription.cancellation_scheduled ? "scheduled" : subscription.cancellation_request_started_at ? "pending" : "none",
     periodEnd: new Date(subscription.billing_period_end).toISOString()
   };
+}
+export async function getCustomerCancellationRecoveryState(subscriberId) {
+  if (!subscriberId) return null;
+  const { rows } = await database().query("SELECT id,state,review_deadline_at,last_verified_at FROM cancellation_recovery_cases WHERE subscriber_id=$1 AND state='unresolved' ORDER BY review_deadline_at ASC LIMIT 1", [subscriberId]);
+  const row = rows[0]; return row ? { id: row.id, state: row.state, reviewDeadline: new Date(row.review_deadline_at).toISOString(), lastVerifiedAt: row.last_verified_at ? new Date(row.last_verified_at).toISOString() : null } : null;
 }
 
 /** Read-only account data: all figures come from the server-owned quota ledger. */

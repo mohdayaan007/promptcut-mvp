@@ -19,7 +19,7 @@ integration("Dodo handler migration, duplicate idempotency, and out-of-order del
   Object.assign(process.env, { CUSTOMER_AUTH_TOKEN_SECRET: "dodo-integration-customer-secret-at-least-thirty-two", DODO_TEST_MODE_ENABLED: "true", DODO_TEST_API_KEY: "test", DODO_TEST_CLIPONAUT_PRODUCT_ID: productId, DODO_TEST_RETURN_URL: "http://localhost:3000/return", DODO_TEST_WEBHOOK_SECRET: secret, DODO_TEST_BUSINESS_ID: "biz_cliponaut", DODO_TEST_BRAND_ID: "brand_cliponaut" });
   await migrateEditJobs(); const db = new Client({ connectionString: databaseUrl }); await db.connect();
   try {
-    await db.query("DELETE FROM render_quota_reservations; DELETE FROM edit_jobs; DELETE FROM dodo_webhook_events; DELETE FROM dodo_subscriptions;"); const { POST } = await import("@/app/api/webhooks/dodo/route");
+    await db.query("DELETE FROM cancellation_recovery_cases; DELETE FROM render_quota_reservations; DELETE FROM edit_jobs; DELETE FROM dodo_webhook_events; DELETE FROM dodo_subscriptions;"); const { POST } = await import("@/app/api/webhooks/dodo/route");
     const active = payload(); assert.equal((await POST(request(active, "evt_active"))).status, 200); assert.equal((await POST(request(active, "evt_active"))).status, 200);
     const subscriber = crypto.randomUUID(); await db.query("INSERT INTO subscriber_identities (id,email,google_subject,verified_at) VALUES ($1,$2,$3,now())", [subscriber, "bound@gmail.com", "bound-google"]);
     const reference = await createCustomerCheckoutCorrelation(subscriber); await recordCustomerCheckoutSession(subscriber, reference, "cs_bound");
@@ -56,7 +56,7 @@ integration("un-pinned lifecycle receipts cannot reactivate or poison a verified
   Object.assign(process.env, { CUSTOMER_AUTH_TOKEN_SECRET: "dodo-integration-customer-secret-at-least-thirty-two", DODO_TEST_MODE_ENABLED: "true", DODO_TEST_API_KEY: "test", DODO_TEST_CLIPONAUT_PRODUCT_ID: productId, DODO_TEST_RETURN_URL: "http://localhost:3000/return", DODO_TEST_WEBHOOK_SECRET: secret, DODO_TEST_BUSINESS_ID: "biz_cliponaut", DODO_TEST_BRAND_ID: "brand_cliponaut", PAID_RENDER_ALLOWANCE: "15" });
   await migrateEditJobs(); const db = new Client({ connectionString: databaseUrl }); await db.connect();
   try {
-    await db.query("DELETE FROM render_quota_reservations; DELETE FROM edit_jobs; DELETE FROM dodo_webhook_events; DELETE FROM dodo_subscriptions; DELETE FROM subscriber_identities;");
+    await db.query("DELETE FROM cancellation_recovery_cases; DELETE FROM render_quota_reservations; DELETE FROM edit_jobs; DELETE FROM dodo_webhook_events; DELETE FROM dodo_subscriptions; DELETE FROM subscriber_identities;");
     const subscriber = crypto.randomUUID();
     await db.query("INSERT INTO subscriber_identities (id,email,google_subject,verified_at) VALUES ($1,$2,$3,now())", [subscriber, "provenance@example.test", "google-provenance"]);
     const now = Date.now(); const at = (offset) => new Date(now + offset).toISOString();
