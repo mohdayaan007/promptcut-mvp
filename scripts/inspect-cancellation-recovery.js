@@ -16,13 +16,16 @@ async function main() {
   let provider = null; let providerError = null;
   try {
     provider = syntheticInspectionEvidence() || await getDodoTestCancellationState({ subscriptionId: recovery.subscription_id });
-    const sameEvidence = provider?.subscriptionId === recovery.subscription_id && provider.customerId === recovery.dodo_customer_id
-      && provider.productId === recovery.product_id && provider.brandId === recovery.brand_id && provider.businessId === recovery.business_id
+    const sameIdentity = provider?.subscriptionId === recovery.subscription_id && provider.customerId === recovery.dodo_customer_id
+      && provider.productId === recovery.product_id && provider.brandId === recovery.brand_id
       && new Date(provider.billingStart).getTime() === new Date(recovery.billing_period_start).getTime()
       && new Date(provider.billingEnd).getTime() === new Date(recovery.billing_period_end).getTime();
-    if (!sameEvidence) throw new Error("Provider evidence does not match the immutable recovery case");
+    if (!sameIdentity) throw new Error("Provider evidence does not match the immutable recovery case");
+    if (provider.evidenceSource !== "signed_webhook" || provider.businessId !== recovery.business_id) {
+      throw new Error("Provider business provenance is unverified; read-only evidence cannot confirm recovery");
+    }
   } catch (error) { providerError = error.message === "Provider evidence does not match the immutable recovery case" ? error.message : "Provider evidence is unavailable or inconclusive"; }
-  console.log(JSON.stringify({ caseId: recovery.id, state: recovery.state, renewalDeadline: recovery.billing_period_end, lastVerifiedAt: recovery.last_verified_at, provider, providerError }, null, 2));
+  console.log(JSON.stringify({ caseId: recovery.id, state: recovery.state, renewalDeadline: recovery.billing_period_end, lastVerifiedAt: recovery.last_verified_at, provider: provider && { status: provider.status, scheduled: provider.scheduled, businessProvenance: provider.businessProvenance || "unavailable", evidenceSource: provider.evidenceSource || "unknown", billingStart: provider.billingStart, billingEnd: provider.billingEnd }, providerError }, null, 2));
   if (providerError) process.exitCode = 1;
 }
 main().catch((error) => { console.error(error.message); process.exitCode = 1; }).finally(() => closeJobStorePool());

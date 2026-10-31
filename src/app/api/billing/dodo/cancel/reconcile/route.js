@@ -1,7 +1,7 @@
 import { customerSessionToken } from "@/lib/customer-auth";
 import { DodoCancellationError, dodoTestCancellationConfig, getDodoTestCancellationState, periodEndCancellationEnabled } from "@/lib/dodo-test-mode";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
-import { confirmCustomerPeriodEndCancellation, getCustomerCancellableSubscription, getCustomerSession } from "@/lib/jobs/job-store";
+import { getCustomerCancellableSubscription, getCustomerCancellationRecoveryState, getCustomerSession } from "@/lib/jobs/job-store";
 
 export const runtime = "nodejs";
 export function createCancellationReconciliationHandler({ retrieve = getDodoTestCancellationState } = {}) {
@@ -15,10 +15,11 @@ export function createCancellationReconciliationHandler({ retrieve = getDodoTest
       if (subscription.cancellation_scheduled) return Response.json({ scheduled: true, periodEnd: new Date(subscription.billing_period_end).toISOString() });
       if (!subscription.cancellation_request_started_at) return Response.json({ scheduled: false, pending: false });
       const provider = await retrieve({ subscriptionId: subscription.dodo_subscription_id });
-      if (!provider.scheduled) return Response.json({ scheduled: false, pending: true, reviewRequired: true });
-      const confirmed = await confirmCustomerPeriodEndCancellation(customer.subscriber_id, provider.subscriptionId, provider.billingStart, provider.billingEnd);
-      if (!confirmed) return Response.json({ scheduled: false, pending: true, reviewRequired: true });
-      return Response.json({ scheduled: true, periodEnd: new Date(confirmed.billing_period_end).toISOString() });
+      // GET /subscriptions/{id} has no documented business_id in SDK v2.59.0.
+      // It may be displayed as read-only status but cannot settle a durable
+      // uncertain cancellation case; signed, fully pinned webhook evidence can.
+      const recovery = await getCustomerCancellationRecoveryState(customer.subscriber_id);
+      return Response.json({ scheduled: false, pending: true, reviewRequired: true, recovery: Boolean(recovery), providerStatus: provider.status || null, businessProvenance: provider.businessProvenance || "unavailable" });
     } catch (error) { if (error instanceof DodoCancellationError) return jsonError(new PublicRequestError("Cancellation status requires review.", 503)); return jsonError(error); }
   };
 }

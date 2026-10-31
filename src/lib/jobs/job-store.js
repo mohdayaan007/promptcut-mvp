@@ -265,11 +265,11 @@ export async function confirmCancellationRecoveryCase(caseId, leaseToken, eviden
       s.billing_period_start AS subscription_start,s.billing_period_end AS subscription_end
       FROM cancellation_recovery_cases c JOIN dodo_subscriptions s ON s.dodo_subscription_id=c.subscription_id
       WHERE c.id=$1 AND c.lease_token=$2 AND c.state='unresolved' FOR UPDATE`, [caseId,leaseToken]);
-    const recovery = rows[0]; const same = recovery && evidence?.scheduled === true
+    const recovery = rows[0]; const same = recovery && evidence?.evidenceSource === "signed_webhook" && evidence?.scheduled === true
       && recovery.case_subscription_id === evidence.subscriptionId && recovery.case_customer_id === evidence.customerId
       && recovery.subscription_customer_id === recovery.case_customer_id && recovery.subscription_subscriber_id === recovery.case_subscriber_id
       && recovery.case_product_id === evidence.productId && recovery.subscription_product_id === recovery.case_product_id
-      && recovery.case_brand_id === evidence.brandId && recovery.case_business_id === provenance?.businessId
+      && recovery.case_brand_id === evidence.brandId && recovery.case_business_id === evidence.businessId && recovery.case_business_id === provenance?.businessId
       && recovery.case_brand_id === provenance?.brandId && recovery.case_product_id === provenance?.productId
       && recovery.subscription_ownership_provenance === 'verified' && recovery.subscription_status === 'active'
       && new Date(recovery.case_start).getTime() === new Date(evidence.billingStart).getTime()
@@ -283,6 +283,33 @@ export async function confirmCancellationRecoveryCase(caseId, leaseToken, eviden
     if (!confirmed.rowCount) { await client.query("ROLLBACK"); return null; }
     await client.query("COMMIT"); return confirmed.rows[0] || null;
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+}
+
+/** A subscription GET has no documented business_id. Only fully pinned, signed evidence may settle recovery. */
+async function confirmRecoveryFromSignedSubscription(client, eventId, subscription) {
+  if (subscription?.evidenceSource !== "signed_webhook" || subscription.status !== "active" || subscription.cancellationScheduled !== true
+    || !subscription.subscriptionId || !subscription.customerId || !subscription.productId || !subscription.brandId || !subscription.businessId
+    || !subscription.billingStart || !subscription.billingEnd || !subscription.occurredAt) return false;
+  const { rows } = await client.query(`UPDATE cancellation_recovery_cases c SET
+      state='confirmed',last_verified_at=now(),lease_token=NULL,lease_until=NULL,
+      resolution_evidence=jsonb_build_object('source','signed_webhook','eventId',$1::text,'subscriptionId',$2::text,'customerId',$3::text,'productId',$4::text,'brandId',$5::text,'businessId',$6::text,'billingStart',$7::timestamptz,'billingEnd',$8::timestamptz),
+      audit=audit||jsonb_build_array(jsonb_build_object('at',now(),'event','signed_webhook_confirmed')),updated_at=now()
+    FROM dodo_subscriptions s
+    WHERE c.state='unresolved' AND c.subscription_id=$2 AND c.dodo_customer_id=$3 AND c.product_id=$4 AND c.brand_id=$5 AND c.business_id=$6
+      AND date_trunc('milliseconds',c.billing_period_start)=date_trunc('milliseconds',$7::timestamptz)
+      AND date_trunc('milliseconds',c.billing_period_end)=date_trunc('milliseconds',$8::timestamptz)
+      AND s.dodo_subscription_id=c.subscription_id AND s.subscriber_id=c.subscriber_id AND s.dodo_customer_id=c.dodo_customer_id
+      AND s.product_id=c.product_id AND s.ownership_provenance='verified' AND s.status='active'
+      AND date_trunc('milliseconds',s.billing_period_start)=date_trunc('milliseconds',c.billing_period_start)
+      AND date_trunc('milliseconds',s.billing_period_end)=date_trunc('milliseconds',c.billing_period_end)
+      AND date_trunc('milliseconds',s.last_event_at)=date_trunc('milliseconds',$9::timestamptz)
+    RETURNING c.id`, [eventId, subscription.subscriptionId, subscription.customerId, subscription.productId, subscription.brandId, subscription.businessId, subscription.billingStart, subscription.billingEnd, subscription.occurredAt]);
+  if (!rows.length) return false;
+  await client.query(`UPDATE dodo_subscriptions SET cancellation_scheduled=true,cancellation_confirmed_at=COALESCE(cancellation_confirmed_at,now()),cancellation_request_started_at=NULL,updated_at=now()
+    WHERE dodo_subscription_id=$1 AND dodo_customer_id=$2 AND product_id=$3 AND ownership_provenance='verified' AND status='active'
+      AND date_trunc('milliseconds',billing_period_start)=date_trunc('milliseconds',$4::timestamptz)
+      AND date_trunc('milliseconds',billing_period_end)=date_trunc('milliseconds',$5::timestamptz)`, [subscription.subscriptionId, subscription.customerId, subscription.productId, subscription.billingStart, subscription.billingEnd]);
+  return true;
 }
 export async function listUnresolvedCancellationRecoveryCases() {
   const { rows } = await database().query(`SELECT id,subscription_id,billing_period_end,cancellation_requested_at,state,last_verified_at,review_deadline_at,notification_state FROM cancellation_recovery_cases WHERE state='unresolved' ORDER BY review_deadline_at ASC LIMIT 50`);
@@ -382,6 +409,7 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
         AND (provider_subscription_id IS NULL OR provider_subscription_id=$3)`, [payment.checkoutSessionId, payment.paymentId, payment.subscriptionId, ownershipEligible]);
     if (payment && ownershipEligible) await client.query(`UPDATE customer_checkout_correlations SET payment_provenance='conflicting',status='conflicted',updated_at=now()
       WHERE checkout_session_id=$1 AND (provider_payment_id IS NOT NULL AND provider_payment_id<>$2 OR provider_subscription_id IS NOT NULL AND provider_subscription_id<>$3)`, [payment.checkoutSessionId, payment.paymentId, payment.subscriptionId]);
+    if (subscription && ownershipEligible) await confirmRecoveryFromSignedSubscription(client, eventId, subscription);
     await hooks.afterEvidence?.();
     if (ownershipEligible && subscriptionId) await bindProviderVerifiedSubscription(client, subscriptionId);
     await client.query("COMMIT"); return true;

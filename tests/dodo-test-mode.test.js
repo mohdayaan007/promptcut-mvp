@@ -35,6 +35,14 @@ test("read-only cancellation deadline includes a stalled response body and permi
   } finally { process.env = old; }
 });
 
+test("subscription GET without business_id is explicit read-only, inconclusive provenance", async () => {
+  const old = { ...process.env }; Object.assign(process.env, { DODO_TEST_MODE_ENABLED: "true", DODO_TEST_API_KEY: "test", DODO_TEST_CLIPONAUT_PRODUCT_ID: config.productId, DODO_TEST_RETURN_URL: "http://localhost:3000/return", DODO_TEST_BUSINESS_ID: config.businessId, DODO_TEST_BRAND_ID: config.brandId, DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED: "true" });
+  try {
+    const result = await getDodoTestCancellationState({ subscriptionId: "sub_genuine_schema", fetchImpl: async () => Response.json({ subscription_id: "sub_genuine_schema", product_id: config.productId, brand_id: config.brandId, status: "cancelled", cancel_at_next_billing_date: false, previous_billing_date: "2026-10-01T00:00:00.000Z", next_billing_date: "2026-11-01T00:00:00.000Z", customer: { customer_id: "cus_genuine" } }) });
+    assert.deepEqual({ status: result.status, businessId: result.businessId, businessProvenance: result.businessProvenance, evidenceSource: result.evidenceSource }, { status: "cancelled", businessId: null, businessProvenance: "absent", evidenceSource: "subscription_get" });
+  } finally { process.env = old; }
+});
+
 test("canonical 24-byte and 32-byte webhook secrets verify signatures", () => {
   const body = JSON.stringify(base()); const now = Date.now(); const headers = signed(body);
   assert.equal(verifyDodoWebhook({ headers, rawBody: body, secret, now }), "evt_1");

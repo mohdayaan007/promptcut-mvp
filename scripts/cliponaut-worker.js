@@ -18,7 +18,7 @@ import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
 import { jobConfig } from "@/lib/jobs/job-config";
 import {
   claimNextJob, completeJob, expireUploadJob, failJob, getAbandonedUploads, getJobsForCleanup, heartbeatJob, isJobCancelled, markOutputCleaned,
-  markSourcesCleaned, recoverStaleJobs, saveJobPlan, setJobStatus, syncVersionStatus, leaseDueCancellationRecoveryCases, recordCancellationRecoveryEvidence, confirmCancellationRecoveryCase
+  markSourcesCleaned, recoverStaleJobs, saveJobPlan, setJobStatus, syncVersionStatus, leaseDueCancellationRecoveryCases, recordCancellationRecoveryEvidence
 } from "@/lib/jobs/job-store";
 import { cancellationRecoveryEnabled, getDodoTestCancellationState } from "@/lib/dodo-test-mode";
 import { createCancellationRecoveryMaintenance } from "@/lib/cancellation-recovery-maintenance";
@@ -84,8 +84,10 @@ async function reconcileCancellationRecoveryCases() {
   for (const recovery of await leaseDueCancellationRecoveryCases()) {
     try {
       const provider = await getDodoTestCancellationState({ subscriptionId: recovery.subscription_id });
-      const confirmed = provider.scheduled && await confirmCancellationRecoveryCase(recovery.id, recovery.leaseToken, provider, { productId: process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID, businessId: process.env.DODO_TEST_BUSINESS_ID, brandId: process.env.DODO_TEST_BRAND_ID });
-      if (!confirmed) await recordCancellationRecoveryEvidence(recovery.id, recovery.leaseToken, { confirmed: false });
+      // Subscription GET intentionally has no verified business provenance in
+      // the current SDK schema. It informs the audit/retry schedule only; a
+      // fully pinned signed webhook performs authoritative confirmation.
+      await recordCancellationRecoveryEvidence(recovery.id, recovery.leaseToken, { confirmed: false, source: provider.evidenceSource, businessProvenance: provider.businessProvenance });
     } catch { await recordCancellationRecoveryEvidence(recovery.id, recovery.leaseToken, { confirmed: false }).catch(() => {}); }
   }
 }
