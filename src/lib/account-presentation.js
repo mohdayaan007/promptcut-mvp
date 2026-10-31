@@ -25,6 +25,16 @@ export function cancellationManagementState(cancellation, now = Date.now()) {
   if (!currentEnd) return { enabled: true, state: "none", periodEnd: null };
   return { enabled: true, state: ["pending", "scheduled"].includes(cancellation.state) ? cancellation.state : "none", periodEnd: currentEnd };
 }
+export function cancellationUiState(persistedState, phase) {
+  if (phase === "loading") return "loading";
+  if (phase === "scheduled") return "scheduled";
+  if (phase === "pending" || phase === "checking") return "pending";
+  return persistedState;
+}
+export function createCancellationRequestGuard() {
+  let inFlight = false;
+  return { start() { if (inFlight) return false; inFlight = true; return true; }, finish() { inFlight = false; } };
+}
 export function editingReadiness(status, usage, now) {
   if (!["active", "cancellation_scheduled"].includes(status)) return { title: "New renders unavailable", detail: "A current active subscription is required before another paid render can start." };
   const period = billingPeriodState(usage, now);

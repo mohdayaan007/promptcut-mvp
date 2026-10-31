@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
-import { accountState, billingPeriodState, cancellationManagementState, editingReadiness, performLogout, usageState } from "@/lib/account-presentation";
+import { accountState, billingPeriodState, cancellationManagementState, cancellationUiState, createCancellationRequestGuard, editingReadiness, performLogout, usageState } from "@/lib/account-presentation";
 
 test("account presentation covers subscription and unavailable usage states", () => {
   for (const status of ["not_subscribed", "pending_verification", "active", "past_due", "cancelled", "expired"]) assert.ok(accountState(status).title);
@@ -32,6 +32,18 @@ test("cancellation management only presents verified current-period state", () =
   assert.deepEqual(cancellationManagementState({ enabled: true, state: "pending", periodEnd: end }, now), { enabled: true, state: "pending", periodEnd: end });
   assert.deepEqual(cancellationManagementState({ enabled: true, state: "scheduled", periodEnd: end }, now), { enabled: true, state: "scheduled", periodEnd: end });
   assert.deepEqual(cancellationManagementState({ enabled: true, state: "scheduled", periodEnd: "2026-10-01T12:00:00.000Z" }, now), { enabled: true, state: "none", periodEnd: null });
+});
+
+test("outstanding cancellation takes UI precedence and duplicate interactions are single-flight", () => {
+  assert.equal(cancellationUiState("none", "loading"), "loading");
+  assert.equal(cancellationUiState("none", "scheduled"), "scheduled");
+  assert.equal(cancellationUiState("none", "pending"), "pending");
+  assert.equal(cancellationUiState("none", "error"), "none");
+  const guard = createCancellationRequestGuard();
+  assert.equal(guard.start(), true, "the confirmed request may start once");
+  assert.equal(guard.start(), false, "a rapid second confirmation cannot create another local POST");
+  guard.finish();
+  assert.equal(guard.start(), true, "settled requests retain the existing retry behavior");
 });
 
 function luminance(hex) { const values = hex.match(/[a-f\d]{2}/gi).map((value) => { const channel = parseInt(value, 16) / 255; return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4; }); return 0.2126 * values[0] + 0.7152 * values[1] + 0.0722 * values[2]; }
