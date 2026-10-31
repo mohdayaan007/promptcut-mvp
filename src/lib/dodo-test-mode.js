@@ -37,6 +37,13 @@ export function dodoTestCancellationConfig() {
   return config;
 }
 export function periodEndCancellationEnabled() { return process.env.DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED === "true"; }
+/** Default-off maintenance reads for durable uncertain-cancellation recovery. */
+export function cancellationRecoveryEnabled() { return process.env.DODO_TEST_CANCELLATION_RECOVERY_ENABLED === "true"; }
+export function dodoTestCancellationRecoveryConfig() {
+  const config = dodoTestCancellationConfig();
+  if (!cancellationRecoveryEnabled()) throw new DodoConfigurationError("Dodo Test Mode cancellation recovery is disabled");
+  return config;
+}
 
 function parseCancellationSubscription(subscription, config, expectedSubscriptionId, { requireScheduled = false } = {}) {
   if (!subscription || typeof subscription !== "object" || subscription.subscription_id !== expectedSubscriptionId

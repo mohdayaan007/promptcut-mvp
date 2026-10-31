@@ -1,5 +1,5 @@
 import { customerSessionToken } from "@/lib/customer-auth";
-import { DodoCancellationError, DodoConfigurationError, dodoTestCancellationConfig, periodEndCancellationEnabled, scheduleDodoTestCancellation } from "@/lib/dodo-test-mode";
+import { DodoCancellationError, DodoConfigurationError, cancellationRecoveryEnabled, dodoTestCancellationConfig, periodEndCancellationEnabled, scheduleDodoTestCancellation } from "@/lib/dodo-test-mode";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
 import { beginCustomerPeriodEndCancellation, clearCustomerPeriodEndCancellationRequest, confirmCustomerPeriodEndCancellation, getCustomerCancellableSubscription, getCustomerSession } from "@/lib/jobs/job-store";
 
@@ -24,7 +24,9 @@ export function createCancellationHandler({ schedule = scheduleDodoTestCancellat
     subscription = await getCustomerCancellableSubscription(customer.subscriber_id);
     if (!subscription) throw new PublicRequestError("No verified active Cliponaut subscription can be cancelled.", 404);
     if (subscription.cancellation_scheduled) return Response.json({ scheduled: true, periodEnd: new Date(subscription.billing_period_end).toISOString(), duplicate: true });
-    if (!await beginCustomerPeriodEndCancellation(customer.subscriber_id, subscription.dodo_subscription_id)) return Response.json({ scheduled: false, pending: true }, { status: 202 });
+    const recoveryProvenance = cancellationRecoveryEnabled() ? { businessId: dodoTestCancellationConfig().businessId, brandId: dodoTestCancellationConfig().brandId } : null;
+    if (recoveryProvenance && !subscription.dodo_customer_id) throw new PublicRequestError("Cancellation recovery is unavailable until verified provider customer evidence exists.", 503);
+    if (!await beginCustomerPeriodEndCancellation(customer.subscriber_id, subscription.dodo_subscription_id, recoveryProvenance)) return Response.json({ scheduled: false, pending: true }, { status: 202 });
     const provider = await schedule({ subscriptionId: subscription.dodo_subscription_id });
     const confirmed = await confirmCustomerPeriodEndCancellation(customer.subscriber_id, provider.subscriptionId, provider.billingStart, provider.billingEnd);
     if (!confirmed) throw new DodoCancellationError("Cancellation was confirmed by Dodo but could not be safely matched to the current verified period.", { uncertain: true });

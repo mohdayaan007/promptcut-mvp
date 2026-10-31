@@ -139,6 +139,23 @@ CREATE TABLE IF NOT EXISTS customer_checkout_correlations (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS customer_checkout_correlations_subscriber_idx ON customer_checkout_correlations (subscriber_id, status, expires_at);
+CREATE TABLE IF NOT EXISTS cancellation_recovery_cases (
+  id UUID PRIMARY KEY,
+  subscriber_id UUID NOT NULL REFERENCES subscriber_identities(id),
+  subscription_id TEXT NOT NULL REFERENCES dodo_subscriptions(dodo_subscription_id),
+  dodo_customer_id TEXT NOT NULL,
+  product_id TEXT NOT NULL, business_id TEXT NOT NULL, brand_id TEXT NOT NULL,
+  billing_period_start TIMESTAMPTZ NOT NULL, billing_period_end TIMESTAMPTZ NOT NULL,
+  cancellation_requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  state TEXT NOT NULL DEFAULT 'unresolved' CHECK (state IN ('unresolved','confirmed','escalation_required')),
+  next_reconciliation_at TIMESTAMPTZ NOT NULL DEFAULT now(), review_deadline_at TIMESTAMPTZ NOT NULL,
+  lease_token UUID, lease_until TIMESTAMPTZ, last_verified_at TIMESTAMPTZ,
+  notification_state TEXT NOT NULL DEFAULT 'unconfigured' CHECK (notification_state IN ('unconfigured','pending','sent','failed')),
+  resolution_evidence JSONB, audit JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (subscription_id, billing_period_start)
+);
+CREATE INDEX IF NOT EXISTS cancellation_recovery_due_idx ON cancellation_recovery_cases (state, next_reconciliation_at, lease_until);
 `;
 
 function newId() { return crypto.randomUUID(); }
@@ -210,13 +227,41 @@ export async function confirmCustomerPeriodEndCancellation(subscriberId, subscri
     RETURNING *`, [subscriptionId, subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || "", billingStart, billingEnd]);
   return rows[0] || null;
 }
-export async function beginCustomerPeriodEndCancellation(subscriberId, subscriptionId) {
-  const { rows } = await database().query(`UPDATE dodo_subscriptions SET cancellation_request_started_at=now(),updated_at=now()
-    WHERE dodo_subscription_id=$1 AND subscriber_id=$2 AND product_id=$3 AND ownership_provenance='verified' AND status='active'
-      AND cancellation_scheduled=false AND cancellation_request_started_at IS NULL AND billing_period_start <= now() AND billing_period_end > now() RETURNING *`, [subscriptionId, subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""]);
-  return rows[0] || null;
+export async function beginCustomerPeriodEndCancellation(subscriberId, subscriptionId, provenance = null) {
+  const client = await database().connect(); try { await client.query("BEGIN");
+    const { rows } = await client.query(`UPDATE dodo_subscriptions SET cancellation_request_started_at=now(),updated_at=now()
+      WHERE dodo_subscription_id=$1 AND subscriber_id=$2 AND product_id=$3 AND ownership_provenance='verified' AND status='active'
+        AND cancellation_scheduled=false AND cancellation_request_started_at IS NULL AND billing_period_start <= now() AND billing_period_end > now() RETURNING *`, [subscriptionId, subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""]);
+    const subscription = rows[0];
+    if (subscription && provenance) {
+      if (!subscription.dodo_customer_id || !provenance.businessId || !provenance.brandId) throw new Error("Cancellation recovery provenance is incomplete");
+      await client.query(`INSERT INTO cancellation_recovery_cases (id,subscriber_id,subscription_id,dodo_customer_id,product_id,business_id,brand_id,billing_period_start,billing_period_end,review_deadline_at,audit)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,GREATEST(now()+interval '15 minutes',$9::timestamptz-interval '24 hours'),jsonb_build_array(jsonb_build_object('at',now(),'event','request_started')))
+        ON CONFLICT (subscription_id,billing_period_start) DO NOTHING`, [newId(),subscriberId,subscription.dodo_subscription_id,subscription.dodo_customer_id,subscription.product_id,provenance.businessId,provenance.brandId,subscription.billing_period_start,subscription.billing_period_end]);
+    }
+    await client.query("COMMIT"); return subscription || null;
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
 export async function clearCustomerPeriodEndCancellationRequest(subscriptionId) { await database().query("UPDATE dodo_subscriptions SET cancellation_request_started_at=NULL,updated_at=now() WHERE dodo_subscription_id=$1 AND cancellation_scheduled=false", [subscriptionId]); }
+export async function leaseDueCancellationRecoveryCases({ limit = 10, leaseMs = 30_000 } = {}) {
+  const token = newId(); const { rows } = await database().query(`WITH due AS (SELECT id FROM cancellation_recovery_cases WHERE state='unresolved' AND next_reconciliation_at <= now() AND (lease_until IS NULL OR lease_until < now()) ORDER BY next_reconciliation_at FOR UPDATE SKIP LOCKED LIMIT $1)
+    UPDATE cancellation_recovery_cases c SET lease_token=$2,lease_until=now()+($3::text||' milliseconds')::interval,updated_at=now() FROM due WHERE c.id=due.id RETURNING c.*`, [Math.min(Math.max(Number(limit) || 1,1),25),token,Math.max(Number(leaseMs) || 30_000,1_000)]);
+  return rows.map((row) => ({ ...row, leaseToken: token }));
+}
+export async function recordCancellationRecoveryEvidence(caseId, leaseToken, evidence) {
+  const confirmed = evidence?.confirmed === true; const { rows } = await database().query(`UPDATE cancellation_recovery_cases SET state=CASE WHEN $3 THEN 'confirmed' ELSE state END,last_verified_at=now(),next_reconciliation_at=CASE WHEN $3 THEN next_reconciliation_at ELSE now()+interval '30 minutes' END,lease_token=NULL,lease_until=NULL,resolution_evidence=CASE WHEN $3 THEN $4::jsonb ELSE resolution_evidence END,audit=audit||jsonb_build_array(jsonb_build_object('at',now(),'event',CASE WHEN $3 THEN 'provider_confirmed' ELSE 'provider_unresolved' END)),updated_at=now()
+    WHERE id=$1 AND lease_token=$2 AND state='unresolved' RETURNING *`, [caseId,leaseToken,confirmed,JSON.stringify(confirmed ? evidence : {})]);
+  return rows[0] || null;
+}
+export async function listUnresolvedCancellationRecoveryCases() {
+  const { rows } = await database().query(`SELECT id,subscription_id,billing_period_end,cancellation_requested_at,state,last_verified_at,review_deadline_at,notification_state FROM cancellation_recovery_cases WHERE state='unresolved' ORDER BY review_deadline_at ASC LIMIT 50`);
+  return rows;
+}
+export async function getCancellationRecoveryCaseForOperator(caseId) {
+  if (!UUID_PATTERN.test(String(caseId || ""))) return null;
+  const { rows } = await database().query(`SELECT c.*,s.ownership_provenance,s.status AS subscription_status FROM cancellation_recovery_cases c JOIN dodo_subscriptions s ON s.dodo_subscription_id=c.subscription_id WHERE c.id=$1`, [caseId]);
+  return rows[0] || null;
+}
 export async function reserveRenderCapacity(subscriberId) {
   const client = await database().connect(); try { await client.query("BEGIN");
     const entitlement = (await client.query(`SELECT s.* FROM dodo_subscriptions s JOIN subscriber_identities i ON i.id=s.subscriber_id WHERE s.subscriber_id=$1 AND s.product_id=$2 AND s.status='active' AND s.ownership_provenance='verified' AND s.billing_period_start IS NOT NULL AND s.billing_period_start <= now() AND s.billing_period_end > now() AND i.verified_at IS NOT NULL AND i.google_subject IS NOT NULL FOR UPDATE`, [subscriberId, process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || ""])).rows[0];

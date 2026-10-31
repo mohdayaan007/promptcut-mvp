@@ -18,14 +18,16 @@ import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
 import { jobConfig } from "@/lib/jobs/job-config";
 import {
   claimNextJob, completeJob, expireUploadJob, failJob, getAbandonedUploads, getJobsForCleanup, heartbeatJob, isJobCancelled, markOutputCleaned,
-  markSourcesCleaned, recoverStaleJobs, saveJobPlan, setJobStatus, syncVersionStatus
+  markSourcesCleaned, recoverStaleJobs, saveJobPlan, setJobStatus, syncVersionStatus, leaseDueCancellationRecoveryCases, recordCancellationRecoveryEvidence, confirmCustomerPeriodEndCancellation
 } from "@/lib/jobs/job-store";
+import { cancellationRecoveryEnabled, getDodoTestCancellationState } from "@/lib/dodo-test-mode";
 import { abortMultipartUpload, deleteObjects, downloadObject, outputObjectKey, uploadOutput } from "@/lib/jobs/storage";
 
 const config = jobConfig();
 const workerId = `${os.hostname()}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
 let stopping = false;
 let lastCleanup = 0;
+let lastCancellationRecovery = 0;
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function safeError(error) {
@@ -74,6 +76,17 @@ async function cleanExpiredObjects() {
       await deleteObjects([job.outputKey]);
       await markOutputCleaned(job.id);
     }
+  }
+}
+async function reconcileCancellationRecoveryCases() {
+  if (!cancellationRecoveryEnabled()) return;
+  for (const recovery of await leaseDueCancellationRecoveryCases()) {
+    try {
+      const provider = await getDodoTestCancellationState({ subscriptionId: recovery.subscription_id });
+      let confirmed = null;
+      if (provider.scheduled) confirmed = await confirmCustomerPeriodEndCancellation(recovery.subscriber_id, provider.subscriptionId, provider.billingStart, provider.billingEnd);
+      await recordCancellationRecoveryEvidence(recovery.id, recovery.leaseToken, confirmed ? { confirmed: true, subscriptionId: provider.subscriptionId, billingStart: provider.billingStart, billingEnd: provider.billingEnd } : { confirmed: false });
+    } catch { await recordCancellationRecoveryEvidence(recovery.id, recovery.leaseToken, { confirmed: false }).catch(() => {}); }
   }
 }
 
@@ -259,6 +272,7 @@ async function run() {
   while (!stopping) {
     try {
       await recoverStaleJobs(config);
+      if (Date.now() - lastCancellationRecovery > 60_000) { await reconcileCancellationRecoveryCases(); lastCancellationRecovery = Date.now(); }
       if (Date.now() - lastCleanup > 60 * 60 * 1_000) {
         await cleanExpiredObjects();
         lastCleanup = Date.now();
