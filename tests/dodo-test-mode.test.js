@@ -27,6 +27,14 @@ test("read-only cancellation retrieval aborts a stalled provider read", async ()
   try { await assert.rejects(() => getDodoTestCancellationState({ subscriptionId: "sub_timeout", fetchImpl: async () => new Promise(() => {}) }), /uncertain/i); } finally { process.env = old; }
 });
 
+test("read-only cancellation deadline includes a stalled response body and permits a later read", async () => {
+  const old = { ...process.env }; Object.assign(process.env, { DODO_TEST_MODE_ENABLED: "true", DODO_TEST_API_KEY: "test", DODO_TEST_CLIPONAUT_PRODUCT_ID: config.productId, DODO_TEST_RETURN_URL: "http://localhost:3000/return", DODO_TEST_BUSINESS_ID: config.businessId, DODO_TEST_BRAND_ID: config.brandId, DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED: "true", DODO_TEST_RECOVERY_READ_TIMEOUT_MS: "100" });
+  try {
+    const started = Date.now(); await assert.rejects(() => getDodoTestCancellationState({ subscriptionId: "sub_body_timeout", fetchImpl: async () => ({ ok: true, json: () => new Promise(() => {}) }) }), /uncertain/i); assert.ok(Date.now() - started < 1_000, "body timeout remains bounded");
+    const now = new Date(); const later = new Date(now.getTime() + 60_000); const result = await getDodoTestCancellationState({ subscriptionId: "sub_after_timeout", fetchImpl: async () => new Response(JSON.stringify({ subscription_id: "sub_after_timeout", product_id: config.productId, brand_id: config.brandId, business_id: config.businessId, status: "active", cancel_at_next_billing_date: true, previous_billing_date: now.toISOString(), next_billing_date: later.toISOString(), customer: { customer_id: "cus_after" } })) }); assert.equal(result.subscriptionId, "sub_after_timeout");
+  } finally { process.env = old; }
+});
+
 test("canonical 24-byte and 32-byte webhook secrets verify signatures", () => {
   const body = JSON.stringify(base()); const now = Date.now(); const headers = signed(body);
   assert.equal(verifyDodoWebhook({ headers, rawBody: body, secret, now }), "evt_1");

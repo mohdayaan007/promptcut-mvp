@@ -85,13 +85,14 @@ export async function getDodoTestCancellationState({ subscriptionId, fetchImpl =
   const config = dodoTestCancellationConfig();
   if (typeof subscriptionId !== "string" || !subscriptionId) throw new DodoCancellationError("Subscription is invalid");
   const controller = new AbortController(); let timer;
-  let response; try {
+  try {
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true })); }, recoveryReadTimeoutMs()); });
-    response = await Promise.race([fetchImpl(`${TEST_API_BASE}/subscriptions/${encodeURIComponent(subscriptionId)}`, { headers: { Authorization: `Bearer ${config.apiKey}` }, signal: controller.signal }), timeout]);
-  } catch { throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true }); } finally { clearTimeout(timer); }
-  if (!response.ok) throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true });
-  let body; try { body = await response.json(); } catch { throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true }); }
-  try { return parseCancellationSubscription(body, config, subscriptionId); } catch { throw new DodoCancellationError("Cancellation status requires review.", { uncertain: true }); }
+    return await Promise.race([Promise.resolve(fetchImpl(`${TEST_API_BASE}/subscriptions/${encodeURIComponent(subscriptionId)}`, { headers: { Authorization: `Bearer ${config.apiKey}` }, signal: controller.signal })).then(async (response) => {
+      if (!response?.ok) throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true });
+      const body = await response.json();
+      return parseCancellationSubscription(body, config, subscriptionId);
+    }), timeout]);
+  } catch (error) { if (error instanceof DodoCancellationError) throw error; throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true }); } finally { clearTimeout(timer); }
 }
 
 export function normalizeEmail(email) {

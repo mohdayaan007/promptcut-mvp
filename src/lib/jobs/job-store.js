@@ -256,11 +256,31 @@ export async function recordCancellationRecoveryEvidence(caseId, leaseToken, evi
 /** Confirmation is bound to the immutable case, not the latest subscription period or current config alone. */
 export async function confirmCancellationRecoveryCase(caseId, leaseToken, evidence, provenance) {
   const client = await database().connect(); try { await client.query("BEGIN");
-    const { rows } = await client.query(`SELECT c.*,s.subscriber_id,s.dodo_customer_id,s.product_id,s.ownership_provenance,s.status,s.billing_period_start AS current_start,s.billing_period_end AS current_end FROM cancellation_recovery_cases c JOIN dodo_subscriptions s ON s.dodo_subscription_id=c.subscription_id WHERE c.id=$1 AND c.lease_token=$2 AND c.state='unresolved' FOR UPDATE`, [caseId,leaseToken]);
-    const recovery = rows[0]; const same = recovery && evidence?.scheduled === true && recovery.subscription_id === evidence.subscriptionId && recovery.dodo_customer_id === evidence.customerId && recovery.product_id === evidence.productId && recovery.brand_id === evidence.brandId && recovery.business_id === provenance?.businessId && recovery.brand_id === provenance?.brandId && recovery.product_id === provenance?.productId && recovery.ownership_provenance === 'verified' && recovery.status === 'active' && new Date(recovery.billing_period_start).getTime() === new Date(evidence.billingStart).getTime() && new Date(recovery.billing_period_end).getTime() === new Date(evidence.billingEnd).getTime() && new Date(recovery.current_start).getTime() === new Date(recovery.billing_period_start).getTime() && new Date(recovery.current_end).getTime() === new Date(recovery.billing_period_end).getTime();
+    const { rows } = await client.query(`SELECT
+      c.id AS case_id,c.subscriber_id AS case_subscriber_id,c.subscription_id AS case_subscription_id,c.dodo_customer_id AS case_customer_id,
+      c.product_id AS case_product_id,c.business_id AS case_business_id,c.brand_id AS case_brand_id,
+      c.billing_period_start AS case_start,c.billing_period_end AS case_end,
+      s.subscriber_id AS subscription_subscriber_id,s.dodo_customer_id AS subscription_customer_id,s.product_id AS subscription_product_id,
+      s.ownership_provenance AS subscription_ownership_provenance,s.status AS subscription_status,
+      s.billing_period_start AS subscription_start,s.billing_period_end AS subscription_end
+      FROM cancellation_recovery_cases c JOIN dodo_subscriptions s ON s.dodo_subscription_id=c.subscription_id
+      WHERE c.id=$1 AND c.lease_token=$2 AND c.state='unresolved' FOR UPDATE`, [caseId,leaseToken]);
+    const recovery = rows[0]; const same = recovery && evidence?.scheduled === true
+      && recovery.case_subscription_id === evidence.subscriptionId && recovery.case_customer_id === evidence.customerId
+      && recovery.subscription_customer_id === recovery.case_customer_id && recovery.subscription_subscriber_id === recovery.case_subscriber_id
+      && recovery.case_product_id === evidence.productId && recovery.subscription_product_id === recovery.case_product_id
+      && recovery.case_brand_id === evidence.brandId && recovery.case_business_id === provenance?.businessId
+      && recovery.case_brand_id === provenance?.brandId && recovery.case_product_id === provenance?.productId
+      && recovery.subscription_ownership_provenance === 'verified' && recovery.subscription_status === 'active'
+      && new Date(recovery.case_start).getTime() === new Date(evidence.billingStart).getTime()
+      && new Date(recovery.case_end).getTime() === new Date(evidence.billingEnd).getTime()
+      && new Date(recovery.subscription_start).getTime() === new Date(recovery.case_start).getTime()
+      && new Date(recovery.subscription_end).getTime() === new Date(recovery.case_end).getTime();
     if (!same) { await client.query("ROLLBACK"); return null; }
-    await client.query("UPDATE dodo_subscriptions SET cancellation_scheduled=true,cancellation_confirmed_at=now(),cancellation_request_started_at=NULL,updated_at=now() WHERE dodo_subscription_id=$1", [recovery.subscription_id]);
-    const confirmed = await client.query("UPDATE cancellation_recovery_cases SET state='confirmed',last_verified_at=now(),lease_token=NULL,lease_until=NULL,resolution_evidence=$3::jsonb,audit=audit||jsonb_build_array(jsonb_build_object('at',now(),'event','provider_confirmed')),updated_at=now() WHERE id=$1 AND lease_token=$2 RETURNING *", [caseId,leaseToken,JSON.stringify(evidence)]);
+    const finalized = await client.query("UPDATE dodo_subscriptions SET cancellation_scheduled=true,cancellation_confirmed_at=now(),cancellation_request_started_at=NULL,updated_at=now() WHERE dodo_subscription_id=$1 AND subscriber_id=$2 AND dodo_customer_id=$3 AND product_id=$4 AND ownership_provenance='verified' AND status='active' AND date_trunc('milliseconds', billing_period_start)=$5 AND date_trunc('milliseconds', billing_period_end)=$6 RETURNING dodo_subscription_id", [recovery.case_subscription_id,recovery.case_subscriber_id,recovery.case_customer_id,recovery.case_product_id,recovery.case_start,recovery.case_end]);
+    if (!finalized.rowCount) { await client.query("ROLLBACK"); return null; }
+    const confirmed = await client.query("UPDATE cancellation_recovery_cases SET state='confirmed',last_verified_at=now(),lease_token=NULL,lease_until=NULL,resolution_evidence=$3::jsonb,audit=audit||jsonb_build_array(jsonb_build_object('at',now(),'event','provider_confirmed')),updated_at=now() WHERE id=$1 AND lease_token=$2 AND dodo_customer_id=$4 AND product_id=$5 AND business_id=$6 AND brand_id=$7 AND date_trunc('milliseconds', billing_period_start)=$8 AND date_trunc('milliseconds', billing_period_end)=$9 RETURNING *", [caseId,leaseToken,JSON.stringify(evidence),recovery.case_customer_id,recovery.case_product_id,recovery.case_business_id,recovery.case_brand_id,recovery.case_start,recovery.case_end]);
+    if (!confirmed.rowCount) { await client.query("ROLLBACK"); return null; }
     await client.query("COMMIT"); return confirmed.rows[0] || null;
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
