@@ -382,7 +382,9 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
       if (ownershipEligible && subscriptionId) await bindProviderVerifiedSubscription(client, subscriptionId);
       await client.query("COMMIT"); return false;
     }
-    if (subscription) await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,status,last_event_at,ownership_provenance,billing_period_start,billing_period_end,cancellation_scheduled,cancellation_confirmed_at)
+    let subscriptionApplied = false;
+    if (subscription) {
+      const write = await client.query(`INSERT INTO dodo_subscriptions (dodo_subscription_id,product_id,dodo_customer_id,customer_email,status,last_event_at,ownership_provenance,billing_period_start,billing_period_end,cancellation_scheduled,cancellation_confirmed_at)
       VALUES ($1,$2,$3,$4,$5,$6,CASE WHEN $7 THEN 'verified' ELSE 'unverified' END,$8,$9,CASE WHEN $7 THEN $10 ELSE false END,CASE WHEN $7 AND $10 THEN now() ELSE NULL END)
       ON CONFLICT (dodo_subscription_id) DO UPDATE SET product_id=EXCLUDED.product_id,dodo_customer_id=EXCLUDED.dodo_customer_id,
         customer_email=COALESCE(EXCLUDED.customer_email,dodo_subscriptions.customer_email),subscriber_id=COALESCE(dodo_subscriptions.subscriber_id, EXCLUDED.subscriber_id),status=EXCLUDED.status,last_event_at=EXCLUDED.last_event_at,
@@ -401,6 +403,10 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
       WHERE EXCLUDED.last_event_at > dodo_subscriptions.last_event_at
         AND ($7 OR dodo_subscriptions.ownership_provenance <> 'verified')`,
     [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt, ownershipEligible, subscription.billingStart, subscription.billingEnd, subscription.cancellationScheduled]);
+      // Recovery may rely only on this event when the strict lifecycle write
+      // itself won. Equality and older events intentionally produce rowCount 0.
+      subscriptionApplied = write.rowCount === 1;
+    }
     if (payment) await client.query(`UPDATE customer_checkout_correlations
       SET provider_payment_id=$2,provider_subscription_id=$3,payment_provenance=CASE WHEN $4 THEN 'verified' ELSE payment_provenance END,
         status=CASE WHEN $4 THEN 'payment_verified' ELSE status END,updated_at=now()
@@ -409,7 +415,7 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
         AND (provider_subscription_id IS NULL OR provider_subscription_id=$3)`, [payment.checkoutSessionId, payment.paymentId, payment.subscriptionId, ownershipEligible]);
     if (payment && ownershipEligible) await client.query(`UPDATE customer_checkout_correlations SET payment_provenance='conflicting',status='conflicted',updated_at=now()
       WHERE checkout_session_id=$1 AND (provider_payment_id IS NOT NULL AND provider_payment_id<>$2 OR provider_subscription_id IS NOT NULL AND provider_subscription_id<>$3)`, [payment.checkoutSessionId, payment.paymentId, payment.subscriptionId]);
-    if (subscription && ownershipEligible) await confirmRecoveryFromSignedSubscription(client, eventId, subscription);
+    if (subscriptionApplied && ownershipEligible) await confirmRecoveryFromSignedSubscription(client, eventId, subscription);
     await hooks.afterEvidence?.();
     if (ownershipEligible && subscriptionId) await bindProviderVerifiedSubscription(client, subscriptionId);
     await client.query("COMMIT"); return true;
