@@ -1,5 +1,6 @@
 const JOB_STORAGE_KEY = "cliponaut-active-job";
 const EDITING_SESSION_STORAGE_KEY = "cliponaut-editing-session";
+const PENDING_PARTIAL_EDIT_STORAGE_KEY = "cliponaut-pending-partial-edit";
 export const UNDO_STATE_VERSION = 1;
 export const ACTIVE_JOB_STATUSES = ["uploading", "queued", "analyzing", "rendering"];
 const PART_UPLOAD_MAX_ATTEMPTS = 3;
@@ -8,7 +9,12 @@ const PART_UPLOAD_RETRY_DELAYS_MS = [500, 1_000];
 async function requestJson(url, options = {}, fetchFn = fetch) {
   const response = await fetchFn(url, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || "Request failed");
+  if (!response.ok) {
+    const error = new Error(body.error || "Request failed");
+    error.status = response.status;
+    if (body.partial) error.partial = body.partial;
+    throw error;
+  }
   return body;
 }
 
@@ -57,6 +63,7 @@ function safeTerminalState(state) {
     session: { id: state.session.id, accessToken: state.session.accessToken },
     status: state.status,
     error: safePrompt(state.error),
+    prompt: safePrompt(state.prompt),
     sources: safeSources(state.sources)
   };
 }
@@ -145,7 +152,9 @@ export function consumeUndo(state) {
 /** Persists only the latest authoritative terminal presentation, never history. */
 export function recordTerminalJob(state, session, job) {
   const normalized = normalizeUndoState(state).state;
-  const terminal = safeTerminalState({ session, status: job?.status, error: job?.error, sources: job?.sources });
+  const terminal = safeTerminalState({
+    session, status: job?.status, error: job?.error, prompt: job?.prompt ?? normalized.active?.prompt, sources: job?.sources
+  });
   return { ...normalized, active: null, terminal };
 }
 
@@ -396,16 +405,38 @@ export function saveEditingSession(session, storage) {
   return session;
 }
 export function clearEditingSession(storage) { browserStorage(storage)?.removeItem(EDITING_SESSION_STORAGE_KEY); }
-export async function submitConversationTurn(session, prompt, signal, baseJobId) {
+export function loadPendingPartialEdit(storage) {
+  const target = browserStorage(storage);
+  if (!target) return null;
+  try {
+    const pending = JSON.parse(target.getItem(PENDING_PARTIAL_EDIT_STORAGE_KEY) || "null");
+    return pending && typeof pending.sessionId === "string" && typeof pending.token === "string"
+      ? { sessionId: pending.sessionId, token: pending.token }
+      : null;
+  } catch { return null; }
+}
+export function savePendingPartialEdit(pending, storage) {
+  const target = browserStorage(storage);
+  if (!target || !pending?.sessionId || !pending?.token) return null;
+  const safe = { sessionId: pending.sessionId, token: String(pending.token).slice(0, 4000) };
+  target.setItem(PENDING_PARTIAL_EDIT_STORAGE_KEY, JSON.stringify(safe));
+  return safe;
+}
+export function clearPendingPartialEdit(storage) { browserStorage(storage)?.removeItem(PENDING_PARTIAL_EDIT_STORAGE_KEY); }
+export async function submitConversationTurn(session, prompt, signal, baseJobId, confirmationToken) {
   const response = await requestJson(`/api/editing-sessions/${session.id}`, {
     method: "POST", headers: { "x-cliponaut-session-token": session.accessToken },
-    body: JSON.stringify({ prompt, expectedVersion: session.version, ...(baseJobId ? { baseJobId } : {}) }), signal
+    body: JSON.stringify({ prompt, expectedVersion: session.version, ...(baseJobId ? { baseJobId } : {}), ...(confirmationToken ? { confirmationToken } : {}) }), signal
   });
+  if (response.pendingConfirmation) return { pendingConfirmation: response.pendingConfirmation };
   return { job: { id: response.id, accessToken: response.accessToken }, session: { ...session, version: response.version }, confirmation: response.confirmation };
 }
-export async function getEditingSessionHistory(session, signal) {
+export async function preflightEditingCapabilities(prompt, signal) {
+  return requestJson("/api/editing-capabilities", { method: "POST", body: JSON.stringify({ prompt }), signal });
+}
+export async function getEditingSessionHistory(session, signal, pendingConfirmationToken) {
   return requestJson(`/api/editing-sessions/${session.id}`, {
-    headers: { "x-cliponaut-session-token": session.accessToken }, signal
+    headers: { "x-cliponaut-session-token": session.accessToken, ...(pendingConfirmationToken ? { "x-cliponaut-pending-confirmation": pendingConfirmationToken } : {}) }, signal
   });
 }
 
@@ -424,6 +455,32 @@ export function terminalAttemptPresentation(job, retainedResultUrl = null) {
       ? "This edit was cancelled."
       : job?.error || "We couldn’t complete that edit."
   });
+}
+
+/** Preserve source cards after a rejected follow-up that has no job payload. */
+export function sourcesForTerminalAttempt(job, priorSources = []) {
+  return Array.isArray(job?.sources) && job.sources.length ? job.sources : Array.isArray(priorSources) ? priorSources : [];
+}
+
+export function terminalAttemptMessage(job, hasPreviousSuccessfulEdit = false) {
+  const suffix = hasPreviousSuccessfulEdit ? " Your previous version is still available." : " No previous edit was created.";
+  return job?.status === "cancelled"
+    ? `This edit was cancelled.${suffix}`
+    : `We couldn’t complete that edit.${suffix}`;
+}
+
+/** A durable terminal attempt still needs its workspace to present its error and sources. */
+export function hasWorkspacePresentation({ videos = [], referenceImage = null, activeJob = null, undoState = null } = {}) {
+  return Boolean(videos.length || referenceImage || activeJob || undoState?.current || undoState?.terminal);
+}
+
+/** Recovery UI may show the failed request, but never invent a successful output. */
+export function terminalAttemptConversation(terminal) {
+  if (!terminal?.prompt || !validSession(terminal.session)) return [];
+  return [
+    { role: "user", text: terminal.prompt, jobId: terminal.session.id },
+    { role: "assistant", text: terminal.error || terminalAttemptMessage(terminal, false), jobId: terminal.session.id }
+  ];
 }
 
 /** Prevents an older polling or restoration response from replacing a newer attempt. */

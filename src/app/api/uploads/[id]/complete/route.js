@@ -3,13 +3,15 @@ import { createEditingSession, getAuthorizedJob, queueJob } from "@/lib/jobs/job
 import { jsonError, jobToken, PublicRequestError, safeJobResponse } from "@/lib/jobs/http";
 import { validateJobRequest, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { hasFounderTestAccess } from "@/lib/founder-test-access";
+import { authorizePaidJob } from "@/lib/paid-editing";
+import { paidEditingEnforced } from "@/lib/jobs/job-store";
 
 export const runtime = "nodejs";
 
 export async function POST(req, { params }) {
   try {
     const { id } = await params;
-    const job = await getAuthorizedJob(id, jobToken(req));
+    const job = await authorizePaidJob(req, id, jobToken(req)) || await getAuthorizedJob(id, jobToken(req));
     if (!job || job.status !== "uploading") return jsonError(new PublicRequestError("Upload session was not found", 404));
     const { prompt, exportQuality = "standard", files, reference: submittedReference } = await req.json();
     if (!Array.isArray(files) || files.length !== job.sources.length) return jsonError(new PublicRequestError("Upload completion did not match the selected videos"));
@@ -51,7 +53,9 @@ export async function POST(req, { params }) {
     // Conversational sessions are intentionally unavailable unless the
     // server-verified, short-lived founder test cookie is present. Ordinary
     // uploads keep their established single-edit response shape.
-    const session = hasFounderTestAccess(req) ? await createEditingSession(queued.id, prompt.trim()) : null;
+    const session = paidEditingEnforced()
+      ? await createEditingSession(queued.id, prompt.trim(), job.subscriberId)
+      : hasFounderTestAccess(req) ? await createEditingSession(queued.id, prompt.trim()) : null;
     return Response.json({ ...safeJobResponse(queued), ...(session ? { session } : {}) });
   } catch (error) {
     return jsonError(error);

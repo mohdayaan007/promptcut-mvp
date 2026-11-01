@@ -18,14 +18,17 @@ import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
 import { jobConfig } from "@/lib/jobs/job-config";
 import {
   claimNextJob, completeJob, expireUploadJob, failJob, getAbandonedUploads, getJobsForCleanup, heartbeatJob, isJobCancelled, markOutputCleaned,
-  markSourcesCleaned, recoverStaleJobs, saveJobPlan, setJobStatus, syncVersionStatus
+  markSourcesCleaned, recoverStaleJobs, saveJobPlan, setJobStatus, syncVersionStatus, leaseDueCancellationRecoveryCases, recordCancellationRecoveryEvidence
 } from "@/lib/jobs/job-store";
+import { cancellationRecoveryEnabled, getDodoTestCancellationState } from "@/lib/dodo-test-mode";
+import { createCancellationRecoveryMaintenance } from "@/lib/cancellation-recovery-maintenance";
 import { abortMultipartUpload, deleteObjects, downloadObject, outputObjectKey, uploadOutput } from "@/lib/jobs/storage";
 
 const config = jobConfig();
 const workerId = `${os.hostname()}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
 let stopping = false;
 let lastCleanup = 0;
+let lastCancellationRecovery = 0;
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function safeError(error) {
@@ -74,6 +77,18 @@ async function cleanExpiredObjects() {
       await deleteObjects([job.outputKey]);
       await markOutputCleaned(job.id);
     }
+  }
+}
+async function reconcileCancellationRecoveryCases() {
+  if (!cancellationRecoveryEnabled() || stopping) return;
+  for (const recovery of await leaseDueCancellationRecoveryCases()) {
+    try {
+      const provider = await getDodoTestCancellationState({ subscriptionId: recovery.subscription_id });
+      // Subscription GET intentionally has no verified business provenance in
+      // the current SDK schema. It informs the audit/retry schedule only; a
+      // fully pinned signed webhook performs authoritative confirmation.
+      await recordCancellationRecoveryEvidence(recovery.id, recovery.leaseToken, { confirmed: false, source: provider.evidenceSource, businessProvenance: provider.businessProvenance });
+    } catch { await recordCancellationRecoveryEvidence(recovery.id, recovery.leaseToken, { confirmed: false }).catch(() => {}); }
   }
 }
 
@@ -256,9 +271,12 @@ async function processJob(job) {
 async function run() {
   if (config.workerConcurrency !== 1) throw new Error("Only one worker process is supported initially; set JOB_WORKER_CONCURRENCY=1");
   console.log(`Cliponaut worker ${workerId} started.`);
+  const recoveryMaintenance = createCancellationRecoveryMaintenance({ enabled: cancellationRecoveryEnabled, reconcile: reconcileCancellationRecoveryCases, onError: (error) => console.error("Cancellation recovery maintenance failed:", error.message) });
+  const recoveryTimer = recoveryMaintenance.start(); recoveryTimer.unref?.();
   while (!stopping) {
     try {
       await recoverStaleJobs(config);
+      if (Date.now() - lastCancellationRecovery > 60_000) { recoveryMaintenance.tick(); lastCancellationRecovery = Date.now(); }
       if (Date.now() - lastCleanup > 60 * 60 * 1_000) {
         await cleanExpiredObjects();
         lastCleanup = Date.now();
@@ -271,6 +289,7 @@ async function run() {
       await sleep(config.pollIntervalMs);
     }
   }
+  recoveryMaintenance.stop();
 }
 
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { stopping = true; });

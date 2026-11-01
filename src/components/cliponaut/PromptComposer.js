@@ -7,6 +7,7 @@ export function PromptComposer({
   onSubmit,
   isProcessing = false,
   canGenerate = false,
+  disabled = false,
   compact = false,
 }) {
   const handleKeyDown = (event) => {
@@ -24,6 +25,7 @@ export function PromptComposer({
         placeholder="Describe how you'd like to edit your video..."
         rows={compact ? 2 : 3}
         value={prompt}
+        disabled={disabled}
         onChange={(event) => onPromptChange(event.target.value)}
         onKeyDown={handleKeyDown}
       />
@@ -31,7 +33,7 @@ export function PromptComposer({
         className="cliponaut-generate"
         type="button"
         onClick={onSubmit}
-        disabled={!canGenerate || isProcessing}
+        disabled={!canGenerate || isProcessing || disabled}
       >
         {isProcessing ? "Generating" : "Generate"}
         <ArrowUpIcon />

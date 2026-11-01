@@ -37,6 +37,7 @@ export function Workspace({
   isUndoing,
   onUndo,
   onBack,
+  editingDisabled = false,
 }) {
   return (
     <>
@@ -51,7 +52,7 @@ export function Workspace({
             <p className="cliponaut-panel-kicker">Target video</p>
             <h1 id="media-heading">Your target media</h1>
           </div>
-          <button className="cliponaut-text-button" type="button" onClick={onSelectVideos}>
+          <button className="cliponaut-text-button" type="button" onClick={onSelectVideos} disabled={editingDisabled}>
             Add video
           </button>
         </div>
@@ -70,12 +71,13 @@ export function Workspace({
               className="cliponaut-add-media"
               type="button"
               onClick={onSelectVideos}
+              disabled={editingDisabled}
             >
               <PlusIcon />
               {videos.length ? "Add another video" : "Add a video"}
             </button>
           )}
-          <button className="cliponaut-add-media" type="button" onClick={onSelectReferenceImage}>
+          <button className="cliponaut-add-media" type="button" onClick={onSelectReferenceImage} disabled={editingDisabled}>
             <ImageIcon />
             {referenceImage ? "Replace style reference" : "Add style reference"}
           </button>

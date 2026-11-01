@@ -91,7 +91,7 @@ export function applyConversationTurn({ priorPlan, prompt, sourceCatalog }) {
     : /\bcinematic\b/.test(normalized) ? { type: "color_grade", style: "cinematic" }
       : null;
   if (style) {
-    if (!/^(?:(?:add|apply)\s+(?:a\s+|the\s+)?|make\s+(?:it|this(?:\s+video)?|the\s+video)\s+|replace\s+(?:that|it|the\s+(?:look|style|filter))\s+with\s+(?:the\s+)?)?(?:black\s*(?:and|&)\s*white|grayscale|cinematic)(?:\s+(?:style|look|filter))?(?:\s+instead)?$/.test(simple)) throw new Error("Please request one supported style change at a time. Your current edit is unchanged.");
+    if (!/^(?:(?:add|apply)\s+(?:a\s+|the\s+)?|make\s+(?:it|this(?:\s+video)?|the\s+video|my\s+(?:video|footage))\s+|replace\s+(?:that|it|the\s+(?:look|style|filter))\s+with\s+(?:the\s+)?)?(?:black\s*(?:and|&)\s*white|grayscale|cinematic)(?:\s+(?:style|look|filter))?(?:\s+instead)?$/.test(simple)) throw new Error("Please request one supported style change at a time. Your current edit is unchanged.");
     const plan = resetStyle(priorPlan);
     plan.operations.push(style);
     return { plan, confirmation: style.style === "bw" ? "Applied black and white." : "Replaced the previous look with the cinematic style." };

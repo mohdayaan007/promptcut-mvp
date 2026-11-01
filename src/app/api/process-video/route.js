@@ -14,6 +14,7 @@ import {
   MAX_VIDEO_FILE_SIZE_BYTES
 } from "@/lib/media/media-config";
 import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
+import { paidEditingEnforced } from "@/lib/jobs/job-store";
 
 const MAX_PROMPT_LENGTH = 1000;
 
@@ -74,6 +75,7 @@ function validateExportQuality(value, media) {
 export async function POST(req) {
   let tempDirectory;
   try {
+    if (paidEditingEnforced()) return Response.json({ error: "This processing route is unavailable." }, { status: 404 });
     const formData = await req.formData();
     const videos = submittedVideos(formData);
     validateVideos(videos);

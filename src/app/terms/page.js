@@ -10,8 +10,8 @@ export default function Terms() { return <PolicyPage eyebrow="Legal" title="Term
   <p>Do not use the service for unlawful activity, infringement, harassment, identity misuse, deceptive impersonation, non-consensual intimate content, sexual exploitation, prohibited scraping, or other harmful content. See our <a href="/safety">Content Safety Policy</a>. We may reject requests, restrict access, or remove material to protect users or comply with the law.</p>
   <h2>Availability and outputs</h2>
   <p>Cliponaut is a developing product. We cannot guarantee uninterrupted availability, a particular edit quality, or the suitability or accuracy of AI-assisted decisions. Keep independent copies of your original footage and important outputs.</p>
-  <h2>Planned subscriptions</h2>
-  <p>Cliponaut Pro is proposed at $6 USD per month, with 15 successful renders per monthly billing period. Checkout is disabled. Final subscription, refund and cancellation terms will be published before any payments are accepted; see <a href="/pricing">Pricing</a> and <a href="/refunds">Refunds & Cancellation</a>.</p>
+  <h2>Subscriptions</h2>
+  <p>Cliponaut Pro is $5 USD per month, automatically recurring until cancelled, with no free trial. Each verified paid billing period includes 15 successful renders. Failed or cancelled renders do not consume this allowance. Pending or failed renewal payments do not extend paid access or reset the allowance. Customers can cancel future renewals through their account; confirmed period-end cancellation preserves access through the verified paid period. See <a href="/pricing">Pricing</a> and <a href="/refunds">Refunds & Cancellation</a>.</p>
   <h2>Updates and contact</h2>
   <p>We may update these terms as the service evolves and will publish the updated date. Questions or reports may be sent to <a href="mailto:cliponauthq@gmail.com">cliponauthq@gmail.com</a>.</p>
 </PolicyPage>; }

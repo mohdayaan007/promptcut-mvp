@@ -1,0 +1,30 @@
+import { customerSessionToken } from "@/lib/customer-auth";
+import { DodoCancellationError, dodoTestCancellationConfig, getDodoTestCancellationState, periodEndCancellationEnabled } from "@/lib/dodo-test-mode";
+import { jsonError, PublicRequestError } from "@/lib/jobs/http";
+import { requireCustomerCheckoutOrigin } from "@/lib/checkout-origin";
+import { getCustomerCancellableSubscription, getCustomerCancellationRecoveryState, getCustomerSession } from "@/lib/jobs/job-store";
+
+export const runtime = "nodejs";
+export function createCancellationReconciliationHandler({ retrieve = getDodoTestCancellationState } = {}) {
+  return async function POST(req) {
+    try {
+      requireCustomerCheckoutOrigin(req, {
+        requestMessage: "Invalid cancellation request",
+        configMessage: "Cancellation origin is not configured.",
+      });
+      if (!periodEndCancellationEnabled()) throw new PublicRequestError("Subscription cancellation is unavailable in this environment.", 503);
+      dodoTestCancellationConfig();
+      const customer = await getCustomerSession(customerSessionToken(req)); if (!customer) throw new PublicRequestError("Sign in is required.", 401);
+      const subscription = await getCustomerCancellableSubscription(customer.subscriber_id); if (!subscription) throw new PublicRequestError("No verified active Cliponaut subscription can be reconciled.", 404);
+      if (subscription.cancellation_scheduled) return Response.json({ scheduled: true, periodEnd: new Date(subscription.billing_period_end).toISOString() });
+      if (!subscription.cancellation_request_started_at) return Response.json({ scheduled: false, pending: false });
+      const provider = await retrieve({ subscriptionId: subscription.dodo_subscription_id });
+      // GET /subscriptions/{id} has no documented business_id in SDK v2.59.0.
+      // It may be displayed as read-only status but cannot settle a durable
+      // uncertain cancellation case; signed, fully pinned webhook evidence can.
+      const recovery = await getCustomerCancellationRecoveryState(customer.subscriber_id);
+      return Response.json({ scheduled: false, pending: true, reviewRequired: true, recovery: Boolean(recovery), providerStatus: provider.status || null, businessProvenance: provider.businessProvenance || "unavailable" });
+    } catch (error) { if (error instanceof DodoCancellationError) return jsonError(new PublicRequestError("Cancellation status requires review.", 503)); return jsonError(error); }
+  };
+}
+export const POST = createCancellationReconciliationHandler();

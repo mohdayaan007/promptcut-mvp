@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { AppHeader } from "@/components/cliponaut/AppHeader";
 import { EmptyEditorState } from "@/components/cliponaut/EmptyEditorState";
+import { EditorAccessNotice } from "@/components/cliponaut/EditorAccessNotice";
 import { PromptComposer } from "@/components/cliponaut/PromptComposer";
 import { PromptSuggestions } from "@/components/cliponaut/PromptSuggestions";
 import { Workspace } from "@/components/cliponaut/Workspace";
@@ -31,15 +32,25 @@ import {
   saveUndoState,
   saveEditingSession,
   clearEditingSession,
+  clearPendingPartialEdit,
+  loadPendingPartialEdit,
+  savePendingPartialEdit,
   setUndoActiveJob,
   submitConversationTurn,
+  preflightEditingCapabilities,
   terminalAttemptPresentation,
+  terminalAttemptMessage,
+  terminalAttemptConversation,
+  hasWorkspacePresentation,
+  sourcesForTerminalAttempt,
   shouldScheduleUndoOriginalReveal,
   undoPreviewMode,
   uploadAndQueueJob,
   undoMediaReadyAction,
   waitForBrowserPaint,
 } from "@/lib/client/direct-upload";
+import { browserVideoPreflightError } from "@/lib/client/media-preflight";
+import { editorAccessState } from "@/lib/editor-access-presentation";
 
 const MAX_VIDEO_COUNT = 5;
 
@@ -57,7 +68,7 @@ function getBrowserVideoMetadata(file) {
       resolve(metadata);
     };
     video.preload = "metadata";
-    video.onloadedmetadata = () => finish({ width: video.videoWidth, height: video.videoHeight });
+    video.onloadedmetadata = () => finish({ width: video.videoWidth, height: video.videoHeight, duration: video.duration });
     video.onerror = () => finish(null);
     video.src = url;
   });
@@ -91,6 +102,8 @@ export default function HomePage() {
   const [restoringResultUrl, setRestoringResultUrl] = useState(null);
   const [undoAnchor, setUndoAnchor] = useState(null);
   const [editingSession, setEditingSession] = useState(null);
+  const [pendingPartialEdit, setPendingPartialEdit] = useState(null);
+  const [editorAccess, setEditorAccess] = useState({ phase: "loading" });
 
   const videoInputRef = useRef(null);
   const imageInputRef = useRef(null);
@@ -100,6 +113,7 @@ export default function HomePage() {
   const originalRevealScheduledRef = useRef(false);
   const turnIdRef = useRef(0);
   const presentationAttemptRef = useRef(0);
+  const editorAccessRequestRef = useRef(0);
   // Keep terminal handling stable while retaining the latest completed preview.
   const resultUrlRef = useRef(null);
 
@@ -107,10 +121,29 @@ export default function HomePage() {
     resultUrlRef.current = resultUrl;
   }, [resultUrl]);
 
-  const hasWorkspace = Boolean(videos.length || referenceImage || activeJob || undoState?.current);
+  const hasWorkspace = hasWorkspacePresentation({ videos, referenceImage, activeJob, undoState });
   const canExport4k = videos.length > 0 && videoMetadata.length === videos.length && videoMetadata.every(is4kCapable);
   const isProcessing = isActiveJobStatus(status);
   const previewMode = undoPreviewMode({ isRestoring: isRestoringPrevious, current: undoState?.current, localVideoCount: videos.length });
+  const accessState = editorAccessState(editorAccess);
+  const canStartNewRender = !accessState.blocking;
+
+  const refreshEditorAccess = useCallback(async () => {
+    const request = ++editorAccessRequestRef.current;
+    setEditorAccess((current) => ({ ...current, phase: "loading" }));
+    try {
+      const response = await fetch("/api/editor-access");
+      if (!response.ok) throw new Error("Editor access is unavailable");
+      const access = await response.json();
+      // An older read can complete after a reservation-changing request. Keep
+      // the most recently requested server-authoritative view instead.
+      if (request === editorAccessRequestRef.current) setEditorAccess({ phase: "ready", ...access });
+    } catch {
+      if (request === editorAccessRequestRef.current) setEditorAccess((current) => ({ ...current, phase: "error" }));
+    }
+  }, []);
+
+  useEffect(() => { refreshEditorAccess(); }, [refreshEditorAccess]);
 
   const persistUndoState = useCallback((nextState) => {
     const saved = saveUndoState(nextState);
@@ -141,7 +174,7 @@ export default function HomePage() {
   const showTerminalAttempt = useCallback((job) => {
     const presentation = terminalAttemptPresentation(job, resultUrlRef.current);
     setActiveJob(null);
-    setRestoredSources(job?.sources || []);
+    setRestoredSources((current) => sourcesForTerminalAttempt(job, current));
     setStatus(presentation.status);
     setResultUrl(presentation.resultUrl);
     setError(presentation.error);
@@ -205,12 +238,15 @@ export default function HomePage() {
     const saved = loadUndoState();
     const savedSession = loadEditingSession();
     setEditingSession(savedSession);
+    const savedPending = loadPendingPartialEdit();
+    if (savedPending?.sessionId !== savedSession?.id) clearPendingPartialEdit();
     undoStateRef.current = saved;
     setUndoState(saved);
     setUndoAnchor(getInitialUndoAnchor(saved));
     let stopped = false;
     if (saved.terminal) {
       showTerminalAttempt(saved.terminal);
+      setMessages(terminalAttemptConversation(saved.terminal));
     }
     if (!saved.active?.id || !saved.active?.accessToken) {
       if (saved.current) restoreCurrentVersion(saved.current, hydrationAttempt).then(() => {
@@ -218,15 +254,30 @@ export default function HomePage() {
       });
     }
     if (savedSession) {
-      getEditingSessionHistory(savedSession).then((sessionHistory) => {
+      getEditingSessionHistory(savedSession, undefined, savedPending?.sessionId === savedSession.id ? savedPending.token : undefined).then((sessionHistory) => {
         if (stopped || !isCurrentPresentationAttempt(hydrationAttempt, presentationAttemptRef.current)) return;
         setEditingSession(saveEditingSession({ ...savedSession, version: sessionHistory.latestVersion }));
-        setMessages(sessionHistory.history.flatMap((entry) => {
+        let hasPreviousSuccessfulEdit = false;
+        const restoredMessages = sessionHistory.history.flatMap((entry) => {
           const turns = [{ role: "user", text: entry.prompt, jobId: entry.jobId }];
-          if (entry.status === "completed") turns.push({ role: "assistant", text: entry.confirmation || "Your edit is ready.", jobId: entry.jobId });
-          else if (["failed", "cancelled"].includes(entry.status)) turns.push({ role: "assistant", text: entry.status === "cancelled" ? "This edit was cancelled. Your previous version is still available." : "We couldn’t complete that edit. Your previous version is still available.", jobId: entry.jobId });
+          if (entry.status === "completed") {
+            turns.push({ role: "assistant", text: entry.confirmation || "Your edit is ready.", jobId: entry.jobId });
+            hasPreviousSuccessfulEdit = true;
+          } else if (["failed", "cancelled"].includes(entry.status)) {
+            turns.push({ role: "assistant", text: terminalAttemptMessage(entry, hasPreviousSuccessfulEdit), jobId: entry.jobId });
+          }
           return turns;
-        }));
+        });
+        if (sessionHistory.pendingConfirmation) {
+          const pending = { sessionId: savedSession.id, ...sessionHistory.pendingConfirmation };
+          savePendingPartialEdit(pending);
+          setPendingPartialEdit(pending);
+          restoredMessages.push({ role: "assistant", text: sessionHistory.pendingConfirmation.message, pending: true });
+        } else if (savedPending?.sessionId === savedSession.id) {
+          clearPendingPartialEdit();
+          setPendingPartialEdit(null);
+        }
+        setMessages(restoredMessages);
       }).catch(() => {});
     }
     const discover = async () => {
@@ -279,13 +330,14 @@ export default function HomePage() {
           } else {
             persistUndoState(recordTerminalJob(undoStateRef.current || emptyUndoState(), pollingSession, { ...job, status: "failed", error: "We couldn’t retrieve that edit." }));
             showTerminalAttempt({ ...job, status: "failed", error: "We couldn’t retrieve that edit." });
-            setMessages((current) => [...current, { role: "assistant", text: "We couldn’t retrieve that edit. Your previous version is still available." }]);
+            setMessages((current) => [...current, { role: "assistant", text: terminalAttemptMessage({ status: "failed", error: "We couldn’t retrieve that edit." }, Boolean(undoStateRef.current?.current)) }]);
           }
         } else if (["failed", "cancelled"].includes(job.status)) {
           persistUndoState(recordTerminalJob(undoStateRef.current || emptyUndoState(), pollingSession, job));
           showTerminalAttempt(job);
-          setMessages((current) => [...current, { role: "assistant", text: job.status === "cancelled" ? "This edit was cancelled. Your previous version is still available." : "We couldn’t complete that edit. Your previous version is still available." }]);
+          setMessages((current) => [...current, { role: "assistant", text: terminalAttemptMessage(job, Boolean(undoStateRef.current?.current)) }]);
         }
+        if (["completed", "failed", "cancelled"].includes(job.status)) refreshEditorAccess();
       } catch (statusError) {
         if (!stopped && isCurrentPresentationAttempt(pollingAttempt, presentationAttemptRef.current)) setError(statusError.message);
       } finally {
@@ -295,7 +347,7 @@ export default function HomePage() {
     check();
     const timer = setInterval(check, 3_000);
     return () => { stopped = true; clearInterval(timer); };
-  }, [activeJob, persistUndoState, showCompletedJob, showTerminalAttempt, status]);
+  }, [activeJob, persistUndoState, refreshEditorAccess, showCompletedJob, showTerminalAttempt, status]);
 
   useEffect(() => {
     return () => {
@@ -325,6 +377,7 @@ export default function HomePage() {
   };
 
   const handleVideosChange = async (event) => {
+    if (!canStartNewRender) { setError(accessState.detail || "Editing access is unavailable."); event.target.value = ""; return; }
     const addedVideos = Array.from(event.target.files || []);
     event.target.value = "";
     if (!addedVideos.length) return;
@@ -335,12 +388,18 @@ export default function HomePage() {
       return;
     }
     if (addedVideos.length > acceptedVideos.length) setError(`Only the first ${MAX_VIDEO_COUNT} videos can be added.`);
-    setVideos((currentVideos) => [...currentVideos, ...acceptedVideos]);
     const metadata = await Promise.all(acceptedVideos.map(getBrowserVideoMetadata));
+    const preflightError = metadata.map(browserVideoPreflightError).find(Boolean);
+    if (preflightError) {
+      setError(preflightError);
+      return;
+    }
+    setVideos((currentVideos) => [...currentVideos, ...acceptedVideos]);
     setVideoMetadata((currentMetadata) => [...currentMetadata, ...metadata]);
   };
 
   const handleImagesChange = (event) => {
+    if (!canStartNewRender) { setError(accessState.detail || "Editing access is unavailable."); event.target.value = ""; return; }
     const image = event.target.files?.[0];
     if (!image) return;
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(image.type)) {
@@ -360,8 +419,33 @@ export default function HomePage() {
 
   const handleGenerate = async () => {
     if ((!videos.length && !editingSession) || !prompt.trim() || isProcessing) return;
+    if (!canStartNewRender) { setError(accessState.detail || "Editing access is unavailable."); return; }
 
-    const submittedPrompt = prompt;
+    let submittedPrompt = prompt;
+    const confirmation = /^(?:yes|yes\s*,?\s*proceed|proceed|continue|go ahead|okay|ok)$/i.test(submittedPrompt.trim());
+    const cancellation = /^(?:no|cancel|don't|do not|stop)$/i.test(submittedPrompt.trim());
+    if (pendingPartialEdit) {
+      if (cancellation) {
+        setPendingPartialEdit(null);
+        clearPendingPartialEdit();
+        setPrompt("");
+        setMessages((current) => [...current, { role: "user", text: submittedPrompt }, { role: "assistant", text: "Okay — I haven’t changed your video." }]);
+        return;
+      }
+      if (confirmation) {
+        // Session actions are server-signed and version-bound. Initial-upload
+        // actions are intentionally kept only in memory because no durable
+        // server session exists yet.
+        if (!pendingPartialEdit.token) submittedPrompt = pendingPartialEdit.supportedPrompt;
+        setPendingPartialEdit(null);
+        clearPendingPartialEdit();
+      } else {
+        // A new instruction supersedes the pending subset; it is never queued
+        // accidentally after the user changes direction.
+        setPendingPartialEdit(null);
+        clearPendingPartialEdit();
+      }
+    }
     const retainingPreview = Boolean(editingSession && undoStateRef.current?.current?.kind === "job" && resultUrl);
     const presentationAttempt = beginPresentationAttempt({ keepResult: retainingPreview });
     const turnId = `turn-${Date.now()}-${++turnIdRef.current}`;
@@ -377,8 +461,16 @@ export default function HomePage() {
 
     try {
       if (editingSession && undoStateRef.current?.current?.kind === "job") {
-        const turn = await submitConversationTurn(editingSession, submittedPrompt, controller.signal, undoStateRef.current.current.session.id);
+        const turn = await submitConversationTurn(editingSession, submittedPrompt, controller.signal, undoStateRef.current.current.session.id, confirmation ? pendingPartialEdit?.token : undefined);
         if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
+        if (turn.pendingConfirmation) {
+          const pending = savePendingPartialEdit({ ...turn.pendingConfirmation, sessionId: editingSession.id });
+          setPendingPartialEdit(pending || turn.pendingConfirmation);
+          setStatus("done");
+          setPrompt("");
+          setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: turn.pendingConfirmation.message }]);
+          return;
+        }
         const nextSession = saveEditingSession(turn.session);
         setEditingSession(nextSession);
         setMessages((currentMessages) => currentMessages.map((message) => message.turnId === turnId ? { ...message, jobId: turn.job.id } : message));
@@ -386,8 +478,18 @@ export default function HomePage() {
         setActiveJob(turn.job);
         setStatus("queued");
         setPrompt("");
+        refreshEditorAccess();
         return;
       }
+      const capability = await preflightEditingCapabilities(submittedPrompt, controller.signal);
+      if (capability.kind === "partial") {
+        setPendingPartialEdit(capability);
+        setStatus("idle");
+        setPrompt("");
+        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: capability.message }]);
+        return;
+      }
+      if (capability.kind === "unsupported" || capability.kind === "ambiguous") throw new Error(capability.message);
       const job = await uploadAndQueueJob({
         videos, referenceImage, prompt: submittedPrompt, exportQuality, signal: controller.signal,
         onProgress: setUploadProgress,
@@ -397,6 +499,10 @@ export default function HomePage() {
           setMessages((currentMessages) => currentMessages.map((message) => message.turnId === turnId ? { ...message, jobId: session.id } : message));
           setActiveJob(session);
           history.replaceState(null, "", `/?job=${session.id}`);
+          // POST /api/uploads has already created the paid reservation before
+          // it returns this session. Refresh during multipart upload rather
+          // than waiting for its completion to show the ledger-backed count.
+          refreshEditorAccess();
         }
       });
       if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
@@ -407,17 +513,22 @@ export default function HomePage() {
       if (["failed", "cancelled"].includes(job.status)) {
           persistUndoState(recordTerminalJob(undoStateRef.current || emptyUndoState(), undoStateRef.current?.active, job));
         showTerminalAttempt(job);
-        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: job.status === "cancelled" ? "This edit was cancelled. Your previous version is still available." : "We couldn’t complete that edit. Your previous version is still available." }]);
+        setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: terminalAttemptMessage(job, Boolean(undoStateRef.current?.current)) }]);
         return;
       }
       setStatus(job.status);
       setUploadProgress(null);
       setPrompt("");
+      refreshEditorAccess();
     } catch (processingError) {
+      // uploadAndQueueJob aborts the server upload session before rejecting,
+      // which can release its reservation. Always re-read the ledger; this is
+      // deliberately asynchronous and does not interfere with the upload.
+      refreshEditorAccess();
       if (controller.signal.aborted || !isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
       persistUndoState(discardUndoActiveJob(undoStateRef.current || emptyUndoState()));
       showTerminalAttempt({ status: "failed", error: processingError.message });
-      setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: "We couldn’t complete that edit. Your previous version is still available." }]);
+      setMessages((currentMessages) => [...currentMessages, { role: "assistant", text: terminalAttemptMessage({ status: "failed" }, Boolean(undoStateRef.current?.current)) }]);
     } finally {
       if (requestControllerRef.current === controller) requestControllerRef.current = null;
     }
@@ -468,6 +579,8 @@ export default function HomePage() {
     clearUndoState();
     clearEditingSession();
     setEditingSession(null);
+    setPendingPartialEdit(null);
+    clearPendingPartialEdit();
     history.replaceState(null, "", window.location.pathname);
     if (videoInputRef.current) videoInputRef.current.value = "";
     if (imageInputRef.current) imageInputRef.current.value = "";
@@ -602,6 +715,7 @@ export default function HomePage() {
   return (
     <main className={`cliponaut-shell ${hasWorkspace ? "is-workspace" : "is-empty"}`}>
       <AppHeader />
+      <EditorAccessNotice state={accessState} onRetry={refreshEditorAccess} />
 
       <input
         ref={videoInputRef}
@@ -609,6 +723,7 @@ export default function HomePage() {
         accept="video/*"
         multiple
         className="cliponaut-visually-hidden"
+        disabled={accessState.blocking}
         onChange={handleVideosChange}
       />
       <input
@@ -616,6 +731,7 @@ export default function HomePage() {
         type="file"
         accept="image/jpeg,image/png,image/webp"
         className="cliponaut-visually-hidden"
+        disabled={accessState.blocking}
         onChange={handleImagesChange}
       />
 
@@ -633,8 +749,8 @@ export default function HomePage() {
             exportQuality={exportQuality}
             canExport4k={canExport4k}
             onExportQualityChange={setExportQuality}
-            onSelectVideos={() => videoInputRef.current?.click()}
-            onSelectReferenceImage={() => imageInputRef.current?.click()}
+            onSelectVideos={() => canStartNewRender ? videoInputRef.current?.click() : setError(accessState.detail || "Editing access is unavailable.")}
+            onSelectReferenceImage={() => canStartNewRender ? imageInputRef.current?.click() : setError(accessState.detail || "Editing access is unavailable.")}
             onRemoveVideo={handleRemoveVideo}
             onRemoveReferenceImage={() => setReferenceImage(null)}
             onEditAgain={handleEditAgain}
@@ -652,6 +768,7 @@ export default function HomePage() {
             isUndoing={isUndoing}
             onUndo={handleUndo}
             onBack={handleBackToEmptyState}
+            editingDisabled={accessState.blocking}
           />
           <div className="cliponaut-workspace-prompt-area">
             <PromptSuggestions className="is-workspace" onSelect={setPrompt} />
@@ -662,7 +779,8 @@ export default function HomePage() {
                 onPromptChange={setPrompt}
                 onSubmit={handleGenerate}
                 isProcessing={isProcessing}
-                canGenerate={Boolean((videos.length || editingSession) && prompt.trim())}
+                canGenerate={Boolean((videos.length || editingSession) && prompt.trim() && canStartNewRender)}
+                disabled={accessState.blocking}
                 compact
               />
             </div>
@@ -676,6 +794,8 @@ export default function HomePage() {
           onSelectImages={() => imageInputRef.current?.click()}
           onSelectSuggestion={setPrompt}
           imageCount={referenceImage ? 1 : 0}
+          error={error}
+          disabled={accessState.blocking}
         />
       )}
       {recovery ? (

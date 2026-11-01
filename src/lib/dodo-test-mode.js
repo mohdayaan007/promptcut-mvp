@@ -1,0 +1,214 @@
+import crypto from "crypto";
+import { dodoMode, dodoModeConfig, dodoWebhookSecret, periodEndCancellationConfigured, DodoConfigurationError } from "@/lib/dodo-config";
+export { DodoConfigurationError } from "@/lib/dodo-config";
+const MAX_WEBHOOK_AGE_SECONDS = 5 * 60;
+const MIN_WEBHOOK_SECRET_BYTES = 24;
+const DEFAULT_RECOVERY_READ_TIMEOUT_MS = 5_000;
+
+export class DodoWebhookError extends Error {}
+export class DodoCancellationError extends Error { constructor(message, { uncertain = false } = {}) { super(message); this.uncertain = uncertain; } }
+
+/** Customer binding is stricter than harmless founder-only webhook recording. */
+export function customerOwnershipProvenanceConfigured(config) {
+  return Boolean(config?.productId && config?.businessId && config?.brandId);
+}
+
+// Retain accepted imports while routing through explicit, isolated mode config.
+export function dodoTestModeConfig() {
+  return dodoModeConfig();
+}
+
+/** Cancellation is a separate, default-off Test Mode capability. */
+export function dodoTestCancellationConfig() {
+  const config = dodoTestModeConfig();
+  if (!periodEndCancellationConfigured()) throw new DodoConfigurationError("Dodo subscription cancellation is disabled");
+  if (!customerOwnershipProvenanceConfigured(config)) throw new DodoConfigurationError("Dodo Test Mode cancellation provenance is not configured");
+  return config;
+}
+export function periodEndCancellationEnabled() { return periodEndCancellationConfigured(); }
+/** Default-off maintenance reads for durable uncertain-cancellation recovery. */
+export function cancellationRecoveryEnabled() { return dodoMode() === "test" && process.env.DODO_TEST_CANCELLATION_RECOVERY_ENABLED === "true"; }
+export function dodoTestCancellationRecoveryConfig() {
+  const config = dodoTestCancellationConfig();
+  if (!cancellationRecoveryEnabled()) throw new DodoConfigurationError("Dodo Test Mode cancellation recovery is disabled");
+  return config;
+}
+function recoveryReadTimeoutMs() { const value = Number(process.env.DODO_TEST_RECOVERY_READ_TIMEOUT_MS || DEFAULT_RECOVERY_READ_TIMEOUT_MS); return Number.isFinite(value) ? Math.min(Math.max(value, 100), 30_000) : DEFAULT_RECOVERY_READ_TIMEOUT_MS; }
+
+function parseCancellationSubscription(subscription, config, expectedSubscriptionId, { requireScheduled = false, requireActive = false } = {}) {
+  if (!subscription || typeof subscription !== "object" || subscription.subscription_id !== expectedSubscriptionId
+    || subscription.product_id !== config.productId || subscription.brand_id !== config.brandId
+    || (requireActive && subscription.status !== "active") || (requireScheduled && subscription.cancel_at_next_billing_date !== true)
+    || typeof subscription.status !== "string" || !subscription.status
+    || typeof subscription.previous_billing_date !== "string" || typeof subscription.next_billing_date !== "string"
+    || !Number.isFinite(Date.parse(subscription.previous_billing_date)) || !Number.isFinite(Date.parse(subscription.next_billing_date))
+    || Date.parse(subscription.previous_billing_date) >= Date.parse(subscription.next_billing_date)) {
+    throw new DodoCancellationError("Dodo did not confirm a valid period-end cancellation", { uncertain: true });
+  }
+  const businessId = typeof subscription.business_id === "string" && subscription.business_id ? subscription.business_id : null;
+  // The v2.59.0 Subscription GET schema does not declare business_id.  A
+  // response therefore remains useful for read-only status, but never proves
+  // business provenance or authorizes recovery finalization.
+  return { subscriptionId: subscription.subscription_id, customerId: typeof subscription.customer?.customer_id === "string" ? subscription.customer.customer_id : null, productId: subscription.product_id, brandId: subscription.brand_id, businessId, businessProvenance: businessId ? "response_unverified" : "absent", evidenceSource: "subscription_get", status: subscription.status, billingStart: new Date(subscription.previous_billing_date).toISOString(), billingEnd: new Date(subscription.next_billing_date).toISOString(), scheduled: subscription.cancel_at_next_billing_date === true };
+}
+
+/** Current SDK v2.59.0: PATCH /subscriptions/{id}; period-end policy uses the documented flag only. */
+export async function scheduleDodoTestCancellation({ subscriptionId, fetchImpl = fetch }) {
+  const config = dodoTestCancellationConfig();
+  if (typeof subscriptionId !== "string" || !subscriptionId) throw new DodoCancellationError("Subscription is invalid");
+  let response;
+  try {
+    response = await fetchImpl(`${config.apiBase}/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+      method: "PATCH", headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ cancel_at_next_billing_date: true })
+    });
+  } catch { throw new DodoCancellationError("Cancellation outcome is uncertain. Check your account before retrying.", { uncertain: true }); }
+  if (!response.ok) {
+    // A gateway/server response is post-dispatch ambiguity. Only documented
+    // client rejections are safe to retry without provider reconciliation.
+    const definite = [400, 401, 403, 404, 422].includes(response.status);
+    throw new DodoCancellationError("Dodo could not schedule cancellation", { uncertain: !definite });
+  }
+  let body; try { body = await response.json(); } catch { throw new DodoCancellationError("Dodo returned an invalid cancellation response", { uncertain: true }); }
+  return parseCancellationSubscription(body, config, subscriptionId, { requireScheduled: true, requireActive: true });
+}
+
+/** Read-only reconciliation. An unscheduled snapshot is never treated as proof a prior PATCH failed. */
+export async function getDodoTestCancellationState({ subscriptionId, fetchImpl = fetch }) {
+  const config = dodoTestCancellationConfig();
+  if (typeof subscriptionId !== "string" || !subscriptionId) throw new DodoCancellationError("Subscription is invalid");
+  const controller = new AbortController(); let timer;
+  try {
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true })); }, recoveryReadTimeoutMs()); });
+    return await Promise.race([Promise.resolve(fetchImpl(`${config.apiBase}/subscriptions/${encodeURIComponent(subscriptionId)}`, { headers: { Authorization: `Bearer ${config.apiKey}` }, signal: controller.signal })).then(async (response) => {
+      if (!response?.ok) throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true });
+      const body = await response.json();
+      return parseCancellationSubscription(body, config, subscriptionId);
+    }), timeout]);
+  } catch (error) { if (error instanceof DodoCancellationError) throw error; throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true }); } finally { clearTimeout(timer); }
+}
+
+export function normalizeEmail(email) {
+  if (typeof email !== "string" || email.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new DodoConfigurationError("A valid email address is required");
+  return email.trim().toLowerCase();
+}
+
+export function checkoutRequest({ productId, email, returnUrl, metadata }) {
+  const request = {
+    product_cart: [{ product_id: productId, quantity: 1 }],
+    customer: { email: normalizeEmail(email) },
+    return_url: returnUrl,
+    minimal_address: true,
+    feature_flags: { single_page: true }
+  };
+  // Dodo documents checkout metadata as payment metadata. It is deliberately
+  // not treated as subscription ownership proof unless propagation is proven.
+  if (metadata) request.metadata = metadata;
+  return request;
+}
+
+/** Dodo's documented REST endpoint. Network calls are intentionally injectable for tests. */
+export class DodoCheckoutError extends DodoConfigurationError {
+  constructor(message, { uncertain = true } = {}) { super(message); this.uncertain = uncertain; }
+}
+
+export async function createDodoTestCheckout({ email, metadata, fetchImpl = fetch }) {
+  const config = dodoTestModeConfig();
+  let response;
+  try { response = await fetchImpl(`${config.apiBase}/checkouts`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify(checkoutRequest({ productId: config.productId, email, returnUrl: config.returnUrl, metadata }))
+  }); } catch { throw new DodoCheckoutError("Checkout creation is uncertain; check your account before retrying."); }
+  if (!response.ok) throw new DodoCheckoutError("Dodo checkout could not be created", { uncertain: ![400,401,403,404,422].includes(response.status) });
+  let body;
+  try { body = await response.json(); } catch { throw new DodoCheckoutError("Dodo returned an invalid checkout session"); }
+  let checkoutUrl;
+  try { checkoutUrl = new URL(body.checkout_url); } catch { throw new DodoCheckoutError("Dodo returned an invalid checkout session"); }
+  if (typeof body.session_id !== "string" || !/^[A-Za-z0-9_-]+$/.test(body.session_id) || checkoutUrl.protocol !== "https:" || checkoutUrl.hostname !== config.checkoutHost || checkoutUrl.pathname !== `/session/${body.session_id}` || checkoutUrl.port || checkoutUrl.username || checkoutUrl.password) throw new DodoCheckoutError("Dodo returned an invalid checkout session");
+  return { id: body.session_id, url: body.checkout_url };
+}
+
+function webhookSecretBytes(secret) {
+  const encoded = String(secret || "").replace(/^whsec_/, "");
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new DodoWebhookError("Webhook secret is invalid");
+  const decoded = Buffer.from(encoded, "base64");
+  if (decoded.length < MIN_WEBHOOK_SECRET_BYTES || decoded.toString("base64") !== encoded) throw new DodoWebhookError("Webhook secret is invalid");
+  return decoded;
+}
+
+/** Standard Webhooks verification used by Dodo: signed-content is id.timestamp.raw-body. */
+export function verifyDodoWebhook({ headers, rawBody, secret = dodoWebhookSecret(), now = Date.now() }) {
+  const id = headers.get("webhook-id");
+  const timestamp = headers.get("webhook-timestamp");
+  const signature = headers.get("webhook-signature") || "";
+  if (!id || !/^\d+$/.test(timestamp || "") || !signature) throw new DodoWebhookError("Webhook signature is missing");
+  if (Math.abs(now - Number(timestamp) * 1000) > MAX_WEBHOOK_AGE_SECONDS * 1000) throw new DodoWebhookError("Webhook timestamp is outside the allowed window");
+  const expected = crypto.createHmac("sha256", webhookSecretBytes(secret)).update(`${id}.${timestamp}.${rawBody}`).digest("base64");
+  const candidates = signature.split(" ").map((part) => part.trim().split(",")).filter(([version]) => version === "v1").map(([, value]) => value).filter(Boolean);
+  if (!candidates.some((candidate) => candidate.length === expected.length && crypto.timingSafeEqual(Buffer.from(candidate), Buffer.from(expected)))) throw new DodoWebhookError("Webhook signature is invalid");
+  return id;
+}
+
+export function parseDodoWebhookEnvelope(event) {
+  if (!event || typeof event !== "object" || typeof event.type !== "string" || !event.type || !event.data || typeof event.data !== "object" || Array.isArray(event.data)) throw new DodoWebhookError("Webhook envelope is invalid");
+  if (typeof event.business_id !== "string" || !event.business_id.trim()) throw new DodoWebhookError("Webhook business is invalid");
+  if (typeof event.timestamp !== "string" || !event.timestamp || !Number.isFinite(Date.parse(event.timestamp))) throw new DodoWebhookError("Webhook occurrence timestamp is invalid");
+  if (event.brand_id !== undefined && (typeof event.brand_id !== "string" || !event.brand_id)) throw new DodoWebhookError("Webhook brand is invalid");
+  return { type: event.type, data: event.data, occurredAt: new Date(event.timestamp).toISOString(), businessId: event.business_id, envelopeBrandId: event.brand_id || null };
+}
+
+export function cliponautSubscriptionEvent(event, config) {
+  const { type, data, occurredAt, businessId, envelopeBrandId } = parseDodoWebhookEnvelope(event);
+  if (!type.startsWith("subscription.")) return null;
+  if (config.mode === "live" && !customerOwnershipProvenanceConfigured(config)) throw new DodoWebhookError("Live webhook identity pins are missing");
+  if (data.business_id !== undefined && data.business_id !== businessId) throw new DodoWebhookError("Webhook business provenance conflicts");
+  if (config.businessId && businessId !== config.businessId) throw new DodoWebhookError("Webhook business does not match Cliponaut");
+  if (typeof data.brand_id !== "string" || !data.brand_id) throw new DodoWebhookError("Subscription brand is invalid");
+  if (envelopeBrandId && envelopeBrandId !== data.brand_id) throw new DodoWebhookError("Webhook brand provenance conflicts");
+  if (config.brandId && data.brand_id !== config.brandId) throw new DodoWebhookError("Webhook brand does not match Cliponaut");
+  if (typeof data.product_id !== "string" || data.product_id !== config.productId) throw new DodoWebhookError("Webhook product does not match Cliponaut");
+  const secondaryProducts = [...(Array.isArray(data.product_ids) ? data.product_ids : []), ...(Array.isArray(data.items) ? data.items.map((item) => item?.product_id) : [])];
+  if (secondaryProducts.some((productId) => productId !== config.productId)) throw new DodoWebhookError("Webhook contains a conflicting product");
+  const states = {
+    "subscription.active": { provider: "active", internal: "active" }, "subscription.renewed": { provider: "active", internal: "active" },
+    "subscription.past_due": { provider: "past_due", internal: "past_due" }, "subscription.failed": { provider: "failed", internal: "past_due" },
+    "subscription.on_hold": { provider: "on_hold", internal: "past_due" }, "subscription.cancelled": { provider: "cancelled", internal: "cancelled" }, "subscription.expired": { provider: "expired", internal: "expired" }
+  };
+  if (type === "subscription.updated") {
+    const updated = { active: "active", cancelled: "cancelled", expired: "expired", pending: "past_due", on_hold: "past_due", paused: "past_due", failed: "past_due", past_due: "past_due" };
+    if (typeof data.status !== "string" || !Object.hasOwn(updated, data.status)) throw new DodoWebhookError("Subscription event conflicts with current status");
+    states[type] = { provider: data.status, internal: updated[data.status] };
+  }
+  if (!states[type]) throw new DodoWebhookError("Unsupported subscription event");
+  if (typeof data.subscription_id !== "string" || !data.subscription_id || !data.customer || typeof data.customer !== "object" || typeof data.customer.customer_id !== "string" || !data.customer.customer_id || typeof data.status !== "string") throw new DodoWebhookError("Subscription payload is invalid");
+  if (data.status !== states[type].provider) throw new DodoWebhookError("Subscription event conflicts with current status");
+  const billingStart = data.previous_billing_date; const billingEnd = data.next_billing_date;
+  if (billingStart !== undefined || billingEnd !== undefined) {
+    if (typeof billingStart !== "string" || typeof billingEnd !== "string" || !Number.isFinite(Date.parse(billingStart)) || !Number.isFinite(Date.parse(billingEnd)) || Date.parse(billingStart) >= Date.parse(billingEnd)) throw new DodoWebhookError("Subscription billing period is invalid");
+  }
+  if (data.cancel_at_next_billing_date !== undefined && typeof data.cancel_at_next_billing_date !== "boolean") throw new DodoWebhookError("Subscription cancellation state is invalid");
+  return { createdAt: typeof data.created_at === "string" ? data.created_at : null, billingPaymentId: type === "subscription.renewed" && typeof data.payment_id === "string" ? data.payment_id : null, subscriptionId: data.subscription_id, status: states[type].internal, productId: config.productId, brandId: data.brand_id, businessId, evidenceSource: "signed_webhook", customerId: data.customer.customer_id, email: typeof data.customer.email === "string" ? normalizeEmail(data.customer.email) : null, occurredAt, billingStart: billingStart ? new Date(billingStart).toISOString() : null, billingEnd: billingEnd ? new Date(billingEnd).toISOString() : null, cancellationScheduled: data.cancel_at_next_billing_date === true };
+}
+
+/** Signed payment evidence joins a provider checkout session to one subscription. */
+export function cliponautPaymentEvent(event, config) {
+  const { type, data, occurredAt, businessId, envelopeBrandId } = parseDodoWebhookEnvelope(event);
+  if (type !== "payment.succeeded") return null;
+  if (config.mode === "live" && !customerOwnershipProvenanceConfigured(config)) throw new DodoWebhookError("Live webhook identity pins are missing");
+  if (data.business_id !== undefined && data.business_id !== businessId) throw new DodoWebhookError("Webhook business provenance conflicts");
+  if (config.businessId && businessId !== config.businessId) throw new DodoWebhookError("Webhook business does not match Cliponaut");
+  if (typeof data.brand_id !== "string" || !data.brand_id) throw new DodoWebhookError("Payment brand is invalid");
+  if (envelopeBrandId && envelopeBrandId !== data.brand_id) throw new DodoWebhookError("Webhook brand provenance conflicts");
+  if (config.brandId && data.brand_id !== config.brandId) throw new DodoWebhookError("Webhook brand does not match Cliponaut");
+  if (typeof data.payment_id !== "string" || !data.payment_id || (data.checkout_session_id != null && (typeof data.checkout_session_id !== "string" || !data.checkout_session_id))) throw new DodoWebhookError("Payment correlation is invalid");
+  const subscriptionIds = Array.isArray(data.subscription_ids) ? data.subscription_ids : [];
+  const subscriptionId = typeof data.subscription_id === "string" && data.subscription_id ? data.subscription_id : subscriptionIds.length === 1 && typeof subscriptionIds[0] === "string" ? subscriptionIds[0] : null;
+  if (!subscriptionId || subscriptionIds.some((id) => id !== subscriptionId)) throw new DodoWebhookError("Payment subscription correlation is invalid");
+  // product_cart is documented as one-time-payment items; the subscription's
+  // product is authoritatively checked on the signed subscription event.
+  if (data.product_cart !== undefined && data.product_cart !== null && (!Array.isArray(data.product_cart) || data.product_cart.some((item) => !item || typeof item.product_id !== "string"))) throw new DodoWebhookError("Payment product cart is invalid");
+  if (data.product_cart?.some((item) => item.product_id !== config.productId)) throw new DodoWebhookError("Payment contains a conflicting product");
+  if (data.status !== "succeeded" || typeof data.customer?.customer_id !== "string" || !data.customer.customer_id) throw new DodoWebhookError("Successful payment identity is incomplete");
+  return { paymentId: data.payment_id, checkoutSessionId: data.checkout_session_id || null, subscriptionId, occurredAt, customerId: data.customer.customer_id, brandId: data.brand_id, businessId, status: data.status };
+}

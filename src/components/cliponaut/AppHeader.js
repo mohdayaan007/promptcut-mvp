@@ -10,6 +10,7 @@ export function AppHeader() {
 
       <nav className="cliponaut-header-links" aria-label="Primary navigation">
         <Link href="/pricing">Pricing</Link>
+        <Link href="/account">Account</Link>
         <Link href="/contact">Support</Link>
         <a href="https://x.com/uxayaan" target="_blank" rel="noreferrer">
           X

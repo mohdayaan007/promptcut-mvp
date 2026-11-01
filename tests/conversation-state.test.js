@@ -80,6 +80,15 @@ test("supported follow-up effects replace incompatible settings while preserving
   assert.doesNotThrow(() => validateConversationPlan(landscape.plan, catalog));
 });
 
+test("cinematic follow-up accepts the canonical my-video wording used by partial confirmation", () => {
+  const priorPlan = { version: "1", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 2, end: 8 }] }] };
+  const result = applyConversationTurn({ priorPlan, prompt: "Make my video cinematic", sourceCatalog: catalog });
+  assert.deepEqual(result.plan.operations, [
+    { type: "sequence", clips: [{ sourceId: "source-1", start: 2, end: 8 }] },
+    { type: "color_grade", style: "cinematic" }
+  ]);
+});
+
 test("unsupported contextual removals and timeline ranges fail without changing the prior plan", () => {
   assert.throws(() => applyConversationTurn({ priorPlan: base, prompt: "Remove the subtitles.", sourceCatalog: catalog }), /unchanged/i);
   assert.throws(() => applyConversationTurn({ priorPlan: base, prompt: "Trim 0:05 to 0:20.", sourceCatalog: catalog }), /fresh media understanding/i);
