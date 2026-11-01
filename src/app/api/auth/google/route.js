@@ -1,11 +1,14 @@
 import { completeGoogleSignIn } from "@/lib/jobs/job-store";
 import { clearGoogleNonce, CustomerAuthError, googleNonceToken, sessionCookie, verifyGoogleCredential } from "@/lib/customer-auth";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
+import { requireCustomerCheckoutOrigin } from "@/lib/checkout-origin";
 export const runtime = "nodejs";
 export async function POST(req) {
   try {
-    const origin = req.headers.get("origin"); const host = new URL(req.url).origin;
-    if (origin && origin !== host) throw new PublicRequestError("Google sign-in was rejected.", 403);
+    requireCustomerCheckoutOrigin(req, {
+      requestMessage: "Google sign-in was rejected.",
+      configMessage: "Google sign-in origin is not configured.",
+    });
     const { credential, nonce } = await req.json(); const cookieNonce = googleNonceToken(req);
     if (!cookieNonce || nonce !== cookieNonce) throw new PublicRequestError("Google sign-in was rejected.", 403);
     const profile = await verifyGoogleCredential(credential, nonce);

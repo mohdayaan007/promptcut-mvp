@@ -38,6 +38,7 @@ Public configuration:
 
 ```
 DODO_ENVIRONMENT=test
+CUSTOMER_CHECKOUT_ORIGIN=https://cliponaut-dodo-test-web-staging.up.railway.app
 DODO_TEST_MODE_ENABLED=true
 DODO_TEST_CUSTOMER_CHECKOUT_ENABLED=true
 DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED=true
@@ -54,6 +55,13 @@ JOB_WORKER_CONCURRENCY=1
 
 Preserve staging's own `DATABASE_URL` reference, port and sealed authentication
 and Dodo secrets. No secret values belong in tools, approvals or this document.
+
+Customer checkout requires this explicit, canonical HTTPS origin (no trailing
+slash). Missing/invalid configuration fails closed. The request URL, Host and
+forwarded proxy headers cannot authorize a browser origin. This scoped correction
+also protects Google sign-in with the same configured origin, while retaining
+ID-token audience/issuer verification, cookie/token nonce checks and secure
+sessions. Hosted browser sign-in acceptance remains required after deployment.
 
 Set `NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID` at build and the matching
 `GOOGLE_OAUTH_CLIENT_ID` at runtime. Configure Google authorized JavaScript origins

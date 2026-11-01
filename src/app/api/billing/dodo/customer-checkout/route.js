@@ -3,6 +3,7 @@ import { createDodoTestCheckout, customerOwnershipProvenanceConfigured, DodoChec
 import { checkoutSessionUrl, customerCheckoutEnabled, dodoModeConfig } from "@/lib/dodo-config";
 import { CustomerCheckoutConflict, reserveCustomerCheckout, failCustomerCheckoutCorrelation, getCustomerSession, recordCustomerCheckoutSession } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
+import { requireCustomerCheckoutOrigin } from "@/lib/checkout-origin";
 
 export const runtime = "nodejs";
 
@@ -10,7 +11,7 @@ export const runtime = "nodejs";
 export async function POST(req) {
   try {
     if (!customerCheckoutEnabled()) throw new PublicRequestError("Checkout is not available.", 404);
-    if (req.headers.get("origin") !== new URL(req.url).origin) throw new PublicRequestError("Invalid checkout request.", 403);
+    requireCustomerCheckoutOrigin(req);
     const customer = await getCustomerSession(customerSessionToken(req));
     if (!customer) throw new PublicRequestError("Sign-in is required.", 401);
     if (!customerOwnershipProvenanceConfigured(dodoModeConfig())) throw new DodoConfigurationError("Checkout identity pins are not configured");

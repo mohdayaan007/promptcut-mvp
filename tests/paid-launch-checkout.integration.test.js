@@ -10,14 +10,14 @@ import { POST } from "@/app/api/billing/dodo/customer-checkout/route";
 const integration = process.env.DATABASE_URL && process.env.CLIPONAUT_ISOLATED_BILLING_TESTS === "true" ? test : test.skip;
 async function fixture(run) {
   const saved = { ...process.env }, originalFetch = globalThis.fetch;
-  Object.assign(process.env, { DODO_ENVIRONMENT: "test", CUSTOMER_AUTH_TOKEN_SECRET: "isolated-launch-secret-at-least-thirty-two-characters", DODO_TEST_MODE_ENABLED: "true", DODO_TEST_CUSTOMER_CHECKOUT_ENABLED: "true", DODO_TEST_API_KEY: "dodo_test_fixture", DODO_TEST_CLIPONAUT_PRODUCT_ID: "product-test", DODO_TEST_BUSINESS_ID: "business-test", DODO_TEST_BRAND_ID: "brand-test", DODO_TEST_RETURN_URL: "http://localhost/account", FOUNDER_CONVERSATIONAL_EDITING_ENABLED: "false", PAID_EDITING_ENFORCEMENT_ENABLED: "true", PAID_RENDER_ALLOWANCE: "15" });
+  Object.assign(process.env, { CUSTOMER_CHECKOUT_ORIGIN: "https://cliponaut-dodo-test-web-staging.up.railway.app", DODO_ENVIRONMENT: "test", CUSTOMER_AUTH_TOKEN_SECRET: "isolated-launch-secret-at-least-thirty-two-characters", DODO_TEST_MODE_ENABLED: "true", DODO_TEST_CUSTOMER_CHECKOUT_ENABLED: "true", DODO_TEST_API_KEY: "dodo_test_fixture", DODO_TEST_CLIPONAUT_PRODUCT_ID: "product-test", DODO_TEST_BUSINESS_ID: "business-test", DODO_TEST_BRAND_ID: "brand-test", DODO_TEST_RETURN_URL: "http://localhost/account", FOUNDER_CONVERSATIONAL_EDITING_ENABLED: "false", PAID_EDITING_ENFORCEMENT_ENABLED: "true", PAID_RENDER_ALLOWANCE: "15" });
   await migrateEditJobs(); const db = new Client({ connectionString: process.env.DATABASE_URL }); await db.connect();
   try {
     await db.query("TRUNCATE subscriber_identities CASCADE; DELETE FROM dodo_webhook_events;");
     const owner = crypto.randomUUID(), other = crypto.randomUUID(), token = crypto.randomUUID();
     for (const id of [owner, other]) await db.query("INSERT INTO subscriber_identities (id,email,google_subject,verified_at) VALUES ($1,$2,$3,now())", [id, `${id}@example.test`, `subject-${id}`]);
     await db.query("INSERT INTO customer_sessions (id,subscriber_id,token_hash,expires_at) VALUES ($1,$2,$3,now()+interval '1 day')", [crypto.randomUUID(), owner, hashCustomerToken(token)]);
-    const request = (changes = {}) => new Request("http://localhost/api/billing/dodo/customer-checkout", { method: "POST", headers: { origin: "http://localhost", cookie: `${CUSTOMER_SESSION_COOKIE}=${token}`, ...changes } });
+    const request = (changes = {}) => new Request("https://localhost:8080/api/billing/dodo/customer-checkout", { method: "POST", headers: { origin: "https://cliponaut-dodo-test-web-staging.up.railway.app", cookie: `${CUSTOMER_SESSION_COOKIE}=${token}`, ...changes } });
     await run({ db, owner, other, request });
   } finally {
     globalThis.fetch = originalFetch; await db.end(); await closeJobStorePool();
@@ -25,6 +25,26 @@ async function fixture(run) {
   }
 }
 const checkout = () => Response.json({ session_id: "cks_fixture", checkout_url: "https://test.checkout.dodopayments.com/session/cks_fixture" });
+
+integration("Railway public origin reaches authenticated checkout despite spoofed proxy headers", async () => fixture(async ({ db, owner, request }) => {
+  let calls = 0; globalThis.fetch = async () => { calls++; return checkout(); };
+  const response = await POST(request({ host: "foreign.invalid", "x-forwarded-host": "foreign.invalid", "x-forwarded-proto": "http" }));
+  assert.equal(response.status, 200); assert.equal(calls, 1);
+  assert.equal((await db.query("SELECT subscriber_id FROM customer_checkout_correlations")).rows[0].subscriber_id, owner);
+}));
+
+integration("origin/configuration/authentication rejection precedes checkout writes and provider calls", async () => fixture(async ({ db, request }) => {
+  let calls = 0; globalThis.fetch = async () => { calls++; return checkout(); };
+  for (const origin of ["", "null", "invalid", "https://foreign.invalid", "https://localhost:8080"]) {
+    assert.equal((await POST(request({ origin, host: "cliponaut-dodo-test-web-staging.up.railway.app", "x-forwarded-host": "cliponaut-dodo-test-web-staging.up.railway.app", "x-forwarded-proto": "https" }))).status, 403);
+  }
+  const missing = request(); missing.headers.delete("origin"); assert.equal((await POST(missing)).status, 403);
+  assert.equal((await POST(request({ cookie: "" }))).status, 401);
+  delete process.env.CUSTOMER_CHECKOUT_ORIGIN;
+  assert.equal((await POST(request())).status, 503);
+  assert.equal(calls, 0);
+  assert.equal((await db.query("SELECT count(*)::int count FROM customer_checkout_correlations")).rows[0].count, 0);
+}));
 
 integration("concurrent customer requests create one checkout; later retries resume it without founder access", async () => fixture(async ({ db, owner, request }) => {
   let release, started, calls = 0;
