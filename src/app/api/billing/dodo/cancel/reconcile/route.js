@@ -1,13 +1,17 @@
 import { customerSessionToken } from "@/lib/customer-auth";
 import { DodoCancellationError, dodoTestCancellationConfig, getDodoTestCancellationState, periodEndCancellationEnabled } from "@/lib/dodo-test-mode";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
+import { requireCustomerCheckoutOrigin } from "@/lib/checkout-origin";
 import { getCustomerCancellableSubscription, getCustomerCancellationRecoveryState, getCustomerSession } from "@/lib/jobs/job-store";
 
 export const runtime = "nodejs";
 export function createCancellationReconciliationHandler({ retrieve = getDodoTestCancellationState } = {}) {
   return async function POST(req) {
     try {
-      if (req.headers.get("origin") !== new URL(req.url).origin) throw new PublicRequestError("Invalid cancellation request", 403);
+      requireCustomerCheckoutOrigin(req, {
+        requestMessage: "Invalid cancellation request",
+        configMessage: "Cancellation origin is not configured.",
+      });
       if (!periodEndCancellationEnabled()) throw new PublicRequestError("Subscription cancellation is unavailable in this environment.", 503);
       dodoTestCancellationConfig();
       const customer = await getCustomerSession(customerSessionToken(req)); if (!customer) throw new PublicRequestError("Sign in is required.", 401);

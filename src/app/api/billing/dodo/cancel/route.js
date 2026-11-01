@@ -1,13 +1,16 @@
 import { customerSessionToken } from "@/lib/customer-auth";
 import { DodoCancellationError, DodoConfigurationError, cancellationRecoveryEnabled, dodoTestCancellationConfig, periodEndCancellationEnabled, scheduleDodoTestCancellation } from "@/lib/dodo-test-mode";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
+import { requireCustomerCheckoutOrigin } from "@/lib/checkout-origin";
 import { beginCustomerPeriodEndCancellation, clearCustomerPeriodEndCancellationRequest, confirmCustomerPeriodEndCancellation, getCustomerCancellableSubscription, getCustomerSession } from "@/lib/jobs/job-store";
 
 export const runtime = "nodejs";
 
 function requireSameOrigin(req) {
-  const origin = req.headers.get("origin");
-  if (!origin || origin !== new URL(req.url).origin) throw new PublicRequestError("Invalid cancellation request", 403);
+  requireCustomerCheckoutOrigin(req, {
+    requestMessage: "Invalid cancellation request",
+    configMessage: "Cancellation origin is not configured.",
+  });
 }
 
 export function createCancellationHandler({ schedule = scheduleDodoTestCancellation } = {}) {
