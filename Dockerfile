@@ -12,6 +12,7 @@ RUN npm install
 
 COPY . .
 
+ARG NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID
 RUN npm run build
 
 EXPOSE 8080

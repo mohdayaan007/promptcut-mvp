@@ -11,7 +11,7 @@ export default function TermsPage() {
       <h2>Your responsibilities</h2>
       <p>You are responsible for your uploads, prompts, and use of outputs. You must have all rights, permissions, and lawful basis needed to upload, process, edit, and share your materials. Do not use the service for unlawful, harmful, infringing, or privacy-violating activity.</p>
       <h2>Availability and product limits</h2>
-      <p>The service is an early-access product. Features, technical limits, supported formats, render allowances, and availability may evolve. The proposed Cliponaut Pro allowance is 15 successful renders per month, and paid-beta exports are planned up to 1080p MP4. These are not yet enforced because checkout is not live.</p>
+      <p>The service is an early-access product. Features, technical limits, supported formats, render allowances, and availability may evolve. Cliponaut Pro is $6/month, recurring until cancelled, with 15 successful renders per billing period and paid-beta exports up to 1080p MP4. Scheduled cancellation preserves access through the paid period.</p>
       <h2>Subscriptions</h2>
       <p>If subscriptions are launched, Cliponaut Pro is planned as a $6 USD recurring monthly subscription with no free tier and no annual option. You will be able to cancel future renewals. Final billing, cancellation, and refund terms will be presented before payment is collected.</p>
       <h2>Content and outputs</h2>

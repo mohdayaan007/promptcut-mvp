@@ -40,12 +40,12 @@ export default function PricingPage() {
           <p className="cliponaut-plan-note">Recurring monthly. No free tier. No annual plan.</p>
           <div className="cliponaut-plan-rule" />
           <ul className="cliponaut-plan-list">
-            <li>Proposed allowance: up to 15 successful renders each month</li>
+            <li>15 successful renders per billing period</li>
             <li>Exports up to 1080p MP4 during the paid beta</li>
             <li>Cancel future renewals any time</li>
           </ul>
           <div className="cliponaut-subscribe-pending" role="status">
-            <strong>Founder-approved Test Mode only.</strong>
+            <strong>Recurring monthly until cancelled.</strong>
             <span>Checkout remains unavailable unless the server authorizes this environment.</span>
           </div>
           <CheckoutButton signedIn={false} />
@@ -72,7 +72,7 @@ export default function PricingPage() {
         <article>
           <p className="cliponaut-marketing-eyebrow">A focused beta</p>
           <h2>Clear limits from the start.</h2>
-          <p>The paid beta currently focuses on successful edits and exports up to 1080p. The proposed monthly allowance is 15 successful renders. It is not yet enforced and may change before checkout opens.</p>
+          <p>The paid beta currently focuses on successful edits and exports up to 1080p. Your subscription includes 15 successful renders per billing period. Failed or cancelled renders do not consume a successful-render slot.</p>
         </article>
         <article className="cliponaut-guarantee">
           <p className="cliponaut-marketing-eyebrow">Founder approval pending</p>
@@ -99,7 +99,7 @@ export default function PricingPage() {
         </details>
         <details>
           <summary>Does Cliponaut offer unlimited renders?</summary>
-          <p>No. The proposed allowance is 15 successful renders per month.</p>
+          <p>No. Your allowance is 15 successful renders per billing period.</p>
         </details>
       </section>
     </MarketingLayout>

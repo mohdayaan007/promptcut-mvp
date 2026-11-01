@@ -16,6 +16,6 @@ export function CheckoutButton({ signedIn, compact = false }) {
   if (!signedIn) return <Link className="cliponaut-primary-button" href="/account">Sign in to continue</Link>;
   return <div className={compact ? "cliponaut-checkout-control is-compact" : "cliponaut-checkout-control"}>
     <button type="button" className="cliponaut-primary-button" disabled={state.phase === "loading"} onClick={beginCheckout}>{state.phase === "loading" ? "Checking access…" : "Continue to checkout"}</button>
-    <p role={state.phase === "error" ? "alert" : "status"}>{state.message || "Checkout is available only in founder-authorized Test Mode."}</p>
+    <p role={state.phase === "error" ? "alert" : "status"}>{state.message || "Cliponaut Pro is $6/month until cancelled, with 15 successful renders per billing period."}</p>
   </div>;
 }

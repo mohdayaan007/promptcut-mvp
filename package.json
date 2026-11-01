@@ -18,6 +18,7 @@
     "test:customer-checkout-integration": "tsx --test tests/customer-checkout-postgres.integration.test.js",
     "test:google-signin-browser": "tsx --test tests/google-signin-browser.test.js",
     "test:dodo": "tsx --test tests/dodo-test-mode.test.js",
+    "test:paid-launch": "tsx --test --test-concurrency=1 tests/dodo-mode.test.js tests/paid-launch-checkout.integration.test.js tests/paid-launch-quota.integration.test.js",
     "test:dodo-integration": "tsx --test tests/dodo-postgres.integration.test.js",
     "test:cancellation-integration": "tsx --test tests/cancellation-postgres.integration.test.js",
     "test:cancellation-recovery-integration": "tsx --test tests/cancellation-recovery-postgres.integration.test.js",

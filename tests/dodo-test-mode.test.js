@@ -16,7 +16,7 @@ test("checkout uses one product, minimal address, and documented session_id/chec
   assert.deepEqual(request.metadata, { cliponaut_checkout_ref: "synthetic-reference" });
   const old = { ...process.env }; Object.assign(process.env, { DODO_TEST_MODE_ENABLED: "true", DODO_TEST_API_KEY: "test", DODO_TEST_CLIPONAUT_PRODUCT_ID: config.productId, DODO_TEST_RETURN_URL: "http://localhost:3000/return" });
   try {
-    assert.deepEqual(await createDodoTestCheckout({ email: "a@b.test", fetchImpl: async () => new Response(JSON.stringify({ session_id: "cs_1", checkout_url: "https://checkout.example/cs_1" })) }), { id: "cs_1", url: "https://checkout.example/cs_1" });
+    assert.deepEqual(await createDodoTestCheckout({ email: "a@b.test", fetchImpl: async () => new Response(JSON.stringify({ session_id: "cs_1", checkout_url: "https://test.checkout.dodopayments.com/session/cs_1" })) }), { id: "cs_1", url: "https://test.checkout.dodopayments.com/session/cs_1" });
     await assert.rejects(createDodoTestCheckout({ email: "a@b.test", fetchImpl: async () => new Response(JSON.stringify({ id: "wrong", url: "https://checkout.example" })) }), DodoConfigurationError);
     await assert.rejects(createDodoTestCheckout({ email: "a@b.test", fetchImpl: async () => new Response(JSON.stringify({ session_id: "cs_1", checkout_url: "https://" })) }), DodoConfigurationError);
   } finally { for (const key of ["DODO_TEST_MODE_ENABLED", "DODO_TEST_API_KEY", "DODO_TEST_CLIPONAUT_PRODUCT_ID", "DODO_TEST_RETURN_URL"]) old[key] === undefined ? delete process.env[key] : process.env[key] = old[key]; }

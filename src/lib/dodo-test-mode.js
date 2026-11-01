@@ -1,11 +1,10 @@
 import crypto from "crypto";
-
-const TEST_API_BASE = "https://test.dodopayments.com";
+import { dodoMode, dodoModeConfig, dodoWebhookSecret, periodEndCancellationConfigured, DodoConfigurationError } from "@/lib/dodo-config";
+export { DodoConfigurationError } from "@/lib/dodo-config";
 const MAX_WEBHOOK_AGE_SECONDS = 5 * 60;
 const MIN_WEBHOOK_SECRET_BYTES = 24;
 const DEFAULT_RECOVERY_READ_TIMEOUT_MS = 5_000;
 
-export class DodoConfigurationError extends Error {}
 export class DodoWebhookError extends Error {}
 export class DodoCancellationError extends Error { constructor(message, { uncertain = false } = {}) { super(message); this.uncertain = uncertain; } }
 
@@ -14,32 +13,21 @@ export function customerOwnershipProvenanceConfigured(config) {
   return Boolean(config?.productId && config?.businessId && config?.brandId);
 }
 
-function configuredUrl(name) {
-  const value = process.env[name];
-  if (!value) throw new DodoConfigurationError(`${name} is not configured`);
-  const url = new URL(value);
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) throw new DodoConfigurationError(`${name} must be HTTPS (or local HTTP)`);
-  return url.toString();
-}
-
+// Retain accepted imports while routing through explicit, isolated mode config.
 export function dodoTestModeConfig() {
-  if (process.env.DODO_TEST_MODE_ENABLED !== "true") throw new DodoConfigurationError("Dodo test checkout is disabled");
-  const apiKey = process.env.DODO_TEST_API_KEY || "";
-  const productId = process.env.DODO_TEST_CLIPONAUT_PRODUCT_ID || "";
-  if (!apiKey || !productId) throw new DodoConfigurationError("Dodo test checkout is not configured");
-  return { apiKey, productId, returnUrl: configuredUrl("DODO_TEST_RETURN_URL"), businessId: process.env.DODO_TEST_BUSINESS_ID || null, brandId: process.env.DODO_TEST_BRAND_ID || null };
+  return dodoModeConfig();
 }
 
 /** Cancellation is a separate, default-off Test Mode capability. */
 export function dodoTestCancellationConfig() {
   const config = dodoTestModeConfig();
-  if (process.env.DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED !== "true") throw new DodoConfigurationError("Dodo Test Mode subscription cancellation is disabled");
+  if (!periodEndCancellationConfigured()) throw new DodoConfigurationError("Dodo subscription cancellation is disabled");
   if (!customerOwnershipProvenanceConfigured(config)) throw new DodoConfigurationError("Dodo Test Mode cancellation provenance is not configured");
   return config;
 }
-export function periodEndCancellationEnabled() { return process.env.DODO_TEST_SUBSCRIPTION_CANCELLATION_ENABLED === "true"; }
+export function periodEndCancellationEnabled() { return periodEndCancellationConfigured(); }
 /** Default-off maintenance reads for durable uncertain-cancellation recovery. */
-export function cancellationRecoveryEnabled() { return process.env.DODO_TEST_CANCELLATION_RECOVERY_ENABLED === "true"; }
+export function cancellationRecoveryEnabled() { return dodoMode() === "test" && process.env.DODO_TEST_CANCELLATION_RECOVERY_ENABLED === "true"; }
 export function dodoTestCancellationRecoveryConfig() {
   const config = dodoTestCancellationConfig();
   if (!cancellationRecoveryEnabled()) throw new DodoConfigurationError("Dodo Test Mode cancellation recovery is disabled");
@@ -70,7 +58,7 @@ export async function scheduleDodoTestCancellation({ subscriptionId, fetchImpl =
   if (typeof subscriptionId !== "string" || !subscriptionId) throw new DodoCancellationError("Subscription is invalid");
   let response;
   try {
-    response = await fetchImpl(`${TEST_API_BASE}/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+    response = await fetchImpl(`${config.apiBase}/subscriptions/${encodeURIComponent(subscriptionId)}`, {
       method: "PATCH", headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ cancel_at_next_billing_date: true })
     });
@@ -92,7 +80,7 @@ export async function getDodoTestCancellationState({ subscriptionId, fetchImpl =
   const controller = new AbortController(); let timer;
   try {
     const timeout = new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true })); }, recoveryReadTimeoutMs()); });
-    return await Promise.race([Promise.resolve(fetchImpl(`${TEST_API_BASE}/subscriptions/${encodeURIComponent(subscriptionId)}`, { headers: { Authorization: `Bearer ${config.apiKey}` }, signal: controller.signal })).then(async (response) => {
+    return await Promise.race([Promise.resolve(fetchImpl(`${config.apiBase}/subscriptions/${encodeURIComponent(subscriptionId)}`, { headers: { Authorization: `Bearer ${config.apiKey}` }, signal: controller.signal })).then(async (response) => {
       if (!response?.ok) throw new DodoCancellationError("Cancellation status is uncertain.", { uncertain: true });
       const body = await response.json();
       return parseCancellationSubscription(body, config, subscriptionId);
@@ -120,18 +108,24 @@ export function checkoutRequest({ productId, email, returnUrl, metadata }) {
 }
 
 /** Dodo's documented REST endpoint. Network calls are intentionally injectable for tests. */
+export class DodoCheckoutError extends DodoConfigurationError {
+  constructor(message, { uncertain = true } = {}) { super(message); this.uncertain = uncertain; }
+}
+
 export async function createDodoTestCheckout({ email, metadata, fetchImpl = fetch }) {
   const config = dodoTestModeConfig();
-  const response = await fetchImpl(`${TEST_API_BASE}/checkouts`, {
+  let response;
+  try { response = await fetchImpl(`${config.apiBase}/checkouts`, {
     method: "POST",
     headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(checkoutRequest({ productId: config.productId, email, returnUrl: config.returnUrl, metadata }))
-  });
-  if (!response.ok) throw new DodoConfigurationError("Dodo test checkout could not be created");
-  const body = await response.json();
+  }); } catch { throw new DodoCheckoutError("Checkout creation is uncertain; check your account before retrying."); }
+  if (!response.ok) throw new DodoCheckoutError("Dodo checkout could not be created", { uncertain: ![400,401,403,404,422].includes(response.status) });
+  let body;
+  try { body = await response.json(); } catch { throw new DodoCheckoutError("Dodo returned an invalid checkout session"); }
   let checkoutUrl;
-  try { checkoutUrl = new URL(body.checkout_url); } catch { throw new DodoConfigurationError("Dodo returned an invalid checkout session"); }
-  if (typeof body.session_id !== "string" || !body.session_id || checkoutUrl.protocol !== "https:" || !checkoutUrl.hostname) throw new DodoConfigurationError("Dodo returned an invalid checkout session");
+  try { checkoutUrl = new URL(body.checkout_url); } catch { throw new DodoCheckoutError("Dodo returned an invalid checkout session"); }
+  if (typeof body.session_id !== "string" || !/^[A-Za-z0-9_-]+$/.test(body.session_id) || checkoutUrl.protocol !== "https:" || checkoutUrl.hostname !== config.checkoutHost || checkoutUrl.pathname !== `/session/${body.session_id}` || checkoutUrl.port || checkoutUrl.username || checkoutUrl.password) throw new DodoCheckoutError("Dodo returned an invalid checkout session");
   return { id: body.session_id, url: body.checkout_url };
 }
 
@@ -144,7 +138,7 @@ function webhookSecretBytes(secret) {
 }
 
 /** Standard Webhooks verification used by Dodo: signed-content is id.timestamp.raw-body. */
-export function verifyDodoWebhook({ headers, rawBody, secret = process.env.DODO_TEST_WEBHOOK_SECRET, now = Date.now() }) {
+export function verifyDodoWebhook({ headers, rawBody, secret = dodoWebhookSecret(), now = Date.now() }) {
   const id = headers.get("webhook-id");
   const timestamp = headers.get("webhook-timestamp");
   const signature = headers.get("webhook-signature") || "";
@@ -167,6 +161,8 @@ export function parseDodoWebhookEnvelope(event) {
 export function cliponautSubscriptionEvent(event, config) {
   const { type, data, occurredAt, businessId, envelopeBrandId } = parseDodoWebhookEnvelope(event);
   if (!type.startsWith("subscription.")) return null;
+  if (config.mode === "live" && !customerOwnershipProvenanceConfigured(config)) throw new DodoWebhookError("Live webhook identity pins are missing");
+  if (data.business_id !== undefined && data.business_id !== businessId) throw new DodoWebhookError("Webhook business provenance conflicts");
   if (config.businessId && businessId !== config.businessId) throw new DodoWebhookError("Webhook business does not match Cliponaut");
   if (typeof data.brand_id !== "string" || !data.brand_id) throw new DodoWebhookError("Subscription brand is invalid");
   if (envelopeBrandId && envelopeBrandId !== data.brand_id) throw new DodoWebhookError("Webhook brand provenance conflicts");
@@ -199,6 +195,8 @@ export function cliponautSubscriptionEvent(event, config) {
 export function cliponautPaymentEvent(event, config) {
   const { type, data, occurredAt, businessId, envelopeBrandId } = parseDodoWebhookEnvelope(event);
   if (type !== "payment.succeeded") return null;
+  if (config.mode === "live" && !customerOwnershipProvenanceConfigured(config)) throw new DodoWebhookError("Live webhook identity pins are missing");
+  if (data.business_id !== undefined && data.business_id !== businessId) throw new DodoWebhookError("Webhook business provenance conflicts");
   if (config.businessId && businessId !== config.businessId) throw new DodoWebhookError("Webhook business does not match Cliponaut");
   if (typeof data.brand_id !== "string" || !data.brand_id) throw new DodoWebhookError("Payment brand is invalid");
   if (envelopeBrandId && envelopeBrandId !== data.brand_id) throw new DodoWebhookError("Webhook brand provenance conflicts");
@@ -210,5 +208,6 @@ export function cliponautPaymentEvent(event, config) {
   // product_cart is documented as one-time-payment items; the subscription's
   // product is authoritatively checked on the signed subscription event.
   if (data.product_cart !== undefined && data.product_cart !== null && (!Array.isArray(data.product_cart) || data.product_cart.some((item) => !item || typeof item.product_id !== "string"))) throw new DodoWebhookError("Payment product cart is invalid");
+  if (data.product_cart?.some((item) => item.product_id !== config.productId)) throw new DodoWebhookError("Payment contains a conflicting product");
   return { paymentId: data.payment_id, checkoutSessionId: data.checkout_session_id, subscriptionId, occurredAt };
 }
