@@ -2,6 +2,8 @@ import crypto from "crypto";
 import pg from "pg";
 import { dodoMode, dodoProductId, DodoConfigurationError } from "@/lib/dodo-config";
 
+import { PAID_PERIODS_SCHEMA, billingEvidence, confirmPaidPeriods, paidSubscriptions } from "@/lib/jobs/paid-periods";
+
 const { Pool } = pg;
 let pool;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -196,6 +198,7 @@ export async function migrateEditJobs() {
   await database().query("ALTER TABLE dodo_subscriptions ADD COLUMN IF NOT EXISTS cancellation_confirmed_at TIMESTAMPTZ;");
   await database().query("ALTER TABLE dodo_subscriptions ADD COLUMN IF NOT EXISTS cancellation_request_started_at TIMESTAMPTZ;");
   await database().query("ALTER TABLE customer_checkout_correlations ADD COLUMN IF NOT EXISTS payment_provenance TEXT NOT NULL DEFAULT 'unverified' CHECK (payment_provenance IN ('unverified','verified','conflicting'));");
+  await database().query(PAID_PERIODS_SCHEMA);
   await database().query(`ALTER TABLE edit_jobs DROP CONSTRAINT IF EXISTS edit_jobs_status_check;
     ALTER TABLE edit_jobs ADD CONSTRAINT edit_jobs_status_check
     CHECK (status IN ('uploading','queued','analyzing','rendering','completed','failed','cancelled'));`);
@@ -213,7 +216,7 @@ function allowance() {
 }
 export async function getEditingEntitlement(subscriberId) {
   if (!subscriberId) return null;
-  const { rows } = await database().query(`SELECT * FROM dodo_subscriptions WHERE subscriber_id=$1 AND product_id=$2 AND status='active'
+  const { rows } = await database().query(`SELECT * FROM ${paidSubscriptions()} WHERE subscriber_id=$1 AND product_id=$2 AND status='active'
     AND ownership_provenance='verified' AND billing_period_start IS NOT NULL AND billing_period_end IS NOT NULL
     AND billing_period_start <= now() AND billing_period_start < billing_period_end AND billing_period_end > now() ORDER BY billing_period_end DESC LIMIT 1`, [subscriberId, dodoProductId()]);
   return rows[0] || null;
@@ -222,7 +225,7 @@ export async function getEditingEntitlement(subscriberId) {
 /** Only a server-owned, verified, current Cliponaut subscription can be cancelled. */
 export async function getCustomerCancellableSubscription(subscriberId) {
   if (!subscriberId) return null;
-  const { rows } = await database().query(`SELECT * FROM dodo_subscriptions WHERE subscriber_id=$1 AND product_id=$2
+  const { rows } = await database().query(`SELECT * FROM ${paidSubscriptions()} WHERE subscriber_id=$1 AND product_id=$2
     AND ownership_provenance='verified' AND status='active' AND billing_period_start <= now() AND billing_period_end > now()
     ORDER BY billing_period_end DESC LIMIT 1`, [subscriberId, dodoProductId()]);
   return rows[0] || null;
@@ -232,7 +235,7 @@ export async function getCustomerCancellableSubscription(subscriberId) {
 export async function confirmCustomerPeriodEndCancellation(subscriberId, subscriptionId, billingStart, billingEnd) {
   const { rows } = await database().query(`UPDATE dodo_subscriptions SET cancellation_scheduled=true,cancellation_confirmed_at=now(),cancellation_request_started_at=NULL,updated_at=now()
     WHERE dodo_subscription_id=$1 AND subscriber_id=$2 AND product_id=$3 AND ownership_provenance='verified' AND status='active'
-      AND date_trunc('milliseconds', billing_period_start)=$4 AND date_trunc('milliseconds', billing_period_end)=$5 AND billing_period_start <= now() AND billing_period_end > now()
+      AND EXISTS(SELECT 1 FROM ${paidSubscriptions()} p WHERE p.dodo_subscription_id=dodo_subscriptions.dodo_subscription_id AND date_trunc('milliseconds',p.billing_period_start)=$4 AND date_trunc('milliseconds',p.billing_period_end)=$5 AND p.billing_period_start<=now() AND p.billing_period_end>now())
     RETURNING *`, [subscriptionId, subscriberId, dodoProductId(), billingStart, billingEnd]);
   return rows[0] || null;
 }
@@ -240,8 +243,12 @@ export async function beginCustomerPeriodEndCancellation(subscriberId, subscript
   const client = await database().connect(); try { await client.query("BEGIN");
     const { rows } = await client.query(`UPDATE dodo_subscriptions SET cancellation_request_started_at=now(),updated_at=now()
       WHERE dodo_subscription_id=$1 AND subscriber_id=$2 AND product_id=$3 AND ownership_provenance='verified' AND status='active'
-        AND cancellation_scheduled=false AND cancellation_request_started_at IS NULL AND billing_period_start <= now() AND billing_period_end > now() RETURNING *`, [subscriptionId, subscriberId, dodoProductId()]);
+        AND cancellation_scheduled=false AND cancellation_request_started_at IS NULL AND EXISTS(SELECT 1 FROM ${paidSubscriptions()} p WHERE p.dodo_subscription_id=dodo_subscriptions.dodo_subscription_id AND p.billing_period_start<=now() AND p.billing_period_end>now()) RETURNING *`, [subscriptionId, subscriberId, dodoProductId()]);
     const subscription = rows[0];
+    if (subscription) {
+      const paid = (await client.query(`SELECT billing_period_start,billing_period_end FROM ${paidSubscriptions()} WHERE dodo_subscription_id=$1`, [subscriptionId])).rows[0];
+      Object.assign(subscription, paid);
+    }
     if (subscription && provenance) {
       if (!subscription.dodo_customer_id || !provenance.businessId || !provenance.brandId) throw new Error("Cancellation recovery provenance is incomplete");
       await client.query(`INSERT INTO cancellation_recovery_cases (id,subscriber_id,subscription_id,dodo_customer_id,product_id,business_id,brand_id,billing_period_start,billing_period_end,review_deadline_at,audit)
@@ -331,7 +338,7 @@ export async function getCancellationRecoveryCaseForOperator(caseId) {
 }
 export async function reserveRenderCapacity(subscriberId) {
   const client = await database().connect(); try { await client.query("BEGIN");
-    const entitlement = (await client.query(`SELECT s.* FROM dodo_subscriptions s JOIN subscriber_identities i ON i.id=s.subscriber_id WHERE s.subscriber_id=$1 AND s.product_id=$2 AND s.status='active' AND s.ownership_provenance='verified' AND s.billing_period_start IS NOT NULL AND s.billing_period_start <= now() AND s.billing_period_end > now() AND i.verified_at IS NOT NULL AND i.google_subject IS NOT NULL FOR UPDATE`, [subscriberId, dodoProductId()])).rows[0];
+    const entitlement = (await client.query(`SELECT s.* FROM ${paidSubscriptions()} s JOIN subscriber_identities i ON i.id=s.subscriber_id WHERE s.subscriber_id=$1 AND s.product_id=$2 AND s.status='active' AND s.ownership_provenance='verified' AND s.billing_period_start IS NOT NULL AND s.billing_period_start <= now() AND s.billing_period_end > now() AND i.verified_at IS NOT NULL AND i.google_subject IS NOT NULL FOR UPDATE`, [subscriberId, dodoProductId()])).rows[0];
     if (!entitlement || !(new Date(entitlement.billing_period_start) < new Date(entitlement.billing_period_end))) { await client.query("ROLLBACK"); return null; }
     const used = (await client.query("SELECT count(*)::int count FROM render_quota_reservations WHERE subscriber_id=$1 AND subscription_id=$2 AND period_start=$3 AND state IN ('reserved','consumed')", [subscriberId, entitlement.dodo_subscription_id, entitlement.billing_period_start])).rows[0].count;
     if (used >= allowance()) { await client.query("ROLLBACK"); return null; }
@@ -366,6 +373,15 @@ async function bindProviderVerifiedSubscription(client, subscriptionId) {
     WHERE c.provider_subscription_id=$1 AND c.provider_payment_id IS NOT NULL FOR UPDATE`, [subscriptionId]);
   const row = rows[0];
   if (!row || row.payment_provenance !== "verified" || row.ownership_provenance !== "verified" || row.status !== "active" || row.product_id !== (dodoProductId())) return false;
+  const identity = (await client.query(`SELECT 1 FROM dodo_webhook_events e JOIN customer_checkout_correlations c
+    ON c.provider_subscription_id=$1 JOIN dodo_subscriptions s ON s.dodo_subscription_id=$1
+    WHERE e.billing_evidence->>'type'='payment.succeeded' AND e.billing_evidence->>'paymentId'=c.provider_payment_id
+      AND e.billing_evidence->>'checkoutSessionId'=c.checkout_session_id
+      AND e.billing_evidence->>'customerId'=s.dodo_customer_id
+      AND e.billing_evidence->>'mode'=$2 AND e.billing_evidence->>'productId'=s.product_id
+      AND e.billing_evidence->>'brandId'=$3 AND e.billing_evidence->>'businessId'=$4 LIMIT 1`,
+    [subscriptionId,dodoMode(),process.env[`DODO_${dodoMode().toUpperCase()}_BRAND_ID`],process.env[`DODO_${dodoMode().toUpperCase()}_BUSINESS_ID`]])).rowCount;
+  if (!identity) return false;
   if (row.existing_owner && row.existing_owner !== row.subscriber_id) {
     await client.query("UPDATE customer_checkout_correlations SET status='conflicted',updated_at=now() WHERE provider_subscription_id=$1 AND status <> 'bound'", [subscriptionId]);
     return false;
@@ -385,10 +401,15 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
     // A single advisory key per event avoids lock-order deadlocks.
     if (ownershipEligible && subscriptionId) await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [subscriptionId]);
     const hash = crypto.createHash("sha256").update(rawBody).digest("hex");
-    const inserted = await client.query(`INSERT INTO dodo_webhook_events (event_id,event_type,payload_sha256)
-      VALUES ($1,$2,$3) ON CONFLICT (event_id) DO NOTHING`, [eventId, eventType, hash]);
+    const financial = billingEvidence(eventType, subscription, payment, ownershipEligible);
+    const inserted = await client.query(`INSERT INTO dodo_webhook_events (event_id,event_type,payload_sha256,billing_evidence)
+      VALUES ($1,$2,$3,$4::jsonb) ON CONFLICT (event_id) DO NOTHING`, [eventId, eventType, hash, JSON.stringify(financial)]);
     if (!inserted.rowCount) {
+      const existing = (await client.query("SELECT payload_sha256 FROM dodo_webhook_events WHERE event_id=$1", [eventId])).rows[0];
+      if (existing.payload_sha256 !== hash) throw new Error("Webhook receipt payload conflicts");
+      if (financial) await client.query("UPDATE dodo_webhook_events SET billing_evidence=COALESCE(billing_evidence,$2::jsonb) WHERE event_id=$1", [eventId,JSON.stringify(financial)]);
       if (ownershipEligible && subscriptionId) await bindProviderVerifiedSubscription(client, subscriptionId);
+      if (financial && subscriptionId) await confirmPaidPeriods(client, subscriptionId);
       await client.query("COMMIT"); return false;
     }
     let subscriptionApplied = false;
@@ -410,7 +431,8 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
       -- in dodo_webhook_events for audit/idempotency, but cannot reactivate a
       -- cancelled subscription or poison ordering for later verified evidence.
       WHERE EXCLUDED.last_event_at > dodo_subscriptions.last_event_at
-        AND ($7 OR dodo_subscriptions.ownership_provenance <> 'verified')`,
+        AND ($7 OR dodo_subscriptions.ownership_provenance <> 'verified')
+        AND (dodo_subscriptions.ownership_provenance <> 'verified' OR dodo_subscriptions.dodo_customer_id=EXCLUDED.dodo_customer_id)`,
     [subscription.subscriptionId, subscription.productId, subscription.customerId, subscription.email, subscription.status, subscription.occurredAt, ownershipEligible, subscription.billingStart, subscription.billingEnd, subscription.cancellationScheduled]);
       // Recovery may rely only on this event when the strict lifecycle write
       // itself won. Equality and older events intentionally produce rowCount 0.
@@ -427,6 +449,7 @@ export async function processDodoWebhookEvent(eventId, eventType, rawBody, subsc
     if (subscriptionApplied && ownershipEligible) await confirmRecoveryFromSignedSubscription(client, eventId, subscription);
     await hooks.afterEvidence?.();
     if (ownershipEligible && subscriptionId) await bindProviderVerifiedSubscription(client, subscriptionId);
+    if (financial && subscriptionId) await confirmPaidPeriods(client, subscriptionId);
     await client.query("COMMIT"); return true;
   } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
@@ -448,13 +471,16 @@ export async function getCustomerSession(token) {
 
 export async function getCustomerSubscriptionStatus(subscriberId) {
   if (!subscriberId) return "not_subscribed";
-  const { rows } = await database().query(`SELECT status,cancellation_scheduled,billing_period_end FROM dodo_subscriptions
+  const { rows } = await database().query(`SELECT status,cancellation_scheduled,billing_period_end FROM ${paidSubscriptions()}
     WHERE subscriber_id=$1 AND product_id=$2
     ORDER BY CASE status WHEN 'active' THEN 1 WHEN 'past_due' THEN 2 WHEN 'cancelled' THEN 3 ELSE 4 END, updated_at DESC LIMIT 1`, [subscriberId, dodoProductId()]);
   if (rows[0]?.status) {
+    if (rows[0].status === "active" && new Date(rows[0].billing_period_end) <= new Date()) return "expired";
     if (rows[0].cancellation_scheduled && rows[0].status === "active") return new Date(rows[0].billing_period_end) <= new Date() ? "expired" : "cancellation_scheduled";
     return rows[0].status;
   }
+  const observed = await database().query(`SELECT 1 FROM dodo_subscriptions WHERE subscriber_id=$1 AND product_id=$2 AND status IN ('active','past_due') LIMIT 1`, [subscriberId,dodoProductId()]);
+  if (observed.rowCount) return "pending_verification";
   const pending = await database().query(`SELECT 1 FROM customer_checkout_correlations
     WHERE subscriber_id=$1 AND status IN ('pending','created','payment_verified') AND expires_at > now() LIMIT 1`, [subscriberId]);
   return pending.rowCount ? "pending_verification" : "not_subscribed";
@@ -464,7 +490,7 @@ export async function getCustomerSubscriptionStatus(subscriberId) {
 export async function getCustomerCancellationManagementState(subscriberId) {
   if (!subscriberId) return { state: "none", periodEnd: null };
   const { rows } = await database().query(`SELECT cancellation_scheduled,cancellation_request_started_at,billing_period_end
-    FROM dodo_subscriptions WHERE subscriber_id=$1 AND product_id=$2 AND ownership_provenance='verified'
+    FROM ${paidSubscriptions()} WHERE subscriber_id=$1 AND product_id=$2 AND ownership_provenance='verified'
       AND status='active' AND billing_period_start IS NOT NULL AND billing_period_end IS NOT NULL
       AND billing_period_start <= now() AND billing_period_start < billing_period_end AND billing_period_end > now()
     ORDER BY billing_period_end DESC LIMIT 1`, [subscriberId, dodoProductId()]);
@@ -486,7 +512,7 @@ export async function getCustomerRenderUsage(subscriberId) {
   const allowanceValue = allowance();
   if (!subscriberId) return { allowance: allowanceValue, billingPeriod: null, successfulRenders: null, reservedRenders: null, remainingRenders: null };
   const { rows } = await database().query(`SELECT dodo_subscription_id,status,ownership_provenance,billing_period_start,billing_period_end
-    FROM dodo_subscriptions WHERE subscriber_id=$1 AND product_id=$2 AND ownership_provenance='verified'
+    FROM ${paidSubscriptions()} WHERE subscriber_id=$1 AND product_id=$2 AND ownership_provenance='verified'
     ORDER BY CASE status WHEN 'active' THEN 1 WHEN 'past_due' THEN 2 WHEN 'cancelled' THEN 3 ELSE 4 END, updated_at DESC LIMIT 1`, [subscriberId, dodoProductId()]);
   const subscription = rows[0];
   const validPeriod = subscription?.ownership_provenance === "verified" && subscription.billing_period_start && subscription.billing_period_end
@@ -703,9 +729,9 @@ export async function failUploadJob(id, message) { const client = await database
 export async function claimNextJob(workerId) {
   const { rows } = await database().query(`WITH next_job AS (
     SELECT j.id FROM edit_jobs j WHERE j.status='queued' AND (($3 = false AND j.subscriber_id IS NULL) OR EXISTS (
-      SELECT 1 FROM render_quota_reservations r JOIN dodo_subscriptions s ON s.dodo_subscription_id=r.subscription_id JOIN subscriber_identities i ON i.id=j.subscriber_id
+      SELECT 1 FROM render_quota_reservations r JOIN ${paidSubscriptions()} s ON s.dodo_subscription_id=r.subscription_id JOIN subscriber_identities i ON i.id=j.subscriber_id
       WHERE r.id=j.quota_reservation_id AND r.job_id=j.id AND r.state='reserved' AND s.subscriber_id=j.subscriber_id
-        AND s.status='active' AND s.ownership_provenance='verified' AND s.product_id=$2 AND s.billing_period_end > now()
+        AND r.period_start=s.billing_period_start AND s.status='active' AND s.ownership_provenance='verified' AND s.product_id=$2 AND s.billing_period_end > now()
         AND s.billing_period_start <= now() AND i.verified_at IS NOT NULL AND i.google_subject IS NOT NULL
     )) ORDER BY j.created_at FOR UPDATE SKIP LOCKED LIMIT 1
   ) UPDATE edit_jobs j SET status='analyzing', worker_id=$1, claimed_at=now(), heartbeat_at=now(), attempt_count=attempt_count+1, updated_at=now() FROM next_job WHERE j.id=next_job.id RETURNING j.*`, [workerId, dodoProductId(), paidEditingEnforced()]);

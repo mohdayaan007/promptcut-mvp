@@ -104,9 +104,9 @@ test("documented failed and on_hold events map safely to past_due", () => {
   }
 });
 
-test("signed payment evidence requires exact checkout and single subscription identifiers", () => {
-  const payment = { type: "payment.succeeded", timestamp: "2026-10-28T08:00:00.000Z", business_id: config.businessId, data: { payment_id: "pay_1", checkout_session_id: "cs_1", subscription_id: "sub_1", subscription_ids: ["sub_1"], brand_id: config.brandId, metadata: { cliponaut_checkout_ref: "untrusted-for-linking" } } };
-  assert.deepEqual(cliponautPaymentEvent(payment, config), { paymentId: "pay_1", checkoutSessionId: "cs_1", subscriptionId: "sub_1", occurredAt: "2026-10-28T08:00:00.000Z" });
+test("signed successful payment retains optional checkout and exact subscription identity", () => {
+  const payment = { type: "payment.succeeded", timestamp: "2026-10-28T08:00:00.000Z", business_id: config.businessId, data: { payment_id: "pay_1", status: "succeeded", customer: { customer_id: "cus_1" }, checkout_session_id: "cs_1", subscription_id: "sub_1", subscription_ids: ["sub_1"], brand_id: config.brandId, metadata: { cliponaut_checkout_ref: "untrusted-for-linking" } } };
+  assert.deepEqual(cliponautPaymentEvent(payment, config), { paymentId: "pay_1", checkoutSessionId: "cs_1", subscriptionId: "sub_1", occurredAt: "2026-10-28T08:00:00.000Z", customerId: "cus_1", brandId: "brand_cliponaut", businessId: "biz_cliponaut", status: "succeeded" });
   assert.doesNotThrow(() => cliponautPaymentEvent({ ...payment, data: { ...payment.data, product_cart: null } }, config));
   assert.doesNotThrow(() => cliponautPaymentEvent({ ...payment, data: { ...payment.data, product_cart: undefined } }, config));
   for (const data of [{ ...payment.data, checkout_session_id: "" }, { ...payment.data, subscription_ids: ["sub_1", "sub_2"] }, { ...payment.data, brand_id: "brand_bynd" }, { ...payment.data, product_cart: "not-an-array" }]) assert.throws(() => cliponautPaymentEvent({ ...payment, data }, config), DodoWebhookError);

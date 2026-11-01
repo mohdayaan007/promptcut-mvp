@@ -188,7 +188,7 @@ export function cliponautSubscriptionEvent(event, config) {
     if (typeof billingStart !== "string" || typeof billingEnd !== "string" || !Number.isFinite(Date.parse(billingStart)) || !Number.isFinite(Date.parse(billingEnd)) || Date.parse(billingStart) >= Date.parse(billingEnd)) throw new DodoWebhookError("Subscription billing period is invalid");
   }
   if (data.cancel_at_next_billing_date !== undefined && typeof data.cancel_at_next_billing_date !== "boolean") throw new DodoWebhookError("Subscription cancellation state is invalid");
-  return { subscriptionId: data.subscription_id, status: states[type].internal, productId: config.productId, brandId: data.brand_id, businessId, evidenceSource: "signed_webhook", customerId: data.customer.customer_id, email: typeof data.customer.email === "string" ? normalizeEmail(data.customer.email) : null, occurredAt, billingStart: billingStart ? new Date(billingStart).toISOString() : null, billingEnd: billingEnd ? new Date(billingEnd).toISOString() : null, cancellationScheduled: data.cancel_at_next_billing_date === true };
+  return { createdAt: typeof data.created_at === "string" ? data.created_at : null, billingPaymentId: type === "subscription.renewed" && typeof data.payment_id === "string" ? data.payment_id : null, subscriptionId: data.subscription_id, status: states[type].internal, productId: config.productId, brandId: data.brand_id, businessId, evidenceSource: "signed_webhook", customerId: data.customer.customer_id, email: typeof data.customer.email === "string" ? normalizeEmail(data.customer.email) : null, occurredAt, billingStart: billingStart ? new Date(billingStart).toISOString() : null, billingEnd: billingEnd ? new Date(billingEnd).toISOString() : null, cancellationScheduled: data.cancel_at_next_billing_date === true };
 }
 
 /** Signed payment evidence joins a provider checkout session to one subscription. */
@@ -201,7 +201,7 @@ export function cliponautPaymentEvent(event, config) {
   if (typeof data.brand_id !== "string" || !data.brand_id) throw new DodoWebhookError("Payment brand is invalid");
   if (envelopeBrandId && envelopeBrandId !== data.brand_id) throw new DodoWebhookError("Webhook brand provenance conflicts");
   if (config.brandId && data.brand_id !== config.brandId) throw new DodoWebhookError("Webhook brand does not match Cliponaut");
-  if (typeof data.payment_id !== "string" || !data.payment_id || typeof data.checkout_session_id !== "string" || !data.checkout_session_id) throw new DodoWebhookError("Payment correlation is invalid");
+  if (typeof data.payment_id !== "string" || !data.payment_id || (data.checkout_session_id != null && (typeof data.checkout_session_id !== "string" || !data.checkout_session_id))) throw new DodoWebhookError("Payment correlation is invalid");
   const subscriptionIds = Array.isArray(data.subscription_ids) ? data.subscription_ids : [];
   const subscriptionId = typeof data.subscription_id === "string" && data.subscription_id ? data.subscription_id : subscriptionIds.length === 1 && typeof subscriptionIds[0] === "string" ? subscriptionIds[0] : null;
   if (!subscriptionId || subscriptionIds.some((id) => id !== subscriptionId)) throw new DodoWebhookError("Payment subscription correlation is invalid");
@@ -209,5 +209,6 @@ export function cliponautPaymentEvent(event, config) {
   // product is authoritatively checked on the signed subscription event.
   if (data.product_cart !== undefined && data.product_cart !== null && (!Array.isArray(data.product_cart) || data.product_cart.some((item) => !item || typeof item.product_id !== "string"))) throw new DodoWebhookError("Payment product cart is invalid");
   if (data.product_cart?.some((item) => item.product_id !== config.productId)) throw new DodoWebhookError("Payment contains a conflicting product");
-  return { paymentId: data.payment_id, checkoutSessionId: data.checkout_session_id, subscriptionId, occurredAt };
+  if (data.status !== "succeeded" || typeof data.customer?.customer_id !== "string" || !data.customer.customer_id) throw new DodoWebhookError("Successful payment identity is incomplete");
+  return { paymentId: data.payment_id, checkoutSessionId: data.checkout_session_id || null, subscriptionId, occurredAt, customerId: data.customer.customer_id, brandId: data.brand_id, businessId, status: data.status };
 }
