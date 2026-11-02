@@ -20,6 +20,20 @@ test("editing readiness requires a current verified period and remaining capacit
   assert.equal(editingReadiness("active", current, now).title, "New renders available");
 });
 
+test("active account copy acknowledges only a current verified paid-period usage ledger", () => {
+  const now = Date.parse("2026-11-02T12:00:00Z");
+  const current = { allowance: 15, billingPeriod: { start: "2026-11-02T10:21:34Z", end: "2026-12-02T10:22:43Z" }, successfulRenders: 1, reservedRenders: 0, remainingRenders: 14 };
+  assert.equal(accountState("active", current, now).title, "Cliponaut Pro active");
+  assert.equal(accountState("active", current, now).detail, "Your current paid billing period is verified.");
+  assert.equal(editingReadiness("active", current, now).detail, "14 render slots remain in this verified billing period.");
+  assert.equal(accountState("active", { ...current, successfulRenders: 15, remainingRenders: 0 }, now).title, "Cliponaut Pro active");
+  for (const usage of [null, { ...current, remainingRenders: null }, { ...current, reservedRenders: undefined }, { ...current, remainingRenders: 15 }, { ...current, billingPeriod: { start: "invalid", end: current.billingPeriod.end } }, { ...current, billingPeriod: { start: "2026-12-02T12:00:00Z", end: "2027-01-02T12:00:00Z" } }, { ...current, billingPeriod: { start: "2026-10-01T12:00:00Z", end: "2026-11-01T12:00:00Z" } }]) {
+    assert.equal(accountState("active", usage, now).title, "Provider subscription active");
+  }
+  assert.equal(accountState("pending_verification", current, now).title, "Checkout pending verification");
+  assert.equal(accountState("expired", current, now).title, "Subscription expired");
+});
+
 test("logout confirmation preserves authenticated state on HTTP and network failures", async () => {
   await assert.rejects(() => performLogout(async () => new Response(null, { status: 500 })), /could not sign you out/i);
   await assert.rejects(() => performLogout(async () => { throw new Error("network down"); }), /network down/);

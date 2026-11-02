@@ -8,7 +8,15 @@ export const subscriptionCopy = {
   expired: { title: "Subscription expired", detail: "New paid renders are unavailable until a verified subscription is active." }
 };
 
-export function accountState(status) { return subscriptionCopy[status] || subscriptionCopy.not_subscribed; }
+export function accountState(status, usage, now) {
+  const period = billingPeriodState(usage, now);
+  if (status === "active" && period.available && period.timing === "current"
+    && [period.allowance, period.successfulRenders, period.reservedRenders, period.remainingRenders].every(value => Number.isInteger(value) && value >= 0)
+    && period.allowance === period.successfulRenders + period.reservedRenders + period.remainingRenders) {
+    return { title: "Cliponaut Pro active", detail: "Your current paid billing period is verified." };
+  }
+  return subscriptionCopy[status] || subscriptionCopy.not_subscribed;
+}
 export function billingPeriodState(usage, now = Date.now()) {
   if (!usage?.billingPeriod || usage.successfulRenders === null || usage.reservedRenders === null) return { available: false, timing: "unavailable" };
   const start = Date.parse(usage.billingPeriod.start); const end = Date.parse(usage.billingPeriod.end);
