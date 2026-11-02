@@ -469,6 +469,15 @@ export async function getCustomerSession(token) {
   return rows[0] || null;
 }
 
+/** Server-only founder authorization input; no raw Google subject leaves this helper. */
+export async function getVerifiedGoogleSubjectDigest(subscriberId) {
+  if (!subscriberId || !UUID_PATTERN.test(subscriberId)) return null;
+  const { rows } = await database().query(`SELECT google_subject FROM subscriber_identities
+    WHERE id=$1 AND verified_at IS NOT NULL AND google_subject IS NOT NULL`, [subscriberId]);
+  return rows[0]?.google_subject
+    ? crypto.createHash("sha256").update(rows[0].google_subject).digest("hex") : null;
+}
+
 export async function getCustomerSubscriptionStatus(subscriberId) {
   if (!subscriberId) return "not_subscribed";
   const { rows } = await database().query(`SELECT status,cancellation_scheduled,billing_period_end FROM ${paidSubscriptions()}

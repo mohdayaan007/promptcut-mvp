@@ -4,16 +4,19 @@ import { checkoutSessionUrl, customerCheckoutEnabled, dodoModeConfig } from "@/l
 import { CustomerCheckoutConflict, reserveCustomerCheckout, failCustomerCheckoutCorrelation, getCustomerSession, recordCustomerCheckoutSession } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
 import { requireCustomerCheckoutOrigin } from "@/lib/checkout-origin";
+import { authorizeFounderLiveCheckout, founderLiveCheckoutConfigured, founderLiveCheckoutRequested } from "@/lib/founder-live-checkout";
 
 export const runtime = "nodejs";
 
 /** Authenticated, mode-gated checkout: caller data never selects product or owner. */
 export async function POST(req) {
   try {
-    if (!customerCheckoutEnabled()) throw new PublicRequestError("Checkout is not available.", 404);
+    const founderOnly = founderLiveCheckoutRequested();
+    if (founderOnly ? !founderLiveCheckoutConfigured() : !customerCheckoutEnabled()) throw new PublicRequestError("Checkout is not available.", 404);
     requireCustomerCheckoutOrigin(req);
     const customer = await getCustomerSession(customerSessionToken(req));
     if (!customer) throw new PublicRequestError("Sign-in is required.", 401);
+    if (founderOnly && !await authorizeFounderLiveCheckout(customer.subscriber_id)) throw new PublicRequestError("Checkout is not available.", 403);
     if (!customerOwnershipProvenanceConfigured(dodoModeConfig())) throw new DodoConfigurationError("Checkout identity pins are not configured");
     const pending = await reserveCustomerCheckout(customer.subscriber_id);
     if (pending.checkoutId) return Response.json({ checkoutUrl: checkoutSessionUrl(pending.checkoutId), checkoutId: pending.checkoutId }, { headers: { "Cache-Control": "no-store" } });
