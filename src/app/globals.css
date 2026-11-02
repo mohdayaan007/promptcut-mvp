@@ -1304,6 +1304,8 @@ body {
 .cliponaut-checkout-control p { margin: 0; color: #e2dbd2; font-size: 0.76rem; line-height: 1.45; }
 .cliponaut-account-card .cliponaut-checkout-control p { color: #554f49; }
 .cliponaut-checkout-control.is-compact { margin-top: 22px; }
+.cliponaut-refund-disclosure { overflow-wrap: anywhere; }
+.cliponaut-refund-disclosure a { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
 .cliponaut-marketing-shell .cliponaut-primary-button { display: inline-flex; width: fit-content; align-items: center; justify-content: center; min-height: 42px; border: 1px solid #ded8d0; border-radius: 2px; padding: 0 16px; background: #f7f2ec; color: #1d1c1a; font: inherit; font-size: 0.84rem; font-weight: 700; text-decoration: none; cursor: pointer; }
 .cliponaut-marketing-shell .cliponaut-primary-button:hover { background: #fffdf9; }
 .cliponaut-marketing-shell .cliponaut-primary-button:disabled { cursor: wait; opacity: 0.7; }

@@ -55,7 +55,7 @@ export default function PricingPage() {
         <p>Your subscription includes 15 successful renders per verified paid billing period. Failed or cancelled renders do not consume a successful-render slot. A new allowance is granted only after renewal payment is confirmed.</p>
       </article>
       <article className="cliponaut-guarantee"><p className="cliponaut-marketing-eyebrow">Your subscription</p><h2>Cancellation and refunds.</h2>
-        <p>Subscribers can stop future renewals. Confirmed cancellations keep already-paid access through the verified period end. Refund eligibility will be described in the final policy before payments are accepted.</p>
+        <p>Cancel anytime through your account. Once cancellation is confirmed, no further renewal is scheduled and access continues through your already-paid period. First-purchase refund requests are reviewed manually under the 7-day / maximum 3 successful renders policy.</p>
         <Link href="/refunds">Read refunds & cancellation</Link>
       </article>
     </section>

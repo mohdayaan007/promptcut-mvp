@@ -20,12 +20,12 @@ export function MarketingLayout({ children }) {
   </div>;
 }
 
-export function PolicyPage({ eyebrow, title, children }) {
+export function PolicyPage({ eyebrow, title, updated = "31 October 2026", children }) {
   return <MarketingLayout>
     <article className="cliponaut-policy">
       <p className="cliponaut-marketing-eyebrow">{eyebrow}</p>
       <h1>{title}</h1>
-      <p className="cliponaut-policy-updated">Updated 31 October 2026 · Early-access information</p>
+      <p className="cliponaut-policy-updated">Updated {updated} · Early-access information</p>
       <div className="cliponaut-policy-body">{children}</div>
     </article>
   </MarketingLayout>;
