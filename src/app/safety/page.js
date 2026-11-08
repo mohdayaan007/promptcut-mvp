@@ -1,7 +1,7 @@
 import { PolicyPage } from "@/components/cliponaut/MarketingLayout";
 export const metadata = { title: "Content Safety & Acceptable Use — Cliponaut" };
 export default function Safety() { return <PolicyPage eyebrow="Responsible use" title="Content Safety & Acceptable Use">
-  <p>Cliponaut is an AI-assisted editor for footage that users have the right to edit. It is not intended as a tool for deceptive impersonation, scraping other people's content, or creating non-consensual deepfakes.</p>
+  <p>Cliponaut is an AI-assisted editor for footage that users have the right to edit. It is not intended as a tool for deceptive impersonation, scraping other people&apos;s content, or creating non-consensual deepfakes.</p>
   <h2>Rights and consent</h2>
   <p>Only upload videos, images, audio, voices and likenesses you own or have permission to use. Respect copyright, privacy, publicity rights and all relevant consent requirements.</p>
   <h2>Prohibited activity</h2>

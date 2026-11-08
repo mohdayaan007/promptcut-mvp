@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import pg from "pg";
 import { dodoMode, dodoProductId, DodoConfigurationError } from "@/lib/dodo-config";
+import { founderSubjectDigests, isFounderSubjectDigest } from "@/lib/founder-identity";
 
 import { PAID_PERIODS_SCHEMA, billingEvidence, confirmPaidPeriods, paidSubscriptions } from "@/lib/jobs/paid-periods";
 
@@ -478,6 +479,11 @@ export async function getVerifiedGoogleSubjectDigest(subscriberId) {
     ? crypto.createHash("sha256").update(rows[0].google_subject).digest("hex") : null;
 }
 
+export async function isFounderSubscriber(subscriberId) {
+  if (!founderSubjectDigests().length) return false;
+  return isFounderSubjectDigest(await getVerifiedGoogleSubjectDigest(subscriberId));
+}
+
 export async function getCustomerSubscriptionStatus(subscriberId) {
   if (!subscriberId) return "not_subscribed";
   const { rows } = await database().query(`SELECT status,cancellation_scheduled,billing_period_end FROM ${paidSubscriptions()}
@@ -636,7 +642,7 @@ export async function createEditingSession(jobId, initialPrompt, subscriberId = 
 }
 export async function getAuthorizedSession(id, token) {
   if (!UUID_PATTERN.test(id) || !token) return null;
-  const { rows } = await database().query("SELECT * FROM editing_sessions WHERE id=$1 AND access_token=$2 AND expires_at > now()", [id, token]);
+  const { rows } = await database().query("SELECT * FROM editing_sessions WHERE id=$1 AND access_token=$2 AND subscriber_id IS NULL AND expires_at > now()", [id, token]);
   return rows[0] || null;
 }
 export async function getAuthorizedSubscriberSession(id, token, subscriberId) {
@@ -698,7 +704,7 @@ export async function createUploadJob(sources, reference = null, { subscriberId 
 }
 export async function getAuthorizedJob(id, token) {
   if (!UUID_PATTERN.test(id) || !token) return null;
-  const { rows } = await database().query("SELECT * FROM edit_jobs WHERE id = $1 AND access_token = $2", [id, token]);
+  const { rows } = await database().query("SELECT * FROM edit_jobs WHERE id = $1 AND access_token = $2 AND subscriber_id IS NULL", [id, token]);
   return rows[0] ? safeRow(rows[0]) : null;
 }
 export async function getAuthorizedSubscriberJob(id, token, subscriberId) {
@@ -737,13 +743,18 @@ export async function queueJob(id, { prompt, exportQuality, sources, reference =
 export async function failUploadJob(id, message) { const client = await database().connect(); try { await client.query("BEGIN"); const { rows } = await client.query("UPDATE edit_jobs SET status='failed', error_message=$2, updated_at=now() WHERE id=$1 AND status='uploading' RETURNING id", [id, message]); if (rows[0]) await client.query("UPDATE render_quota_reservations SET state='released',updated_at=now() WHERE job_id=$1 AND state='reserved'", [id]); await client.query("COMMIT"); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); } }
 export async function claimNextJob(workerId) {
   const { rows } = await database().query(`WITH next_job AS (
-    SELECT j.id FROM edit_jobs j WHERE j.status='queued' AND (($3 = false AND j.subscriber_id IS NULL) OR EXISTS (
+    SELECT j.id FROM edit_jobs j WHERE j.status='queued' AND (($3 = false AND j.subscriber_id IS NULL) OR
+    (j.quota_reservation_id IS NULL AND EXISTS (
+      SELECT 1 FROM subscriber_identities founder WHERE founder.id=j.subscriber_id
+        AND founder.verified_at IS NOT NULL AND founder.google_subject IS NOT NULL
+        AND encode(sha256(convert_to(founder.google_subject, 'UTF8')), 'hex')=ANY($4::text[])
+    )) OR EXISTS (
       SELECT 1 FROM render_quota_reservations r JOIN ${paidSubscriptions()} s ON s.dodo_subscription_id=r.subscription_id JOIN subscriber_identities i ON i.id=j.subscriber_id
       WHERE r.id=j.quota_reservation_id AND r.job_id=j.id AND r.state='reserved' AND s.subscriber_id=j.subscriber_id
         AND r.period_start=s.billing_period_start AND s.status='active' AND s.ownership_provenance='verified' AND s.product_id=$2 AND s.billing_period_end > now()
         AND s.billing_period_start <= now() AND i.verified_at IS NOT NULL AND i.google_subject IS NOT NULL
     )) ORDER BY j.created_at FOR UPDATE SKIP LOCKED LIMIT 1
-  ) UPDATE edit_jobs j SET status='analyzing', worker_id=$1, claimed_at=now(), heartbeat_at=now(), attempt_count=attempt_count+1, updated_at=now() FROM next_job WHERE j.id=next_job.id RETURNING j.*`, [workerId, dodoProductId(), paidEditingEnforced()]);
+  ) UPDATE edit_jobs j SET status='analyzing', worker_id=$1, claimed_at=now(), heartbeat_at=now(), attempt_count=attempt_count+1, updated_at=now() FROM next_job WHERE j.id=next_job.id RETURNING j.*`, [workerId, dodoProductId(), paidEditingEnforced(), founderSubjectDigests()]);
   return rows[0] ? safeRow(rows[0]) : null;
 }
 export async function setJobStatus(id, workerId, status) {

@@ -11,6 +11,7 @@ function dateTime(iso) { return iso ? new Intl.DateTimeFormat(undefined, { month
 
 function UsageCard({ usage, phase }) {
   const current = billingPeriodState(usage);
+  if (usage?.founderUnlimited === true) return <section className="cliponaut-account-card"><p className="cliponaut-marketing-eyebrow">Founder access</p><h2>Unlimited renders</h2><p>Unlimited successful renders and editing revisions across Cliponaut’s editing capabilities. Founder work does not consume customer render slots.</p></section>;
   if (phase === "loading") return <section className="cliponaut-account-card" aria-busy="true"><p className="cliponaut-marketing-eyebrow">Render allowance</p><h2>Loading usage…</h2></section>;
   if (!current.available) return <section className="cliponaut-account-card"><p className="cliponaut-marketing-eyebrow">Render allowance</p><h2>Usage unavailable</h2><p>Verified billing-period information is needed before we can show usage safely.</p></section>;
   const periodLabel = current.timing === "current" ? "This billing period" : current.timing === "future" ? "Upcoming verified period" : "Previous verified period";
@@ -19,7 +20,7 @@ function UsageCard({ usage, phase }) {
 
 export default function AccountPage() {
   const button = useRef(null); const keepSubscription = useRef(null); const started = useRef(false); const coordinator = useRef(null); const cancellationGuard = useRef(null);
-  if (!cancellationGuard.current) cancellationGuard.current = createCancellationRequestGuard();
+  if (cancellationGuard.current === null) { cancellationGuard.current = createCancellationRequestGuard(); }
   const [account, setAccount] = useState(null); const [usage, setUsage] = useState(null); const [usagePhase, setUsagePhase] = useState("idle");
   const [error, setError] = useState(""); const [logout, setLogout] = useState({ phase: "idle", error: "" }); const [signIn, setSignIn] = useState({ phase: "idle", error: "" });
   const [cancellation, setCancellation] = useState({ phase: "idle", error: "" });
@@ -31,7 +32,11 @@ export default function AccountPage() {
       if (next.signedIn) { setUsagePhase("loading"); const usageResponse = await fetch("/api/account/usage"); if (!usageResponse.ok) throw new Error("We could not load your render usage."); setUsage(await usageResponse.json()); setUsagePhase("ready"); }
     } catch (loadError) { setError(loadError.message || "We could not load your account."); setUsagePhase("error"); }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => { if (!cancelled) load(); });
+    return () => { cancelled = true; };
+  }, [load]);
   useEffect(() => {
     if (!clientId || account === null || account?.signedIn || started.current) return;
     started.current = true;
@@ -71,7 +76,7 @@ export default function AccountPage() {
   const cancellationEnd = persistedCancellation.periodEnd;
   const recovery = account?.cancellation?.recovery;
   return <MarketingLayout><section className="cliponaut-account-page"><p className="cliponaut-marketing-eyebrow">Account</p><h1>Your Cliponaut Pro account</h1>{account === null && !error ? <p role="status">Loading your account…</p> : null}{error ? <div className="cliponaut-account-error" role="alert"><p>{error}</p><button type="button" onClick={load}>Try again</button></div> : null}
-    {account?.signedIn ? <div className="cliponaut-account-stack"><section className="cliponaut-account-card"><p className="cliponaut-marketing-eyebrow">Signed in</p><h2>{account.email}</h2>{cancellationState !== "scheduled" ? <div className="cliponaut-account-status"><strong>{status.title}</strong><p>{status.detail}</p></div> : null}<div className="cliponaut-account-status"><strong>{readiness.title}</strong><p>{readiness.detail}</p></div>{account.subscriptionStatus === "not_subscribed" || account.subscriptionStatus === "pending_verification" ? <CheckoutButton signedIn compact /> : null}
+    {account?.signedIn ? <div className="cliponaut-account-stack"><section className="cliponaut-account-card"><p className="cliponaut-marketing-eyebrow">Signed in</p><h2>{account.email}</h2>{!usage?.founderUnlimited && cancellationState !== "scheduled" ? <div className="cliponaut-account-status"><strong>{status.title}</strong><p>{status.detail}</p></div> : null}<div className="cliponaut-account-status"><strong>{readiness.title}</strong><p>{readiness.detail}</p></div>{!usage?.founderUnlimited && (account.subscriptionStatus === "not_subscribed" || account.subscriptionStatus === "pending_verification") ? <CheckoutButton signedIn compact /> : null}
       {account.subscriptionStatus === "active" && persistedCancellation.enabled && cancellationState === "none" ? <div className="cliponaut-account-status"><strong>Manage subscription</strong>{cancellation.phase === "confirming" ? <div role="group" aria-label="Confirm subscription cancellation"><p>Renewal will stop at period end. Your Pro access and remaining render allowance stay available until {cancellationEnd ? dateTime(cancellationEnd) : "the verified period end"}. Cancellation does not automatically promise a refund.</p>{cancellationEnd ? <p><strong>Verified access end: {dateTime(cancellationEnd)}</strong></p> : <p role="alert">We cannot verify your current access-end date, so cancellation cannot be confirmed here.</p>}<div className="cliponaut-cancellation-actions"><button ref={keepSubscription} type="button" className="cliponaut-cancellation-keep" onClick={() => setCancellation({ phase: "idle", error: "" })}>Keep subscription</button><button type="button" className="cliponaut-cancellation-confirm" disabled={!cancellationEnd} onClick={requestCancellation}>Confirm cancellation</button></div></div> : <><p>Cancellation stops renewal at the end of your verified billing period. Your existing access and unused render slots remain available until then. No automatic refund is promised.</p><button type="button" className="cliponaut-text-button" onClick={() => setCancellation({ phase: "confirming", error: "" })}>Cancel subscription</button></>}</div> : null}
       {cancellationState === "loading" ? <div className="cliponaut-account-status" role="status" aria-live="polite" aria-busy="true"><strong>Scheduling cancellation…</strong><p>We are confirming your period-end cancellation. Please wait.</p></div> : null}
       {cancellationState === "pending" ? <div className="cliponaut-account-status"><strong>Cancellation status pending</strong><p>We are verifying the provider result. Renewal has not yet been confirmed stopped.</p><button type="button" className="cliponaut-text-button" disabled={cancellation.phase === "checking"} onClick={checkCancellationStatus}>{cancellation.phase === "checking" ? "Checking status…" : "Check status"}</button></div> : null}

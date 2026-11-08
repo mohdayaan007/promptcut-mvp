@@ -44,6 +44,7 @@ export function createCancellationRequestGuard() {
   return { start() { if (inFlight) return false; inFlight = true; return true; }, finish() { inFlight = false; } };
 }
 export function editingReadiness(status, usage, now) {
+  if (usage?.founderUnlimited === true) return { title: "Unlimited founder access", detail: "Unlimited renders and editing revisions. No subscription or customer render slots are required." };
   if (!["active", "cancellation_scheduled"].includes(status)) return { title: "New renders unavailable", detail: "A current active subscription is required before another paid render can start." };
   const period = billingPeriodState(usage, now);
   if (!period.available) return { title: "Editing availability unavailable", detail: "We cannot verify a current billing period yet, so new renders remain unavailable." };

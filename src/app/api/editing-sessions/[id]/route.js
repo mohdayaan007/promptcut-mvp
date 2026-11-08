@@ -90,8 +90,8 @@ export async function POST(req, { params }) {
         : "I couldn’t safely apply that change to the current edit.";
       throw new PublicRequestError(message, 422);
     }
-    const reservationId = paid ? await reserveRenderCapacity(paid.subscriberId) : null;
-    if (paid && !reservationId) throw new PublicRequestError("No renders are currently available for this billing period.", 429);
+    const reservationId = paid && !paid.founderUnlimited ? await reserveRenderCapacity(paid.subscriberId) : null;
+    if (paid && !paid.founderUnlimited && !reservationId) throw new PublicRequestError("No renders are currently available for this billing period.", 429);
     let next;
     try { next = await createConversationJob(session, { prompt: effectivePrompt, plan, confirmation, expectedVersion, subscriberId: paid?.subscriberId || null, reservationId }); }
     catch (error) { if (reservationId) await releaseUnattachedRenderReservation(reservationId, paid.subscriberId); throw error; }

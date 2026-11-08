@@ -1,15 +1,17 @@
 import { customerSessionToken } from "@/lib/customer-auth";
-import { getCustomerRenderUsage, getCustomerSession, getCustomerSubscriptionStatus, getEditingEntitlement, paidEditingEnforced } from "@/lib/jobs/job-store";
+import { getCustomerRenderUsage, getCustomerSession, getCustomerSubscriptionStatus, getEditingEntitlement, isFounderSubscriber, paidEditingEnforced } from "@/lib/jobs/job-store";
 
 export const runtime = "nodejs";
 
 /** Presentation-only snapshot; upload and conversation routes remain authoritative. */
 export async function GET(req) {
-  if (!paidEditingEnforced()) return Response.json({ enforced: false }, { headers: { "Cache-Control": "no-store" } });
+  const enforced = paidEditingEnforced();
   const customer = await getCustomerSession(customerSessionToken(req));
+  const founderUnlimited = customer && await isFounderSubscriber(customer.subscriber_id);
+  if (!enforced && !founderUnlimited) return Response.json({ enforced: false }, { headers: { "Cache-Control": "no-store" } });
   if (!customer) return Response.json({ enforced: true, signedIn: false, subscriptionStatus: "not_subscribed", usage: null }, { headers: { "Cache-Control": "no-store" } });
   const [subscriptionStatus, usage, entitlement] = await Promise.all([
     getCustomerSubscriptionStatus(customer.subscriber_id), getCustomerRenderUsage(customer.subscriber_id), getEditingEntitlement(customer.subscriber_id)
   ]);
-  return Response.json({ enforced: true, signedIn: true, subscriptionStatus, usage, eligible: Boolean(entitlement && usage.remainingRenders > 0) }, { headers: { "Cache-Control": "no-store" } });
+  return Response.json({ enforced: true, signedIn: true, subscriptionStatus, usage, founderUnlimited, eligible: founderUnlimited || Boolean(entitlement && usage.remainingRenders > 0) }, { headers: { "Cache-Control": "no-store" } });
 }

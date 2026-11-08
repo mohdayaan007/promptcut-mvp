@@ -50,10 +50,8 @@ export async function POST(req, { params }) {
     }
     const queued = await queueJob(id, { prompt: prompt.trim(), exportQuality, sources, reference });
     if (!queued) throw new PublicRequestError("This upload session can no longer be queued");
-    // Conversational sessions are intentionally unavailable unless the
-    // server-verified, short-lived founder test cookie is present. Ordinary
-    // uploads keep their established single-edit response shape.
-    const session = paidEditingEnforced()
+    // Google-owned jobs retain subscriber ownership even in an unpaid test environment.
+    const session = paidEditingEnforced() || job.subscriberId
       ? await createEditingSession(queued.id, prompt.trim(), job.subscriberId)
       : hasFounderTestAccess(req) ? await createEditingSession(queued.id, prompt.trim()) : null;
     return Response.json({ ...safeJobResponse(queued), ...(session ? { session } : {}) });
