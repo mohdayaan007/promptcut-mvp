@@ -123,8 +123,100 @@ test("missing Live identity configuration fails before making a founder checkout
 test("duplicate and concurrent founder requests never create a second provider checkout",async()=>fixture(async({request,calls,counts})=>{
   const responses=await Promise.all([checkout(request()),checkout(request())]);
   assert.ok(responses.every(r=>[200,409].includes(r.status)));assert.ok(responses.some(r=>r.status===200));
-  assert.equal((await checkout(request())).status,200);
+  assert.equal((await checkout(request())).status,409);
   assert.equal(calls.length,1);assert.equal((await counts()).checkouts,1);
+}));
+
+function publicCheckout() {
+  delete process.env.DODO_LIVE_FOUNDER_GOOGLE_SUBJECT_SHA256;
+  process.env.DODO_LIVE_CUSTOMER_CHECKOUT_ENABLED="true";
+}
+
+test("checkout recovery: a fresh public checkout returns the exact provider URL once",async()=>fixture(async({request,calls,db})=>{
+  publicCheckout();
+  const originalProvider=globalThis.fetch;
+  const providerUrl="https://checkout.dodopayments.com/session/cks_synthetic?opaque=synthetic%2Bvalue&locale=en";
+  globalThis.fetch=async(...args)=>{await originalProvider(...args);return Response.json({session_id:"cks_synthetic",checkout_url:providerUrl});};
+  const created=await checkout(request());assert.equal(created.status,200);
+  assert.equal((await created.json()).checkoutUrl,providerUrl);
+  const before=(await db.query("SELECT * FROM customer_checkout_correlations")).rows;
+  for(let i=0;i<3;i++) {
+    const retry=await checkout(request());assert.equal(retry.status,409);
+    assert.equal(retry.headers.get("cache-control"),"no-store");
+    const body=await retry.json();assert.equal(body.code,"checkout_reconciliation_required");
+    assert.equal(body.checkoutUrl,undefined);assert.equal(body.checkoutId,undefined);
+  }
+  assert.equal(calls.length,1);
+  assert.deepEqual((await db.query("SELECT * FROM customer_checkout_correlations")).rows,before);
+}));
+
+test("checkout recovery: expired, provider-invalid and ambiguous recorded sessions never yield URLs or replacements",async()=>fixture(async({db,founder,request,calls})=>{
+  publicCheckout();
+  for(const [status,expired] of [["created",false],["created",true],["pending",false],["payment_verified",false]]) {
+    await db.query("DELETE FROM customer_checkout_correlations");
+    await db.query("INSERT INTO customer_checkout_correlations(reference_hash,subscriber_id,checkout_session_id,status,created_at,expires_at) VALUES('live:synthetic-review',$1,'cks_unusable',$2,now()-interval '3 days',now()+($3 * interval '1 day'))",[founder,status,expired?-1:4]);
+    const before=(await db.query("SELECT * FROM customer_checkout_correlations")).rows;
+    const response=await checkout(request());assert.equal(response.status,409);
+    assert.equal((await response.json()).code,"checkout_reconciliation_required");
+    assert.deepEqual((await db.query("SELECT * FROM customer_checkout_correlations")).rows,before);
+  }
+  assert.equal(calls.length,0);
+}));
+
+test("checkout recovery: multiple pending rows are preserved and block without choosing the newest",async()=>fixture(async({db,founder,request,calls})=>{
+  publicCheckout();
+  for(const n of [1,2])await db.query("INSERT INTO customer_checkout_correlations(reference_hash,subscriber_id,checkout_session_id,status,expires_at) VALUES($1,$2,$3,'created',now()+interval '1 day')",[`live:ambiguous-${n}`,founder,`cks_ambiguous_${n}`]);
+  const before=(await db.query("SELECT * FROM customer_checkout_correlations ORDER BY reference_hash")).rows;
+  assert.equal((await checkout(request())).status,409);assert.equal(calls.length,0);
+  assert.deepEqual((await db.query("SELECT * FROM customer_checkout_correlations ORDER BY reference_hash")).rows,before);
+}));
+
+test("checkout recovery: cross-account inputs cannot resume or clear another subscriber's correlation",async()=>fixture(async({db,founder,other,tokens,request,calls})=>{
+  publicCheckout();
+  await db.query("INSERT INTO customer_checkout_correlations(reference_hash,subscriber_id,checkout_session_id,status,expires_at) VALUES('live:foreign-review',$1,'cks_foreign','created',now()+interval '1 day')",[other]);
+  const before=(await db.query("SELECT * FROM customer_checkout_correlations WHERE subscriber_id=$1",[other])).rows;
+  const response=await checkout(request(tokens.founder,{body:{subscriberId:other,checkoutId:'cks_foreign',retry:true}}));
+  assert.equal(response.status,200);assert.equal(calls.length,1);
+  assert.equal((await response.json()).checkoutId,'cks_synthetic');
+  assert.deepEqual((await db.query("SELECT * FROM customer_checkout_correlations WHERE subscriber_id=$1",[other])).rows,before);
+  assert.equal((await checkout(request(tokens.other,{body:{subscriberId:founder,checkoutId:'cks_synthetic'}}))).status,409);
+  assert.equal(calls.length,1);
+  assert.equal((await checkout(request(null))).status,401);
+}));
+
+test("checkout recovery: unknown creation outcomes including malformed success never authorize a retry",async()=>fixture(async({db,request})=>{
+  publicCheckout();
+  for(const mode of ['timeout','processing-error','malformed-success','invalid-url']) {
+    await db.query("DELETE FROM customer_checkout_correlations");let attempts=0;
+    globalThis.fetch=async()=>{attempts++;if(mode==='timeout')throw Error('synthetic timeout');
+      if(mode==='processing-error')return new Response('synthetic failure',{status:500});
+      if(mode==='malformed-success')return new Response('not-json',{status:200});
+      return Response.json({session_id:'cks_synthetic',checkout_url:'https://foreign.example.test/session/cks_synthetic'});};
+    assert.equal((await checkout(request())).status,503);
+    const before=(await db.query("SELECT * FROM customer_checkout_correlations")).rows;
+    assert.equal(before[0].status,'pending');
+    assert.equal((await checkout(request())).status,409);assert.equal((await checkout(request())).status,409);
+    assert.equal(attempts,1);
+    assert.deepEqual((await db.query("SELECT * FROM customer_checkout_correlations")).rows,before);
+  }
+}));
+
+test("checkout recovery: a verified active subscription and successful payment stay untouched",async()=>fixture(async({db,founder,request,calls,paidPeriod})=>{
+  publicCheckout();await paidPeriod();
+  await db.query("INSERT INTO customer_checkout_correlations(reference_hash,subscriber_id,checkout_session_id,status,provider_payment_id,provider_subscription_id,payment_provenance,expires_at) VALUES('live:paid',$1,'cks_paid','bound','pay_synthetic','sub_synthetic','verified',now()+interval '1 day')",[founder]);
+  const before=(await db.query("SELECT row_to_json(s) AS subscription,(SELECT json_agg(p) FROM dodo_paid_periods p) AS periods FROM dodo_subscriptions s")).rows;
+  assert.equal((await checkout(request())).status,409);assert.equal(calls.length,0);
+  assert.deepEqual((await db.query("SELECT row_to_json(s) AS subscription,(SELECT json_agg(p) FROM dodo_paid_periods p) AS periods FROM dodo_subscriptions s")).rows,before);
+}));
+
+test("checkout recovery: a pre-reviewed failed unpaid correlation is preserved when the customer starts fresh",async()=>fixture(async({db,founder,request,calls})=>{
+  publicCheckout();
+  // Represents a separately approved, provider-confirmed terminal/unpaid reconciliation. This route never performs it.
+  await db.query("INSERT INTO customer_checkout_correlations(reference_hash,subscriber_id,checkout_session_id,status,expires_at) VALUES('live:reviewed-failure',$1,'cks_reviewed','failed',now()-interval '1 day')",[founder]);
+  const before=(await db.query("SELECT * FROM customer_checkout_correlations")).rows[0];
+  assert.equal((await checkout(request())).status,200);assert.equal(calls.length,1);
+  assert.deepEqual((await db.query("SELECT * FROM customer_checkout_correlations WHERE reference_hash='live:reviewed-failure'")).rows[0],before);
+  assert.equal((await db.query("SELECT count(*)::int n FROM customer_checkout_correlations")).rows[0].n,2);
 }));
 
 test("uncertain checkout creation remains pending and cannot be blindly retried",async()=>fixture(async({request,counts})=>{

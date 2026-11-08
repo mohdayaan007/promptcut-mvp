@@ -1,7 +1,7 @@
 import { customerSessionToken } from "@/lib/customer-auth";
 import { createDodoTestCheckout, customerOwnershipProvenanceConfigured, DodoCheckoutError, DodoConfigurationError } from "@/lib/dodo-test-mode";
-import { checkoutSessionUrl, customerCheckoutEnabled, dodoModeConfig } from "@/lib/dodo-config";
-import { CustomerCheckoutConflict, reserveCustomerCheckout, failCustomerCheckoutCorrelation, getCustomerSession, recordCustomerCheckoutSession } from "@/lib/jobs/job-store";
+import { customerCheckoutEnabled, dodoModeConfig } from "@/lib/dodo-config";
+import { CustomerCheckoutConflict, CustomerCheckoutReconciliationRequired, reserveCustomerCheckout, failCustomerCheckoutCorrelation, getCustomerSession, recordCustomerCheckoutSession } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
 import { requireCustomerCheckoutOrigin } from "@/lib/checkout-origin";
 import { authorizeFounderLiveCheckout, founderLiveCheckoutConfigured, founderLiveCheckoutRequested } from "@/lib/founder-live-checkout";
@@ -19,7 +19,6 @@ export async function POST(req) {
     if (founderOnly && !await authorizeFounderLiveCheckout(customer.subscriber_id)) throw new PublicRequestError("Checkout is not available.", 403);
     if (!customerOwnershipProvenanceConfigured(dodoModeConfig())) throw new DodoConfigurationError("Checkout identity pins are not configured");
     const pending = await reserveCustomerCheckout(customer.subscriber_id);
-    if (pending.checkoutId) return Response.json({ checkoutUrl: checkoutSessionUrl(pending.checkoutId), checkoutId: pending.checkoutId }, { headers: { "Cache-Control": "no-store" } });
     const { reference } = pending;
     try {
       const checkout = await createDodoTestCheckout({ email: customer.email, metadata: { cliponaut_checkout_ref: reference } });
@@ -32,6 +31,7 @@ export async function POST(req) {
       throw error;
     }
   } catch (error) {
+    if (error instanceof CustomerCheckoutReconciliationRequired) return Response.json({ error: error.message, code: "checkout_reconciliation_required" }, { status: 409, headers: { "Cache-Control": "no-store" } });
     if (error instanceof CustomerCheckoutConflict) return jsonError(new PublicRequestError(error.message, 409));
     if (error instanceof DodoConfigurationError) return jsonError(new PublicRequestError("Checkout is unavailable or awaiting verification. Check your account before retrying.", 503));
     return jsonError(error);

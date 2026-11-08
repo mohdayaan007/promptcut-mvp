@@ -558,6 +558,9 @@ export async function createGoogleLoginNonce(token) {
 
 /** The provider receives the raw value; only a server HMAC is persisted. */
 export class CustomerCheckoutConflict extends Error {}
+export class CustomerCheckoutReconciliationRequired extends CustomerCheckoutConflict {
+  constructor() { super("Your earlier checkout needs a payment-status review before you can try again. Contact checkout support so we can check it safely."); }
+}
 
 /** Serialize checkout creation per verified customer without a schema change. */
 export async function reserveCustomerCheckout(subscriberId) {
@@ -570,14 +573,11 @@ export async function reserveCustomerCheckout(subscriberId) {
     if (!identity.rowCount) throw new CustomerCheckoutConflict("A verified Google account is required.");
     const existing = await client.query("SELECT dodo_subscription_id FROM dodo_subscriptions WHERE subscriber_id=$1 AND product_id=$2 AND status IN ('active','past_due') LIMIT 1", [subscriberId, productId]);
     if (existing.rowCount) throw new CustomerCheckoutConflict("Manage your existing subscription from your account.");
-    const pending = (await client.query("SELECT reference_hash,checkout_session_id,status,expires_at FROM customer_checkout_correlations WHERE subscriber_id=$1 AND status IN ('pending','created','payment_verified') ORDER BY created_at DESC LIMIT 1", [subscriberId])).rows[0];
+    const pending = (await client.query("SELECT 1 FROM customer_checkout_correlations WHERE subscriber_id=$1 AND status IN ('pending','created','payment_verified') LIMIT 1", [subscriberId])).rows[0];
     if (pending) {
-      // Only new, mode-tagged records can be safely resumed. Legacy/uncertain
-      // outcomes remain blocked for review instead of authorizing another bill.
-      if (pending.status === "created" && pending.reference_hash.startsWith(`${mode}:`) && pending.checkout_session_id && new Date(pending.expires_at) > new Date()) {
-        await client.query("COMMIT"); return { checkoutId: pending.checkout_session_id };
-      }
-      throw new CustomerCheckoutConflict("A checkout or payment is already pending. Finish that checkout or contact support before retrying.");
+      // Local correlation expiry is not provider link/payment finality. Never
+      // reconstruct a stored URL or replace an unresolved provider session.
+      throw new CustomerCheckoutReconciliationRequired();
     }
     const reference = newToken();
     await client.query("INSERT INTO customer_checkout_correlations (reference_hash,subscriber_id,expires_at) VALUES ($1,$2,now() + interval '7 days')", [`${mode}:${customerTokenHash(reference)}`, subscriberId]);

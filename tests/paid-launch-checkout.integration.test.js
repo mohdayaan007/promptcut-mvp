@@ -46,7 +46,7 @@ integration("origin/configuration/authentication rejection precedes checkout wri
   assert.equal((await db.query("SELECT count(*)::int count FROM customer_checkout_correlations")).rows[0].count, 0);
 }));
 
-integration("concurrent customer requests create one checkout; later retries resume it without founder access", async () => fixture(async ({ db, owner, request }) => {
+integration("concurrent customer requests create one checkout; later retries require reconciliation without founder access", async () => fixture(async ({ db, owner, request }) => {
   let release, started, calls = 0;
   const ready = new Promise(resolve => { started = resolve; });
   globalThis.fetch = async () => { calls++; started(); await new Promise(resolve => { release = resolve; }); return checkout(); };
@@ -54,7 +54,7 @@ integration("concurrent customer requests create one checkout; later retries res
   const concurrent = await Promise.all(Array.from({ length: 8 }, () => POST(request())));
   assert.ok(concurrent.every(response => response.status === 409)); assert.equal(calls, 1);
   release(); const created = await first; assert.equal(created.status, 200);
-  const reused = await POST(request()); assert.equal(reused.status, 200); assert.deepEqual(await reused.json(), await created.json()); assert.equal(calls, 1);
+  const retry = await POST(request()); assert.equal(retry.status, 409); assert.equal((await retry.json()).code,"checkout_reconciliation_required"); assert.equal(calls, 1);
   const rows = (await db.query("SELECT reference_hash,subscriber_id FROM customer_checkout_correlations")).rows;
   assert.equal(rows.length, 1); assert.equal(rows[0].subscriber_id, owner); assert.match(rows[0].reference_hash, /^test:[0-9a-f]{64}$/);
 }));
