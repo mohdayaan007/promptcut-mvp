@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createCreativeBenchmarkManifest, scoreCreativeBenchmarkCase } from "../src/lib/editor-core/creative-benchmark.js";
-import { CREATIVE_PLAN_VERSION, createCreativePlanPromptContract, validateCreativeEditingPlan } from "../src/lib/editor-core/creative-editing-plan.js";
+import { CREATIVE_PLAN_VERSION, buildCreativeEvaluationPrompt, createCreativeEditingPlanJsonSchema, createCreativePlanPromptContract, validateCreativeEditingPlan } from "../src/lib/editor-core/creative-editing-plan.js";
 
 const sources = [{ sourceId: "source-1", duration: 20 }];
 const valid = { version: CREATIVE_PLAN_VERSION, decisions: [{ kind: "cut", sourceId: "source-1", start: 1, end: 8, evidenceIds: ["frame-1"], rationale: "clear action" }, { kind: "style", profileId: "cinematic", evidenceIds: ["frame-1"], rationale: "supported visual direction" }], requirements: [] };
@@ -21,4 +21,6 @@ test("benchmark reports simulated work as not yet verified", () => {
   assert.equal(result.realModelStatus, "NOT_YET_VERIFIED");
   assert.equal(createCreativeBenchmarkManifest().cases.length, 5);
   assert.equal(createCreativePlanPromptContract({ sourceCatalog: sources, evidence: [{ evidenceId: "frame-1", sourceId: "source-1", start: 1, end: 2, summary: "movement" }] }).version, CREATIVE_PLAN_VERSION);
+  assert.equal(createCreativeEditingPlanJsonSchema().properties.version.enum[0], CREATIVE_PLAN_VERSION);
+  assert.match(buildCreativeEvaluationPrompt({ userPrompt: "make a reel", sourceCatalog: sources }), /make a reel/);
 });
