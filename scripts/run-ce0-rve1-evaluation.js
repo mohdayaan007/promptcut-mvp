@@ -7,6 +7,7 @@ import { spawn } from "child_process";
 import { GoogleGenAI } from "@google/genai";
 import { createCreativeEditingPlanJsonSchema } from "@/lib/editor-core/creative-editing-plan";
 import { createPrivateEvaluationReport, runCreativeEvaluation } from "@/lib/editor-core/creative-evaluation-runner";
+import { createEvaluationIdentity, createPrivateCheckpointStore } from "@/lib/editor-core/creative-evaluation-checkpoints";
 import { wordAnnotations } from "@/lib/editor-core/spoken-transcription";
 import { createCanonicalTranscript } from "@/lib/editor-core/spoken-transcript";
 
@@ -19,7 +20,7 @@ async function main() {
  if (!process.env.GEMINI_API_KEY) throw new Error("CE-0 evaluation blocked: GEMINI_API_KEY is not configured");
  const scratch = await mkdtemp(path.join(os.tmpdir(), "cliponaut-ce0-"));
  const uploaded = [];
- let ai;
+ let ai; let checkpointStore; let identity;
  try {
   ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY, httpOptions: { retryOptions: { attempts: 1, httpStatusCodes: [] } } });
   const reference = await frameParts(path.join(root, "reference-frames"));
@@ -36,14 +37,21 @@ async function main() {
   };
   const transcribe = async () => {
     const file = await ai.files.upload({ file: audio, config: { mimeType: "audio/m4a" } }); uploaded.push(file);
+    await checkpointStore.save({ identity, stage: "cleanup", status: "cleanup_pending", providerFileIds: [file.name], requestCount: 0, usage: {} });
     const response = await ai.interactions.create({ model: "gemini-3.5-transcribe", input: [{ type: "audio", uri: file.uri, mime_type: file.mimeType || "audio/m4a" }], generation_config: { transcription_config: { mode: { type: "verbatim", timestamp_granularities: ["word"] } } } });
-    return createCanonicalTranscript({ sourceId: "source-1", duration: 117.098089, words: wordAnnotations(response) });
+    return { response, value: createCanonicalTranscript({ sourceId: "source-1", duration: 117.098089, words: wordAnnotations(response) }) };
   };
-  const result = await runCreativeEvaluation({ flash, transcribe, requests: [{ phase: "reference" }, { phase: "overview" }, { phase: "fine" }, { phase: "plan" }], sourceCatalog: [{ sourceId: "source-1", duration: 117.098089 }], evidenceIds: Array.from({ length: 16 }, (_, index) => `source-frame-${index + 1}`), transcriptionSeconds: 116.992 });
+  identity = createEvaluationIdentity({ reference: "rve1-29.930667", source: "founder-117.098089", model: process.env.GEMINI_MODEL || "gemini-3.6-flash", schema: "creative/1" });
+  checkpointStore = createPrivateCheckpointStore(path.join(root, "checkpoints"));
+  const result = await runCreativeEvaluation({ flash, transcribe, requests: [{ phase: "reference" }, { phase: "overview" }, { phase: "fine" }, { phase: "plan" }], sourceCatalog: [{ sourceId: "source-1", duration: 117.098089 }], evidenceIds: Array.from({ length: 16 }, (_, index) => `source-frame-${index + 1}`), transcriptionSeconds: 116.992, checkpointStore, evaluationIdentity: identity, allowResume: args.has("--resume") });
   await writeFile(path.join(root, "ce0-evaluation-report.json"), JSON.stringify(createPrivateEvaluationReport({ result }), null, 2), { mode: 0o600 });
   console.log(JSON.stringify({ status: "completed", requestCount: result.usage.requestCount, report: "private report written" }));
  } finally {
-  await Promise.all(uploaded.map((file) => file?.name ? ai?.files.delete({ name: file.name }).catch(() => {}) : Promise.resolve()));
+  const cleanup = await Promise.all(uploaded.map(async (file) => {
+    if (!file?.name) return true;
+    try { await ai?.files.delete({ name: file.name }); return true; } catch { return false; }
+  }));
+  if (checkpointStore && identity && uploaded.length) await checkpointStore.save({ identity, stage: "cleanup", status: cleanup.every(Boolean) ? "cleanup_succeeded" : "cleanup_failed", providerFileIds: uploaded.map((file) => file.name), requestCount: 0, usage: {} });
   await rm(scratch, { recursive: true, force: true });
 }
 }
