@@ -11,7 +11,7 @@ export function createEvaluationIdentity(input) { return digest({ version: VERSI
 export function createPrivateCheckpointStore(directory) {
   const file = (identity, stage) => path.join(directory, `${identity}-${stage}.json`);
   async function save(record) {
-    if (!record?.identity || !stages.has(record.stage) || !["completed", "budget_exceeded", "cleanup_pending", "cleanup_succeeded", "cleanup_failed"].includes(record.status)) throw new Error("Invalid CE-0 checkpoint");
+    if (!record?.identity || !stages.has(record.stage) || !["completed", "budget_exceeded", "invalid_result", "cleanup_pending", "cleanup_succeeded", "cleanup_failed"].includes(record.status)) throw new Error("Invalid CE-0 checkpoint");
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const target = file(record.identity, record.stage);
     const temporary = `${target}.${process.pid}.tmp`;

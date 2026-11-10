@@ -1,7 +1,9 @@
 import { validateCreativeEditingPlan } from "@/lib/editor-core/creative-editing-plan";
 
 export const CE0_LIMITS = Object.freeze({ requests: 5, flashInputTokens: 25_000, flashOutputTokens: 4_800, flashOutputByPhase: Object.freeze([800, 1200, 1200, 1600]), dollars: 0.10 });
+export const CE0_REFERENCE_DIAGNOSTIC_LIMITS = Object.freeze({ maxOutputTokens: 1200, dollars: 0.10 });
 const FLASH_INPUT_ESTIMATES = Object.freeze([7000, 8500, 5500, 4000]);
+const FLASH_STAGES = Object.freeze({ reference: Object.freeze({ input: FLASH_INPUT_ESTIMATES[0], output: CE0_LIMITS.flashOutputByPhase[0] }), overview: Object.freeze({ input: FLASH_INPUT_ESTIMATES[1], output: CE0_LIMITS.flashOutputByPhase[1] }), fine: Object.freeze({ input: FLASH_INPUT_ESTIMATES[2], output: CE0_LIMITS.flashOutputByPhase[2] }), plan: Object.freeze({ input: FLASH_INPUT_ESTIMATES[3], output: CE0_LIMITS.flashOutputByPhase[3] }) });
 const FLASH_INPUT_PRICE = 0.75 / 1_000_000;
 const FLASH_OUTPUT_PRICE = 3.75 / 1_000_000;
 const TRANSCRIBE_PER_MINUTE = 0.005;
@@ -18,19 +20,49 @@ export function usageOf(response = {}) {
 }
 function cost({ flashInput, flashOutput, transcriptionSeconds }) { return flashInput * FLASH_INPUT_PRICE + flashOutput * FLASH_OUTPUT_PRICE + (transcriptionSeconds / 60) * TRANSCRIBE_PER_MINUTE; }
 function json(response, phase) { if (typeof response?.text !== "string" || !response.text.trim()) fail(`${phase} returned no JSON`); try { return JSON.parse(response.text); } catch { fail(`${phase} returned invalid JSON`); } }
+function referenceRejectionReason(error, budgetCondition) {
+  if (budgetCondition) return budgetCondition;
+  if (error?.message?.includes("returned no JSON")) return "empty_response";
+  if (error?.message?.includes("returned invalid JSON")) return "invalid_json";
+  return "invalid_analysis";
+}
+function referenceAnalysis(value) {
+  const fields = ["typography", "composition", "pacing", "colourDirection", "effectiveness", "limitations"];
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== fields.length || fields.some((field) => typeof value[field] !== "string" || !value[field].trim())) fail("reference returned an empty or invalid creative analysis");
+  if (Object.keys(value).some((field) => !fields.includes(field))) fail("reference returned an empty or invalid creative analysis");
+  return Object.freeze(Object.fromEntries(fields.map((field) => [field, value[field].trim()])));
+}
+function normalizeImportedReference(value) {
+  const usage = value?.usage;
+  if (!usage || usage.requestCount !== 1 || !Number.isInteger(usage.flashInput) || usage.flashInput < 0 || !Number.isInteger(usage.flashOutput) || usage.flashOutput < 0) fail("reference checkpoint has invalid cumulative usage");
+  return Object.freeze({ analysis: referenceAnalysis(value.analysis), usage: Object.freeze({ requestCount: usage.requestCount, flashInput: usage.flashInput, flashOutput: usage.flashOutput, transcriptionSeconds: 0 }) });
+}
+
+/** Loads only an integrity-checked, model/schema-bound reference checkpoint. */
+export async function loadSuccessfulReferenceAnalysis({ checkpointStore, evaluationIdentity }) {
+  if (!checkpointStore || !evaluationIdentity) fail("reference checkpoint identity is required");
+  const checkpoint = await checkpointStore.load(evaluationIdentity, "reference");
+  if (checkpoint?.status !== "completed") fail("no compatible completed reference checkpoint is available");
+  return normalizeImportedReference({ analysis: checkpoint.result, usage: checkpoint.usage });
+}
 
 /**
  * CE-0 only. The supplied call functions must perform one request exactly once;
  * this module deliberately contains no retry or fallback path.
  */
-export async function runCreativeEvaluation({ flash, transcribe, requests, sourceCatalog, evidenceIds, authorizedAssetIds = [], transcriptionSeconds, checkpointStore = null, evaluationIdentity = null, allowResume = false }) {
+export async function runCreativeEvaluation({ flash, transcribe, requests, sourceCatalog, evidenceIds, authorizedAssetIds = [], transcriptionSeconds, checkpointStore = null, evaluationIdentity = null, allowResume = false, importedReference: imported = null }) {
   if (typeof flash !== "function" || typeof transcribe !== "function") fail("one-shot clients are required");
-  if (!Array.isArray(requests) || requests.length !== 4) fail("exactly four Flash requests are required");
+  const importedReference = imported ? normalizeImportedReference(imported) : null;
+  const expectedPhases = importedReference ? ["overview", "fine", "plan"] : ["reference", "overview", "fine", "plan"];
+  if (!Array.isArray(requests) || requests.length !== expectedPhases.length || requests.some((request, index) => request?.phase !== expectedPhases[index])) fail("invalid CE-0 Flash request schedule");
   if (!(transcriptionSeconds > 0)) fail("bounded transcription duration is required");
-  const usage = { requestCount: 0, flashInput: 0, flashOutput: 0, transcriptionSeconds };
-  const outputs = [];
+  const usage = { requestCount: importedReference?.usage.requestCount || 0, flashInput: importedReference?.usage.flashInput || 0, flashOutput: importedReference?.usage.flashOutput || 0, transcriptionSeconds };
+  const outputs = importedReference ? [importedReference.analysis] : [];
   const charge = () => cost(usage);
   const budgetCondition = () => usage.requestCount > CE0_LIMITS.requests ? "request_limit" : usage.flashInput > CE0_LIMITS.flashInputTokens ? "flash_input_limit" : usage.flashOutput > CE0_LIMITS.flashOutputTokens ? "flash_output_limit" : charge() > CE0_LIMITS.dollars ? "dollar_threshold" : null;
+  const reservedFlashInput = requests.reduce((total, request) => total + FLASH_STAGES[request.phase].input, 0);
+  const reservedFlashOutput = requests.reduce((total, request) => total + FLASH_STAGES[request.phase].output, 0);
+  if (usage.flashInput + reservedFlashInput > CE0_LIMITS.flashInputTokens || usage.flashOutput + reservedFlashOutput > CE0_LIMITS.flashOutputTokens || charge() + reservedFlashInput * FLASH_INPUT_PRICE + reservedFlashOutput * FLASH_OUTPUT_PRICE > CE0_LIMITS.dollars) fail("remaining request schedule exceeds CE-0 budget");
   async function complete(stage, response, value) {
     const measured = usageOf(response);
     if (stage !== "transcription") { usage.flashInput += measured.input; usage.flashOutput += measured.output; }
@@ -57,8 +89,8 @@ export async function runCreativeEvaluation({ flash, transcribe, requests, sourc
   const transcript = await stage("transcription", transcribe);
 
   for (let index = 0; index < requests.length; index += 1) {
-    const outputLimit = CE0_LIMITS.flashOutputByPhase[index];
-    const estimate = FLASH_INPUT_ESTIMATES[index];
+    const outputLimit = FLASH_STAGES[requests[index].phase].output;
+    const estimate = FLASH_STAGES[requests[index].phase].input;
     if (usage.flashInput + estimate > CE0_LIMITS.flashInputTokens || usage.flashOutput + outputLimit > CE0_LIMITS.flashOutputTokens || charge() + estimate * FLASH_INPUT_PRICE + outputLimit * FLASH_OUTPUT_PRICE > CE0_LIMITS.dollars) fail("next request exceeds CE-0 budget");
     outputs.push(await stage(requests[index].phase, async () => {
       const response = await flash({ ...requests[index], maxOutputTokens: outputLimit, transcript, priorOutputs: outputs });
@@ -67,6 +99,27 @@ export async function runCreativeEvaluation({ flash, transcribe, requests, sourc
   }
   const plan = validateCreativeEditingPlan(outputs.at(-1), { sourceCatalog, evidenceIds, authorizedAssetIds });
   return Object.freeze({ plan, usage: Object.freeze({ ...usage, estimatedCostUsd: Number(charge().toFixed(6)) }), intermediateResultsRetained: false });
+}
+
+/** One-call CE-0 reference diagnostic. It deliberately cannot advance into source analysis. */
+export async function runReferenceDiagnostic({ flash, request, checkpointStore = null, evaluationIdentity = null }) {
+  if (typeof flash !== "function") fail("one-shot Flash client is required");
+  const usage = { requestCount: 0, flashInput: 0, flashOutput: 0, transcriptionSeconds: 0 };
+  const charge = () => cost(usage);
+  const previous = checkpointStore && evaluationIdentity ? await checkpointStore.load(evaluationIdentity, "reference") : null;
+  if (["budget_exceeded", "invalid_result"].includes(previous?.status)) fail("manual review is required after a prior invalid or over-budget response");
+  if (previous?.status === "completed") return Object.freeze({ analysis: referenceAnalysis(previous.result), usage: previous.usage, reusedCheckpoint: true });
+  const response = await flash({ ...request, phase: "reference", maxOutputTokens: CE0_REFERENCE_DIAGNOSTIC_LIMITS.maxOutputTokens });
+  const measured = usageOf(response); usage.requestCount = 1; usage.flashInput = measured.input; usage.flashOutput = measured.output;
+  const condition = usage.flashInput > CE0_LIMITS.flashInputTokens ? "flash_input_limit" : usage.flashOutput > CE0_LIMITS.flashOutputTokens ? "flash_output_limit" : charge() > CE0_LIMITS.dollars ? "dollar_threshold" : null;
+  let analysis;
+  try { analysis = referenceAnalysis(json(response, "reference")); } catch (error) {
+    if (checkpointStore && evaluationIdentity) await checkpointStore.save({ identity: evaluationIdentity, stage: "reference", status: "invalid_result", requestCount: 1, usage: { ...usage, estimatedCostUsd: Number(charge().toFixed(6)), provider: measured.provider }, budgetCondition: referenceRejectionReason(error, condition), result: null });
+    throw error;
+  }
+  if (checkpointStore && evaluationIdentity) await checkpointStore.save({ identity: evaluationIdentity, stage: "reference", status: condition ? "budget_exceeded" : "completed", requestCount: 1, usage: { ...usage, estimatedCostUsd: Number(charge().toFixed(6)), provider: measured.provider }, budgetCondition: condition, result: analysis });
+  if (condition) fail(`reported provider usage exceeds CE-0 budget (${condition})`);
+  return Object.freeze({ analysis, usage: Object.freeze({ ...usage, estimatedCostUsd: Number(charge().toFixed(6)), provider: measured.provider }), reusedCheckpoint: false });
 }
 
 export function createPrivateEvaluationReport({ result }) {
