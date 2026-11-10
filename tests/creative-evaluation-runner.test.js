@@ -23,17 +23,17 @@ test("CE-0 records provider usage before a budget stop and only reuses explicit 
   const records = new Map(); const store = { save: async (record) => records.set(`${record.identity}:${record.stage}`, record), load: async (identity, stage) => records.get(`${identity}:${stage}`) || null };
   await assert.rejects(() => runCreativeEvaluation({
     transcribe: async () => ({ response: {}, value: { segments: [] } }),
-    flash: async () => ({ text: JSON.stringify(plan), usageMetadata: { totalTokenCount: 30_000, candidatesTokenCount: 100 } }),
+    flash: async () => ({ text: JSON.stringify(plan), usageMetadata: { totalTokenCount: 40_000, candidatesTokenCount: 100 } }),
     requests: [{ phase: "reference" }, { phase: "overview" }, { phase: "fine" }, { phase: "plan" }], sourceCatalog: [{ sourceId: "source-1", duration: 10 }], evidenceIds: ["frame-1"], transcriptionSeconds: 1, checkpointStore: store, evaluationIdentity: "identity"
   }));
   assert.equal(records.get("identity:reference").status, "budget_exceeded");
-  assert.equal(records.get("identity:reference").usage.flashInput, 29_900);
+  assert.equal(records.get("identity:reference").usage.flashInput, 39_900);
   await assert.rejects(() => runCreativeEvaluation({ transcribe: async () => ({ response: {}, value: {} }), flash: async () => { throw new Error("must not run"); }, requests: [{ phase: "reference" }, { phase: "overview" }, { phase: "fine" }, { phase: "plan" }], sourceCatalog: [{ sourceId: "source-1", duration: 10 }], evidenceIds: ["frame-1"], transcriptionSeconds: 1, checkpointStore: store, evaluationIdentity: "identity", allowResume: true }));
 });
 test("reference diagnostic makes one call only and checkpoints usage before a limit stop", async () => {
   const records = new Map(); const store = { save: async (record) => records.set(record.stage, record), load: async (_identity, stage) => records.get(stage) || null };
   let calls = 0;
-  await assert.rejects(() => runReferenceDiagnostic({ flash: async () => { calls += 1; return { text: JSON.stringify(referenceAnalysis), usageMetadata: { totalTokenCount: 30_000, candidatesTokenCount: 1 } }; }, request: {}, checkpointStore: store, evaluationIdentity: "reference" }));
+  await assert.rejects(() => runReferenceDiagnostic({ flash: async () => { calls += 1; return { text: JSON.stringify(referenceAnalysis), usageMetadata: { totalTokenCount: 40_000, candidatesTokenCount: 1 } }; }, request: {}, checkpointStore: store, evaluationIdentity: "reference" }));
   assert.equal(calls, 1); assert.equal(records.get("reference").status, "budget_exceeded");
 });
 const referenceAnalysis = { typography: "clear serif hierarchy", composition: "centered image and type", pacing: "short kinetic transitions", colourDirection: "muted cool palette", effectiveness: "contrast makes the message legible", limitations: "sampled frames cannot prove animation timing" };
@@ -88,11 +88,20 @@ test("rejects missing or malformed imported reference checkpoints", async () => 
   await assert.rejects(() => loadSuccessfulReferenceAnalysis({ checkpointStore: { load: async () => null }, evaluationIdentity: "reference" }));
   await assert.rejects(() => loadSuccessfulReferenceAnalysis({ checkpointStore: { load: async () => ({ status: "completed", result: {}, usage: { requestCount: 1, flashInput: 1, flashOutput: 1 } }) }, evaluationIdentity: "reference" }));
 });
+test("the actual accepted reference usage fits the 35k CE-0 schedule without repeating reference", async () => {
+  const phases = []; let transcriptions = 0;
+  const result = await runCreativeEvaluation({
+    transcribe: async () => { transcriptions += 1; return { response: {}, value: { segments: [] } }; },
+    flash: async ({ phase }) => { phases.push(phase); return { text: JSON.stringify(phase === "plan" ? plan : { phase }), usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 } }; },
+    requests: [{ phase: "overview" }, { phase: "fine" }, { phase: "plan" }], sourceCatalog: [{ sourceId: "source-1", duration: 10 }], evidenceIds: ["frame-1"], transcriptionSeconds: 117, importedReference: { analysis: referenceAnalysis, usage: { requestCount: 1, flashInput: 13_281, flashOutput: 315 } }
+  });
+  assert.equal(CE0_LIMITS.flashInputTokens, 35_000); assert.deepEqual(phases, ["overview", "fine", "plan"]); assert.equal(transcriptions, 1); assert.equal(result.usage.requestCount, 5); assert.equal(result.usage.flashInput, 13_284);
+});
 test("stops before transcription when a reused reference leaves insufficient Flash input budget", async () => {
   let calls = 0;
   await assert.rejects(() => runCreativeEvaluation({
     transcribe: async () => { calls += 1; return { response: {}, value: { segments: [] } }; }, flash: async () => { calls += 1; return { text: JSON.stringify(referenceAnalysis) }; },
-    requests: [{ phase: "overview" }, { phase: "fine" }, { phase: "plan" }], sourceCatalog: [{ sourceId: "source-1", duration: 10 }], evidenceIds: ["frame-1"], transcriptionSeconds: 117, importedReference: { analysis: referenceAnalysis, usage: { requestCount: 1, flashInput: 13_281, flashOutput: 315 } }
+    requests: [{ phase: "overview" }, { phase: "fine" }, { phase: "plan" }], sourceCatalog: [{ sourceId: "source-1", duration: 10 }], evidenceIds: ["frame-1"], transcriptionSeconds: 117, importedReference: { analysis: referenceAnalysis, usage: { requestCount: 1, flashInput: 17_001, flashOutput: 315 } }
   }));
   assert.equal(calls, 0);
 });

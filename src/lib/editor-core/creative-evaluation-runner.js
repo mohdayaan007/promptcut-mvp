@@ -1,6 +1,6 @@
 import { validateCreativeEditingPlan } from "@/lib/editor-core/creative-editing-plan";
 
-export const CE0_LIMITS = Object.freeze({ requests: 5, flashInputTokens: 25_000, flashOutputTokens: 4_800, flashOutputByPhase: Object.freeze([800, 1200, 1200, 1600]), dollars: 0.10 });
+export const CE0_LIMITS = Object.freeze({ requests: 5, flashInputTokens: 35_000, flashOutputTokens: 4_800, flashOutputByPhase: Object.freeze([800, 1200, 1200, 1600]), dollars: 0.10 });
 export const CE0_REFERENCE_DIAGNOSTIC_LIMITS = Object.freeze({ maxOutputTokens: 1200, dollars: 0.10 });
 const FLASH_INPUT_ESTIMATES = Object.freeze([7000, 8500, 5500, 4000]);
 const FLASH_STAGES = Object.freeze({ reference: Object.freeze({ input: FLASH_INPUT_ESTIMATES[0], output: CE0_LIMITS.flashOutputByPhase[0] }), overview: Object.freeze({ input: FLASH_INPUT_ESTIMATES[1], output: CE0_LIMITS.flashOutputByPhase[1] }), fine: Object.freeze({ input: FLASH_INPUT_ESTIMATES[2], output: CE0_LIMITS.flashOutputByPhase[2] }), plan: Object.freeze({ input: FLASH_INPUT_ESTIMATES[3], output: CE0_LIMITS.flashOutputByPhase[3] }) });
