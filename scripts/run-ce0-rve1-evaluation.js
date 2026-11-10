@@ -7,6 +7,8 @@ import { spawn } from "child_process";
 import { GoogleGenAI } from "@google/genai";
 import { createCreativeEditingPlanJsonSchema } from "@/lib/editor-core/creative-editing-plan";
 import { createPrivateEvaluationReport, runCreativeEvaluation } from "@/lib/editor-core/creative-evaluation-runner";
+import { wordAnnotations } from "@/lib/editor-core/spoken-transcription";
+import { createCanonicalTranscript } from "@/lib/editor-core/spoken-transcript";
 
 const root = "/private/tmp/cliponaut-ce0-rve1-preflight";
 const frameParts = async (directory) => Promise.all((await (await import("fs/promises")).readdir(directory)).sort().map(async (name) => ({ inlineData: { mimeType: "image/jpeg", data: (await readFile(path.join(directory, name))).toString("base64") } })));
@@ -35,7 +37,7 @@ async function main() {
   const transcribe = async () => {
     const file = await ai.files.upload({ file: audio, config: { mimeType: "audio/m4a" } }); uploaded.push(file);
     const response = await ai.interactions.create({ model: "gemini-3.5-transcribe", input: [{ type: "audio", uri: file.uri, mime_type: file.mimeType || "audio/m4a" }], generation_config: { transcription_config: { mode: { type: "verbatim", timestamp_granularities: ["word"] } } } });
-    return { transcriptAvailable: Boolean(response), segments: [] };
+    return createCanonicalTranscript({ sourceId: "source-1", duration: 117.098089, words: wordAnnotations(response) });
   };
   const result = await runCreativeEvaluation({ flash, transcribe, requests: [{ phase: "reference" }, { phase: "overview" }, { phase: "fine" }, { phase: "plan" }], sourceCatalog: [{ sourceId: "source-1", duration: 117.098089 }], evidenceIds: Array.from({ length: 16 }, (_, index) => `source-frame-${index + 1}`), transcriptionSeconds: 116.992 });
   await writeFile(path.join(root, "ce0-evaluation-report.json"), JSON.stringify(createPrivateEvaluationReport({ result }), null, 2), { mode: 0o600 });
