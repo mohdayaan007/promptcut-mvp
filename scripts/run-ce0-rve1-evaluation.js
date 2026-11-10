@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import os from "os";
 import path from "path";
 import { spawn } from "child_process";
+import crypto from "crypto";
 import { GoogleGenAI } from "@google/genai";
 import { createCreativeEditingPlanJsonSchema } from "@/lib/editor-core/creative-editing-plan";
 import { createPrivateEvaluationReport, runCreativeEvaluation } from "@/lib/editor-core/creative-evaluation-runner";
@@ -12,7 +13,10 @@ import { wordAnnotations } from "@/lib/editor-core/spoken-transcription";
 import { createCanonicalTranscript } from "@/lib/editor-core/spoken-transcript";
 
 const root = "/private/tmp/cliponaut-ce0-rve1-preflight";
+const referenceMedia = "/Users/ayaan/cliponaut-ce0-media/references/RVE1-Moved-to-Blore.mp4";
+const sourceMedia = "/Users/ayaan/cliponaut-ce0-media/sources/RVE1/Cliponaut Team Video - Mohammed Ayaan.mp4";
 const frameParts = async (directory) => Promise.all((await (await import("fs/promises")).readdir(directory)).sort().map(async (name) => ({ inlineData: { mimeType: "image/jpeg", data: (await readFile(path.join(directory, name))).toString("base64") } })));
+const fileDigest = async (file) => crypto.createHash("sha256").update(await readFile(file)).digest("hex");
 const run = (command, args) => new Promise((resolve, reject) => { const child = spawn(command, args, { stdio: "ignore" }); child.once("error", reject); child.once("close", (code) => code === 0 ? resolve() : reject(new Error(`${command} failed`))); });
 async function main() {
  const args = new Set(process.argv.slice(2));
@@ -26,7 +30,7 @@ async function main() {
   const reference = await frameParts(path.join(root, "reference-frames"));
   const source = await frameParts(path.join(root, "source-frames"));
   const audio = path.join(scratch, "source.m4a");
-  await run("ffmpeg", ["-y", "-v", "error", "-i", "/Users/ayaan/cliponaut-ce0-media/sources/RVE1/Cliponaut Team Video - Mohammed Ayaan.mp4", "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "48k", audio]);
+  await run("ffmpeg", ["-y", "-v", "error", "-i", sourceMedia, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "48k", audio]);
   const sourceEvidence = source.flatMap((part, index) => [{ text: `Evidence ID source-frame-${index + 1}; an overview frame, not proof of a precise cut.` }, part]);
   const flash = async ({ phase, maxOutputTokens, transcript, priorOutputs }) => {
     const parts = phase === "reference" ? [...reference, { text: "Describe only the aesthetic: typography hierarchy, composition, pacing, color, and required external assets. Return compact JSON." }]
@@ -41,7 +45,7 @@ async function main() {
     const response = await ai.interactions.create({ model: "gemini-3.5-transcribe", input: [{ type: "audio", uri: file.uri, mime_type: file.mimeType || "audio/m4a" }], generation_config: { transcription_config: { mode: { type: "verbatim", timestamp_granularities: ["word"] } } } });
     return { response, value: createCanonicalTranscript({ sourceId: "source-1", duration: 117.098089, words: wordAnnotations(response) }) };
   };
-  identity = createEvaluationIdentity({ reference: "rve1-29.930667", source: "founder-117.098089", model: process.env.GEMINI_MODEL || "gemini-3.6-flash", schema: "creative/1" });
+  identity = createEvaluationIdentity({ referenceDigest: await fileDigest(referenceMedia), sourceDigest: await fileDigest(sourceMedia), model: process.env.GEMINI_MODEL || "gemini-3.6-flash", schema: "creative/1", promptContract: "rve1-founder-reel/1", limits: { flashInput: 25000, flashOutput: 4800, dollars: 0.10 } });
   checkpointStore = createPrivateCheckpointStore(path.join(root, "checkpoints"));
   const result = await runCreativeEvaluation({ flash, transcribe, requests: [{ phase: "reference" }, { phase: "overview" }, { phase: "fine" }, { phase: "plan" }], sourceCatalog: [{ sourceId: "source-1", duration: 117.098089 }], evidenceIds: Array.from({ length: 16 }, (_, index) => `source-frame-${index + 1}`), transcriptionSeconds: 116.992, checkpointStore, evaluationIdentity: identity, allowResume: args.has("--resume") });
   await writeFile(path.join(root, "ce0-evaluation-report.json"), JSON.stringify(createPrivateEvaluationReport({ result }), null, 2), { mode: 0o600 });
