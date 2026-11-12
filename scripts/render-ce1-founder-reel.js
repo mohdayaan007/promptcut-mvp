@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { createExecutionController, executeEditPlan } from "@/lib/editor-core/edit-executor";
 import { CE1_PRODUCT_GRAPHIC, createCe1FounderReelPlan, createCe1KineticAssDocument, validateCe1FounderReelPlan } from "@/lib/editor-core/ce1-founder-reel";
-import { createCe2RevisionExample } from "@/lib/editor-core/ce2-composition-revisions";
+import { createCe2Composition, createCe2RevisionExample } from "@/lib/editor-core/ce2-composition-revisions";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { buildAssFilter } from "@/lib/title-renderer";
 
@@ -62,8 +62,16 @@ async function main() {
   await run("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-ss", "0.7", "-i", outputPath, "-vf", "fps=1/2.4,scale=426:-1,tile=5x1:padding=8:color=0x171A20", "-frames:v", "1", reviewPath]);
   if (comparisonPath) {
     const baselinePath = path.join(outputDirectory, "founder-rve1-hybrid-ce1-v3-recovered.mp4");
-    await stat(baselinePath);
-    await run("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", baselinePath, "-i", outputPath, "-filter_complex", "[0:v]fps=1/4,scale=426:-1,tile=3x1:padding=8:color=0x171A20[a];[1:v]fps=1/4,scale=426:-1,tile=3x1:padding=8:color=0x171A20[b];[a][b]vstack=inputs=2", "-frames:v", "1", comparisonPath]);
+    let beforePath = baselinePath;
+    if (exampleName === "text-correction") {
+      const fixtureAssPath = path.join(scratch, "ce2-title-correction-before.ass");
+      const fixturePath = path.join(scratch, "ce2-title-correction-before.mp4");
+      await writeFile(fixtureAssPath, createCe1KineticAssDocument(createCe2Composition({ seededOldName: true }).textLayers), "utf8");
+      const fixtureFilter = `[1:v]format=rgba,fade=t=in:st=${CE1_PRODUCT_GRAPHIC.start}:d=0.28:alpha=1,fade=t=out:st=7.16:d=0.24:alpha=1[logo];[0:v]fps=30,${buildAssFilter(fixtureAssPath)}[typed];[typed][logo]overlay=x='if(lt(t,3.1),1180-(t-${CE1_PRODUCT_GRAPHIC.start})*850,840)':y=548:eval=frame:enable='between(t,${CE1_PRODUCT_GRAPHIC.start},${CE1_PRODUCT_GRAPHIC.end})'[v]`;
+      await run(assCompositor, ["-y", "-hide_banner", "-loglevel", "error", "-i", baseOutput, "-i", logoPath, "-filter_complex", fixtureFilter, "-map", "[v]", "-map", "0:a:0", "-fps_mode", "cfr", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-shortest", fixturePath]);
+      beforePath = fixturePath;
+    } else await stat(baselinePath);
+    await run("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", beforePath, "-i", outputPath, "-filter_complex", "[0:v]fps=1/4,scale=426:-1,tile=3x1:padding=8:color=0x171A20[a];[1:v]fps=1/4,scale=426:-1,tile=3x1:padding=8:color=0x171A20[b];[a][b]vstack=inputs=2", "-frames:v", "1", comparisonPath]);
   }
   const output = await probe(outputPath);
   if (Math.abs(output.duration - validated.duration) > 0.15 || output.videoCodec !== "h264" || output.audioCodec !== "aac") throw new Error("CE-1 output verification failed");
