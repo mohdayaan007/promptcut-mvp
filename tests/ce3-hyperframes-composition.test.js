@@ -1,0 +1,7 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { CE1_SOURCE_ID } from "../src/lib/editor-core/ce1-founder-reel.js";
+import { applyCe3HyperframesRevision, createCe3HyperframesComposition, validateCe3HyperframesComposition } from "../src/lib/editor-core/ce3-hyperframes-composition.js";
+const sources = [{ sourceId: CE1_SOURCE_ID, duration: 117.098089, width: 1280, height: 720, hasAudio: true }];
+test("CE-3 applies immutable, targeted title revisions", () => { const base = createCe3HyperframesComposition(); const fitted = applyCe3HyperframesRevision(base, "Fit the title fully inside its container.", sources); const moved = applyCe3HyperframesRevision(fitted, "Move the title and change its colour.", sources); assert.equal(base.revision, 0); assert.equal(fitted.revision, 1); assert.equal(moved.revision, 2); assert.equal(fitted.layout["founder-title"].fontSize, 112); assert.equal(moved.layout["founder-title"].x, 138); assert.equal(moved.ce2.textLayers.find((x) => x.id === "founder-family-name").colour, "red"); assert.deepEqual(moved.ce2.plan, base.ce2.plan); });
+test("CE-3 rejects unsupported requests and unsafe title bounds", () => { const invalid = createCe3HyperframesComposition(); invalid.layout["founder-title"].width = 800; assert.throws(() => validateCe3HyperframesComposition(invalid, sources), /safe container/); assert.throws(() => applyCe3HyperframesRevision(createCe3HyperframesComposition(), "Make it cinematic.", sources), /unsupported/); });
