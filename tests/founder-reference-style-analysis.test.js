@@ -1,0 +1,2 @@
+import test from "node:test";import assert from "node:assert/strict";import { validateFounderStyleObservation } from "../src/lib/editor-core/founder-reference-style-analysis.js";
+test("founder style analysis rejects incomplete model output",()=>{assert.throws(()=>validateFounderStyleObservation({}),/Invalid/);assert.equal(validateFounderStyleObservation({warmth:"cool",saturation:"medium",contrast:"high",typography:"mixed",animation:"phrase_rise",uncertainty:[]}).warmth,"cool");});
