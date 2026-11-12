@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { createExecutionController, executeEditPlan } from "@/lib/editor-core/edit-executor";
 import { CE1_PRODUCT_GRAPHIC, createCe1FounderReelPlan, createCe1KineticAssDocument, validateCe1FounderReelPlan } from "@/lib/editor-core/ce1-founder-reel";
+import { createCe2RevisionExample } from "@/lib/editor-core/ce2-composition-revisions";
 import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { buildAssFilter } from "@/lib/title-renderer";
 
@@ -16,11 +17,14 @@ const outputDirectory = "/Users/ayaan/cliponaut-creative-engine-review";
 // composition pass; normal Cliponaut worker execution is unchanged.
 const assCompositor = "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg";
 const scratch = path.join(outputDirectory, "scratch");
-const outputPath = path.join(outputDirectory, "founder-rve1-hybrid-ce1-v3-recovered.mp4");
+const exampleName = process.argv[2] === "--ce2-revision" ? process.argv[3] : null;
+const fileStem = exampleName ? `founder-rve1-hybrid-ce2-${exampleName}` : "founder-rve1-hybrid-ce1-v3-recovered";
+const outputPath = path.join(outputDirectory, `${fileStem}.mp4`);
 const assPath = path.join(scratch, "ce1-kinetic-layers.ass");
 const logoPath = path.join(scratch, "cliponaut-wordmark.png");
-const reviewPath = path.join(outputDirectory, "founder-rve1-hybrid-ce1-v3-recovered-review.jpg");
-const manifestPath = path.join(outputDirectory, "founder-rve1-hybrid-ce1-v3-recovered-manifest.json");
+const reviewPath = path.join(outputDirectory, `${fileStem}-review.jpg`);
+const comparisonPath = exampleName ? path.join(outputDirectory, `${fileStem}-comparison.jpg`) : null;
+const manifestPath = path.join(outputDirectory, `${fileStem}-manifest.json`);
 
 async function probe(file) {
   const { stdout } = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate", "-of", "json", file]);
@@ -37,13 +41,14 @@ async function main() {
   const media = await probe(sourcePath);
   if (!media.hasAudio || media.videoCodec !== "h264" || media.width !== 1280 || media.height !== 720) throw new Error("CE-1 requires the verified RVE1 founder source media profile");
   const sourceCatalog = createSourceCatalog([{ index: 0, name: path.basename(sourcePath) }], [media]);
-  const validated = validateCe1FounderReelPlan(createCe1FounderReelPlan(), sourceCatalog);
+  const composition = exampleName ? createCe2RevisionExample(exampleName, sourceCatalog) : null;
+  const validated = validateCe1FounderReelPlan(composition?.plan || createCe1FounderReelPlan(), sourceCatalog);
   const executionController = createExecutionController();
   const baseOutput = await executeEditPlan({
     inputPaths: [sourcePath], media: [media], plan: validated.plan, sourceCatalog,
     tempDirectory: scratch, exportQuality: "standard", executionController
   });
-  await writeFile(assPath, createCe1KineticAssDocument(), "utf8");
+  await writeFile(assPath, createCe1KineticAssDocument(composition?.textLayers), "utf8");
   const logoSource = path.resolve(process.cwd(), CE1_PRODUCT_GRAPHIC.relativePath);
   const logoDigest = createHash("sha256").update(await readFile(logoSource)).digest("hex");
   if (logoDigest !== CE1_PRODUCT_GRAPHIC.sha256) throw new Error("CE-1 product graphic identity verification failed");
@@ -55,18 +60,24 @@ async function main() {
   // Five composited review moments demonstrate title entrances, hierarchy,
   // the animated accent, and the closing beat without retaining source media.
   await run("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-ss", "0.7", "-i", outputPath, "-vf", "fps=1/2.4,scale=426:-1,tile=5x1:padding=8:color=0x171A20", "-frames:v", "1", reviewPath]);
+  if (comparisonPath) {
+    const baselinePath = path.join(outputDirectory, "founder-rve1-hybrid-ce1-v3-recovered.mp4");
+    await stat(baselinePath);
+    await run("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", baselinePath, "-i", outputPath, "-filter_complex", "[0:v]fps=1/4,scale=426:-1,tile=3x1:padding=8:color=0x171A20[a];[1:v]fps=1/4,scale=426:-1,tile=3x1:padding=8:color=0x171A20[b];[a][b]vstack=inputs=2", "-frames:v", "1", comparisonPath]);
+  }
   const output = await probe(outputPath);
   if (Math.abs(output.duration - validated.duration) > 0.15 || output.videoCodec !== "h264" || output.audioCodec !== "aac") throw new Error("CE-1 output verification failed");
   await writeFile(manifestPath, `${JSON.stringify({
-    version: "ce1-founder-reel/2-recovered", renderer: "ffmpeg-libass-hybrid", recovery: { status: "reconstructed-from-documented-v3-specification", originalV3ArtifactAvailable: false }, hyperframes: { status: "hold", reason: "published dependency could not resolve in isolated npm install" },
+    version: composition ? "ce2-composition/1" : "ce1-founder-reel/2-recovered", renderer: "ffmpeg-libass-hybrid", recovery: { status: "reconstructed-from-documented-v3-specification", originalV3ArtifactAvailable: false }, hyperframes: { status: "hold", reason: "published dependency could not resolve in isolated npm install" },
     source: { sourceId: "source-1", duration: media.duration, frameRate: media.frameRate },
     output: { path: outputPath, duration: output.duration, width: output.width, height: output.height, videoCodec: output.videoCodec, audioCodec: output.audioCodec },
     selections: validated.plan.operations[0].clips,
     transcriptEvidence: validated.transcriptEvidence,
     visualAdjustment: validated.plan.operations[1],
-    productGraphic: CE1_PRODUCT_GRAPHIC
+    productGraphic: CE1_PRODUCT_GRAPHIC,
+    composition: composition ? { compositionId: composition.compositionId, revision: composition.revision, parentRevision: composition.parentRevision, revisionHistory: composition.revisionHistory, textLayers: composition.textLayers } : null
   }, null, 2)}\n`, "utf8");
-  console.log(JSON.stringify({ status: "completed", outputPath, reviewPath, manifestPath, duration: output.duration }, null, 2));
+  console.log(JSON.stringify({ status: "completed", outputPath, reviewPath, comparisonPath, manifestPath, duration: output.duration }, null, 2));
 }
 
 main().catch((error) => {

@@ -93,7 +93,18 @@ function dialogue(start, end, text) {
  * inputs here are server-owned literals; no HTML, URL, model text, or user
  * supplied renderer syntax reaches the filter.
  */
-export function createCe1KineticAssDocument() {
+function assSafeText(value) {
+  return String(value).replace(/[\\{}\r\n]/g, "");
+}
+
+const ASS_COLOURS = Object.freeze({ white: "&H00FFFFFF&", yellow: "&H003DD5FF&", red: "&H00354BE9&", charcoal: "&H002F3145&" });
+
+function editableLayer(layers, id, fallbackText, fallbackColour) {
+  const layer = layers?.find((candidate) => candidate?.id === id);
+  return { text: assSafeText(layer?.text ?? fallbackText), colour: ASS_COLOURS[layer?.colour] || fallbackColour };
+}
+
+export function createCe1KineticAssDocument(editableLayers = []) {
   const header = [
     "[Script Info]",
     "ScriptType: v4.00+",
@@ -108,26 +119,34 @@ export function createCe1KineticAssDocument() {
     "[Events]",
     "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text"
   ];
+  const greeting = editableLayer(editableLayers, "intro-greeting", "HEY, A16Z.", ASS_COLOURS.white);
+  const givenName = editableLayer(editableLayers, "founder-given-name", "MOHAMMED", ASS_COLOURS.white);
+  const familyName = editableLayer(editableLayers, "founder-family-name", "AYAAN", ASS_COLOURS.yellow);
+  const productName = editableLayer(editableLayers, "product-chatgpt", "ChatGPT", ASS_COLOURS.charcoal);
+  const productLine = editableLayer(editableLayers, "product-description", "for video editing", ASS_COLOURS.white);
+  const crossover = editableLayer(editableLayers, "crossover-heading", "A CROSSOVER BETWEEN", ASS_COLOURS.white);
+  const resolve = editableLayer(editableLayers, "crossover-resolve", "DAVINCI RESOLVE", ASS_COLOURS.white);
+  const crossoverChatgpt = editableLayer(editableLayers, "crossover-chatgpt", "and ChatGPT", ASS_COLOURS.yellow);
   const layers = [
     // Beat one: verified source introduction. The thin colour bars are a
     // bounded vector-graphic overlay, not an external asset.
-    dialogue(0, 1.25, "{\\an7\\pos(76,76)\\fad(100,120)\\move(38,76,76,76,0,200)\\fnInter\\fs26\\b1\\c&H00FFFFFF&}HEY, A16Z."),
-    dialogue(0.34, 2.4, "{\\an7\\pos(76,142)\\fad(120,180)\\move(38,142,76,142,0,220)\\fnBarlow Condensed ExtraBold\\fs104\\b1\\c&H00FFFFFF&}MOHAMMED"),
-    dialogue(0.74, 2.4, "{\\an7\\pos(76,240)\\fad(120,180)\\move(38,240,76,240,0,220)\\fnInstrument Serif\\fs92\\i1\\c&H003DD5FF&}AYAAN"),
+    dialogue(0, 1.25, `{\\an7\\pos(76,76)\\fad(100,120)\\move(38,76,76,76,0,200)\\fnInter\\fs26\\b1\\c${greeting.colour}}${greeting.text}`),
+    dialogue(0.34, 2.4, `{\\an7\\pos(76,142)\\fad(120,180)\\move(38,142,76,142,0,220)\\fnBarlow Condensed ExtraBold\\fs104\\b1\\c${givenName.colour}}${givenName.text}`),
+    dialogue(0.74, 2.4, `{\\an7\\pos(76,240)\\fad(120,180)\\move(38,240,76,240,0,220)\\fnInstrument Serif\\fs92\\i1\\c${familyName.colour}}${familyName.text}`),
     dialogue(0, 2.35, "{\\an7\\pos(76,282)\\fad(120,180)\\p1\\c&H003DD5FF&}m 0 0 l 286 0 286 12 0 12"),
     dialogue(0.35, 2.3, "{\\an7\\pos(1138,92)\\fad(120,180)\\fnInter\\fs22\\b1\\c&H00FFFFFF&}01 / FOUNDER"),
     // Beat two: exact product words from source segments 7–8.
     dialogue(2.4, 3.35, "{\\an7\\pos(76,88)\\fad(120,140)\\move(76,116,76,88,0,210)\\fnBarlow Condensed ExtraBold\\fs110\\b1\\c&H00FFFFFF&}CLIP"),
     dialogue(2.63, 3.7, "{\\an7\\pos(76,182)\\fad(120,140)\\fnBarlow Condensed ExtraBold\\fs78\\b1\\c&H00FFFFFF&}OR NOT"),
-    dialogue(3.05, 7.72, "{\\an7\\pos(76,276)\\fad(120,180)\\move(76,308,76,276,0,220)\\fnInstrument Serif\\fs72\\i1\\c&H002F3145&}ChatGPT"),
-    dialogue(3.38, 7.72, "{\\an7\\pos(356,294)\\fad(120,180)\\fnInter\\fs38\\b1\\c&H00FFFFFF&}for video editing"),
+    dialogue(3.05, 7.72, `{\\an7\\pos(76,276)\\fad(120,180)\\move(76,308,76,276,0,220)\\fnInstrument Serif\\fs72\\i1\\c${productName.colour}}${productName.text}`),
+    dialogue(3.38, 7.72, `{\\an7\\pos(356,294)\\fad(120,180)\\fnInter\\fs38\\b1\\c${productLine.colour}}${productLine.text}`),
     dialogue(2.5, 7.75, "{\\an7\\pos(76,286)\\fad(120,180)\\p1\\c&H00354BE9&}m 0 0 l 390 0 390 10 0 10"),
     dialogue(2.65, 7.7, "{\\an9\\pos(1200,640)\\fad(120,180)\\fnInter\\fs20\\b1\\c&H00FFFFFF&}MAKE THE CUT"),
     // Beat three: exact named tools, presented with type hierarchy rather
     // than a claim of a formal partnership or a copied reference graphic.
-    dialogue(7.8, 8.78, "{\\an7\\pos(76,86)\\fad(120,140)\\fnInter\\fs26\\b1\\c&H00FFFFFF&}A CROSSOVER BETWEEN"),
-    dialogue(8.04, 11.86, "{\\an7\\pos(76,150)\\fad(120,180)\\move(38,150,76,150,0,220)\\fnBarlow Condensed ExtraBold\\fs88\\b1\\c&H00FFFFFF&}DAVINCI RESOLVE"),
-    dialogue(8.43, 11.86, "{\\an7\\pos(76,246)\\fad(120,180)\\fnInstrument Serif\\fs76\\i1\\c&H003DD5FF&}and ChatGPT"),
+    dialogue(7.8, 8.78, `{\\an7\\pos(76,86)\\fad(120,140)\\fnInter\\fs26\\b1\\c${crossover.colour}}${crossover.text}`),
+    dialogue(8.04, 11.86, `{\\an7\\pos(76,150)\\fad(120,180)\\move(38,150,76,150,0,220)\\fnBarlow Condensed ExtraBold\\fs88\\b1\\c${resolve.colour}}${resolve.text}`),
+    dialogue(8.43, 11.86, `{\\an7\\pos(76,246)\\fad(120,180)\\fnInstrument Serif\\fs76\\i1\\c${crossoverChatgpt.colour}}${crossoverChatgpt.text}`),
     dialogue(7.9, 11.85, "{\\an7\\pos(76,270)\\fad(120,180)\\p1\\c&H003DD5FF&}m 0 0 l 310 0 310 12 0 12"),
     dialogue(8.15, 11.8, "{\\an9\\pos(1200,640)\\fad(120,180)\\fnInter\\fs20\\b1\\c&H00FFFFFF&}02 / PRODUCT"),
     // A small animated red accent moves independently of the words.
