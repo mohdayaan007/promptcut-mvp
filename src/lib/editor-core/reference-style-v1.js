@@ -22,6 +22,11 @@ export function createRve1OfflineProfile() {
   });
 }
 
+export function createRve1QualityProfile() {
+  const base = createRve1OfflineProfile();
+  return createReferenceStyleV1Profile({ ...base, colour: { confidence: "medium", limitations: [...base.colour.limitations, "Adaptation is global; it is not selective skin or sky masking."], recipe: { brightness: 0.008, contrast: 0.075, saturation: -0.02, temperature: -0.055, tint: -0.04, shadows: -0.015, highlights: -0.035, vibrance: 0.04, shadowTemperature: -0.025, midtoneTemperature: -0.045, highlightTemperature: -0.02 } } });
+}
+
 export function resolveReferenceStyleTitle({ profile, providedText = null, noText = false, sourceEvidence = null }) {
   if (noText) return null;
   if (providedText && typeof providedText === "string" && providedText.trim().length <= 48) return Object.freeze({ text: providedText.trim(), origin: "creator_supplied", confidence: "high" });
