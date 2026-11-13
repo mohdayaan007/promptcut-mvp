@@ -37,7 +37,10 @@ export async function renderFounderReferenceStyleComposition({ composition, sour
     await symlink(sourcePath, path.join(temporaryDirectory, "source.mp4"));
     await writeFile(path.join(temporaryDirectory, "index.html"), html({ composition, duration }), { encoding: "utf8", mode: 0o600 });
     await run(rendererPath, ["render", "--quality", "looks", "--workers", "1", "-o", visualPath], { cwd: temporaryDirectory, executionController });
-    await run("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", visualPath, "-i", sourcePath, "-map", "0:v:0", "-map", "1:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-shortest", outputPath], { executionController });
+    // HyperFrames renders at a fixed frame cadence. Pad its final visual frame
+    // and bound the mux to the original media duration so the source audio and
+    // timeline are never shortened by a fractional-frame render discrepancy.
+    await run("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", visualPath, "-i", sourcePath, "-filter_complex", "[0:v]tpad=stop_mode=clone:stop_duration=1[v]", "-map", "[v]", "-map", "1:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-t", duration.toFixed(3), outputPath], { executionController });
     return { outputPath, renderer: "hyperframes-founder-reference-style/1" };
   } finally { await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => {}); }
 }

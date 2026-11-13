@@ -745,6 +745,15 @@ export async function getAuthorizedJob(id, token) {
   const { rows } = await database().query("SELECT * FROM edit_jobs WHERE id = $1 AND access_token = $2 AND subscriber_id IS NULL", [id, token]);
   return rows[0] ? safeRow(rows[0]) : null;
 }
+/** Local founder preview route: caller authentication is enforced by the route,
+ * and this query is additionally constrained to the sealed founder job shape. */
+export async function getFounderReferenceStyleOutputJob(id) {
+  if (!UUID_PATTERN.test(id)) return null;
+  const { rows } = await database().query("SELECT * FROM edit_jobs WHERE id=$1 AND status='completed' AND subscriber_id IS NULL", [id]);
+  const row = rows[0];
+  if (!row || row.reference?.kind !== "founder_reference_style_v1" || !row.output_key) return null;
+  return safeRow(row);
+}
 export async function getAuthorizedSubscriberJob(id, token, subscriberId) {
   if (!UUID_PATTERN.test(id) || !token || !subscriberId) return null;
   const { rows } = await database().query("SELECT * FROM edit_jobs WHERE id=$1 AND access_token=$2 AND subscriber_id=$3", [id, token, subscriberId]);

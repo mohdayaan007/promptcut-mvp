@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "fs/promises";
 import os from "os";
 import path from "path";
 import crypto from "crypto";
@@ -136,7 +136,10 @@ async function processJob(job) {
     }
     if (isFounderReferenceStyleJob(job)) {
       const founder = validateFounderReferenceStyleJob(job, media);
-      const plan = createEditPlan({ prompt: job.prompt, hasMultipleVideos: false, sourceCatalog });
+      // A founder revision prompt describes an already-persisted composition.
+      // It must not be re-parsed as a new FFmpeg title operation: HyperFrames
+      // renders the validated title layer after the colour treatment.
+      const plan = createEditPlan({ prompt: "Apply validated Reference Style.", hasMultipleVideos: false, sourceCatalog });
       plan.operations.push({ type: "reference_style_treatment", treatment: founder.profile.colour.treatment });
       const editPlan = validateEditPlan(plan, { sourceCatalog });
       await saveJobPlan(job.id, workerId, editPlan, sourceCatalog);
@@ -290,6 +293,13 @@ async function processJob(job) {
       console.error("Reference style analysis failed:", createReferenceStyleFailureDiagnostic({ jobId: job.id, error }));
     } else {
       console.error(`Job ${job.id} failed:`, error.message);
+    }
+    // Loopback-only diagnostics make a founder render failure actionable
+    // without leaking job paths or raw media into public job responses.
+    if (isFounderReferenceStyleJob(job) && process.env.FOUNDER_REFERENCE_STYLE_LOCAL_MODE === "true" && process.env.FOUNDER_REFERENCE_STYLE_LOCAL_ROOT) {
+      const diagnosticRoot = path.join(process.env.FOUNDER_REFERENCE_STYLE_LOCAL_ROOT, "diagnostics");
+      await mkdir(diagnosticRoot, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(diagnosticRoot, `${job.id}.json`), JSON.stringify({ jobId: job.id, stage: outputKey ? "output" : "render", error: String(error?.message || "unknown").slice(-512) }), { mode: 0o600 }).catch(() => {});
     }
     await failJob(job.id, workerId, safeError(error)).catch(() => {});
     await syncVersionStatus(job.id, "failed").catch(() => {});
