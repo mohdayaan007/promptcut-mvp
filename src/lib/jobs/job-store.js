@@ -640,10 +640,48 @@ export async function createEditingSession(jobId, initialPrompt, subscriberId = 
   await database().query("INSERT INTO editing_versions (session_id, version, job_id, prompt, status) VALUES ($1,1,$2,$3,'queued')", [id, jobId, initialPrompt]);
   return { id: rows[0].id, accessToken, version: 1 };
 }
+
+/** Founder-only staging job. It reuses the durable job/session tables without changing public upload contracts. */
+export async function createFounderReferenceStyleJob({ source, reference, profile, composition, prompt }) {
+  const id = newId(); const accessToken = newToken();
+  const creativeReference = { kind: "founder_reference_style_v1", asset: reference, profile, composition };
+  const { rows } = await database().query(`INSERT INTO edit_jobs (id,access_token,status,prompt,export_quality,sources,reference)
+    VALUES ($1,$2,'queued',$3,'standard',$4::jsonb,$5::jsonb) RETURNING *`, [id, accessToken, prompt, JSON.stringify([source]), JSON.stringify(creativeReference)]);
+  const session = await createEditingSession(id, prompt);
+  return { job: safeRow(rows[0]), accessToken, session };
+}
+
+/** Immutable founder-only revision; callers must validate composition before this persistence boundary. */
+export async function createFounderReferenceStyleRevision(session, { expectedVersion, composition, prompt }) {
+  const client = await database().connect();
+  try {
+    await client.query("BEGIN");
+    const locked = await client.query("SELECT * FROM editing_sessions WHERE id=$1 FOR UPDATE", [session.id]);
+    if (!locked.rows[0] || locked.rows[0].latest_version !== expectedVersion) { await client.query("ROLLBACK"); return null; }
+    const pending = await client.query(`SELECT 1 FROM editing_versions v JOIN edit_jobs j ON j.id=v.job_id WHERE v.session_id=$1 AND j.status IN ('uploading','queued','analyzing','rendering') LIMIT 1`, [session.id]);
+    if (pending.rowCount) { await client.query("ROLLBACK"); return null; }
+    const base = await client.query("SELECT * FROM edit_jobs WHERE id=$1", [locked.rows[0].source_job_id]);
+    const reference = base.rows[0]?.reference;
+    if (!reference || reference.kind !== "founder_reference_style_v1") throw new Error("Founder Reference Style source is unavailable");
+    const id = newId(); const accessToken = newToken(); const version = expectedVersion + 1;
+    const nextReference = { ...reference, composition };
+    const result = await client.query(`INSERT INTO edit_jobs (id,access_token,status,prompt,export_quality,sources,reference,session_id)
+      VALUES ($1,$2,'queued',$3,'standard',$4::jsonb,$5::jsonb,$6) RETURNING *`, [id, accessToken, prompt, JSON.stringify(base.rows[0].sources), JSON.stringify(nextReference), session.id]);
+    await client.query("INSERT INTO editing_versions (session_id,version,job_id,prompt,status) VALUES ($1,$2,$3,$4,'queued')", [session.id, version, id, prompt]);
+    await client.query("UPDATE editing_sessions SET latest_version=$2,updated_at=now() WHERE id=$1", [session.id, version]);
+    await client.query("COMMIT"); return { job: safeRow(result.rows[0]), accessToken, version };
+  } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+}
 export async function getAuthorizedSession(id, token) {
   if (!UUID_PATTERN.test(id) || !token) return null;
   const { rows } = await database().query("SELECT * FROM editing_sessions WHERE id=$1 AND access_token=$2 AND subscriber_id IS NULL AND expires_at > now()", [id, token]);
   return rows[0] || null;
+}
+export async function getFounderReferenceStyleComposition(session) {
+  const { rows } = await database().query(`SELECT j.reference FROM editing_versions v JOIN edit_jobs j ON j.id=v.job_id
+    WHERE v.session_id=$1 ORDER BY v.version DESC LIMIT 1`, [session.id]);
+  const reference = rows[0]?.reference;
+  return reference?.kind === "founder_reference_style_v1" ? reference.composition : null;
 }
 export async function getAuthorizedSubscriberSession(id, token, subscriberId) {
   if (!UUID_PATTERN.test(id) || !token || !subscriberId) return null;

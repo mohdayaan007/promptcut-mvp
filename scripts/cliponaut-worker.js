@@ -23,6 +23,9 @@ import {
 import { cancellationRecoveryEnabled, getDodoTestCancellationState } from "@/lib/dodo-test-mode";
 import { createCancellationRecoveryMaintenance } from "@/lib/cancellation-recovery-maintenance";
 import { abortMultipartUpload, deleteObjects, downloadObject, outputObjectKey, uploadOutput } from "@/lib/jobs/storage";
+import { founderReferenceStyleStagingEnabled, FOUNDER_REFERENCE_STYLE_ASSETS, validateFounderReferenceStyleProfile } from "@/lib/editor-core/founder-reference-style-staging-contract";
+import { validateReferenceStyleV1Composition } from "@/lib/editor-core/reference-style-v1-composition";
+import { renderFounderReferenceStyleComposition } from "@/lib/editor-core/founder-reference-style-renderer";
 
 const config = jobConfig();
 const workerId = `${os.hostname()}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
@@ -57,6 +60,15 @@ function safeError(error) {
   return "Unable to process this video. Please try again.";
 }
 class JobCancelledError extends Error {}
+function isFounderReferenceStyleJob(job) { return job.reference?.kind === "founder_reference_style_v1"; }
+function validateFounderReferenceStyleJob(job, media) {
+  if (!founderReferenceStyleStagingEnabled() || process.env.FOUNDER_REFERENCE_STYLE_RUNTIME_ENVIRONMENT !== "staging") throw new Error("Founder Reference Style staging is disabled");
+  const source = job.sources?.[0]; const reference = job.reference;
+  if (job.sources?.length !== 1 || source?.stagingAssetId !== FOUNDER_REFERENCE_STYLE_ASSETS.source.id || source.key !== FOUNDER_REFERENCE_STYLE_ASSETS.source.key || reference.asset?.id !== FOUNDER_REFERENCE_STYLE_ASSETS.reference.id || reference.asset?.key !== FOUNDER_REFERENCE_STYLE_ASSETS.reference.key) throw new Error("Founder Reference Style job has invalid asset ownership");
+  const profile = validateFounderReferenceStyleProfile(reference.profile, reference.asset);
+  const composition = validateReferenceStyleV1Composition(reference.composition, media[0].duration);
+  return { profile, composition };
+}
 async function throwIfCancelled(jobId) {
   if (await isJobCancelled(jobId, workerId)) throw new JobCancelledError();
 }
@@ -121,6 +133,27 @@ async function processJob(job) {
     await throwIfCancelled(job.id);
     if (job.exportQuality === "4k" && !media.every(is4kCapableMedia)) {
       throw new Error("4K export requires every uploaded video to be 4K-capable");
+    }
+    if (isFounderReferenceStyleJob(job)) {
+      const founder = validateFounderReferenceStyleJob(job, media);
+      const plan = createEditPlan({ prompt: job.prompt, hasMultipleVideos: false, sourceCatalog });
+      plan.operations.push({ type: "reference_style_treatment", treatment: founder.profile.colour.treatment });
+      const editPlan = validateEditPlan(plan, { sourceCatalog });
+      await saveJobPlan(job.id, workerId, editPlan, sourceCatalog);
+      await throwIfCancelled(job.id);
+      if (!await setJobStatus(job.id, workerId, "rendering")) throw new JobCancelledError();
+      await syncVersionStatus(job.id, "rendering");
+      const gradedPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: "standard", executionController, jobId: job.id });
+      await throwIfCancelled(job.id);
+      const finalPath = path.join(scratch, "founder-reference-style.mp4");
+      await renderFounderReferenceStyleComposition({ composition: founder.composition, sourcePath: gradedPath, outputPath: finalPath, duration: media[0].duration, temporaryDirectory: path.join(scratch, "hyperframes"), executionController });
+      await throwIfCancelled(job.id);
+      outputKey = outputObjectKey(job.id);
+      await uploadOutput(outputKey, finalPath);
+      await throwIfCancelled(job.id);
+      if (!await completeJob(job.id, workerId, outputKey)) await deleteObjects([outputKey]);
+      else await syncVersionStatus(job.id, "completed");
+      return;
     }
     let referenceTreatment = null;
     let typographyTreatment = null;
