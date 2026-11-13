@@ -1,0 +1,46 @@
+# Source-control and local editor state
+.git
+.gitignore
+.codex
+.codex-stage5
+.agents
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dependencies and build output are recreated in the image
+node_modules
+.next
+coverage
+
+# Private local media, review output, checkpoints, and scratch space
+*.mp4
+*.mov
+*.m4v
+*.webm
+*.avi
+*.mkv
+*.mp3
+*.wav
+*.jpg
+*.jpeg
+*.png
+*.webp
+!public/**/*.jpg
+!public/**/*.jpeg
+!public/**/*.png
+!public/**/*.webp
+cliponaut-*-review
+cliponaut-*-artifacts
+private
+tmp
+.tmp
+
+# Local-only founder analysis and staging data must be ingested privately,
+# never copied into an image build context.
+founder-reference-style-analysis
+founder-reference-style-staging

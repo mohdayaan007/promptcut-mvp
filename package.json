@@ -48,6 +48,7 @@
     "@google/genai": "^2.20.0",
     "@vercel/analytics": "^1.6.1",
     "google-auth-library": "^10.9.1",
+    "hyperframes": "0.9.37",
     "next": "16.4.5",
     "pg": "^8.23.0",
     "react": "19.2.3",
@@ -61,5 +62,8 @@
     "eslint-config-next": "16.4.5",
     "tailwindcss": "^4",
     "tsx": "^4.23.15"
+  },
+  "overrides": {
+    "undici": "7.30.1"
   }
 }

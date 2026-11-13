@@ -33,6 +33,15 @@ export async function completeMultipartUpload({ key, uploadId, parts }) { await 
 export async function abortMultipartUpload({ key, uploadId }) { if (uploadId) await s3().send(new AbortMultipartUploadCommand({ Bucket: bucket(), Key: key, UploadId: uploadId })); }
 export async function headObject(key) { return s3().send(new HeadObjectCommand({ Bucket: bucket(), Key: key })); }
 export async function downloadObject(key, destination) { const response = await s3().send(new GetObjectCommand({ Bucket: bucket(), Key: key })); if (!response.Body) throw new Error("Stored source is unavailable"); await pipeline(response.Body, createWriteStream(destination)); }
+/** Read a bounded server-owned staging document. It is never exposed to browser callers. */
+export async function readFounderStagingJson(key) {
+  if (!/^founder-reference-style\/v1\/(?:manifest|style-profile)\.json$/.test(key)) throw new Error("Invalid founder staging document");
+  const response = await s3().send(new GetObjectCommand({ Bucket: bucket(), Key: key }));
+  if (!response.Body) throw new Error("Founder staging document is unavailable");
+  const chunks = []; let length = 0;
+  for await (const chunk of response.Body) { const value = Buffer.from(chunk); length += value.length; if (length > 64 * 1024) throw new Error("Founder staging document is too large"); chunks.push(value); }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
 export async function uploadOutput(key, inputPath) { await s3().send(new PutObjectCommand({ Bucket: bucket(), Key: key, Body: createReadStream(inputPath), ContentType: "video/mp4" })); }
 export async function signedDownloadUrl(key) { return getSignedUrl(s3(), new GetObjectCommand({ Bucket: bucket(), Key: key, ResponseContentType: "video/mp4" }), { expiresIn: 900 }); }
 export async function deleteObjects(keys) { const objects = keys.filter(Boolean).map((Key) => ({ Key })); if (objects.length) await s3().send(new DeleteObjectsCommand({ Bucket: bucket(), Delete: { Objects: objects, Quiet: true } })); }
