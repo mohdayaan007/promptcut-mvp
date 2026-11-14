@@ -1,8 +1,10 @@
 import { createCanonicalReferenceStyleTreatment } from "@/lib/editor-core/reference-style-treatment";
+import { deriveFounderReferenceColourObservation, deriveFounderReferenceColourTreatment } from "@/lib/editor-core/founder-reference-style-colour";
+import { FOUNDER_REFERENCE_STYLE_REFERENCES, founderReferenceStyleReference } from "@/lib/editor-core/founder-reference-style-staging";
 
 export const FOUNDER_REFERENCE_STYLE_STAGING_VERSION = "founder-reference-style-staging/1";
 export const FOUNDER_REFERENCE_STYLE_ASSETS = Object.freeze({
-  reference: Object.freeze({ id: "founder-rve1-moved-to-blore", key: "founder-reference-style/v1/reference.mp4" }),
+  reference: Object.freeze({ id: FOUNDER_REFERENCE_STYLE_REFERENCES[0].id, key: FOUNDER_REFERENCE_STYLE_REFERENCES[0].key }),
   source: Object.freeze({ id: "founder-gym-outside", key: "founder-reference-style/v1/source.mp4" }),
   profile: Object.freeze({ id: "founder-rve1-style-profile", key: "founder-reference-style/v1/style-profile.json" })
 });
@@ -24,7 +26,7 @@ export function founderReferenceStyleStagingEnabled() {
 }
 
 function validateAsset(value, role) {
-  const expected = FOUNDER_REFERENCE_STYLE_ASSETS[role];
+  const expected = role === "reference" ? founderReferenceStyleReference(value?.id) : FOUNDER_REFERENCE_STYLE_ASSETS[role];
   if (!plain(value) || value.id !== expected.id || value.key !== expected.key || value.type !== "video/mp4" || !sha256.test(value.sha256 || "")) fail(`${role} asset identity`);
   if (!Number.isFinite(value.size) || value.size <= 0 || !Number.isFinite(value.duration) || value.duration <= 0 || value.duration > 600) fail(`${role} media limits`);
   if (!Number.isInteger(value.width) || !Number.isInteger(value.height) || value.width < 320 || value.height < 180 || value.width > 3840 || value.height > 2160) fail(`${role} dimensions`);
@@ -71,5 +73,19 @@ export function createFounderStyleProfileFromObservations({ referenceAsset, obse
     observation: { warmth: referenceObservation.warmth, saturation: referenceObservation.saturation, contrast: referenceObservation.contrast, typography: referenceObservation.typography, animation: referenceObservation.animation, uncertainty: [...(referenceObservation.uncertainty || []), ...(sourceObservation.uncertainty || [])].slice(0, 6) },
     colour: { treatment: { version: 2, recipe }, confidence: "medium", limitations: ["Global source-aware adaptation only; no subject masking or scene-specific grade."] },
     typography: { confidence: "low", limitations: ["Reference observations did not establish exact fonts or frame-accurate animation timing."] }
+  }, reference);
+}
+
+/** Local-only, server-owned replacement for fixture-specific colour recipes. */
+export function createFounderStyleProfileFromColourEvidence({ referenceAsset, sourceMetrics, referenceMetrics }) {
+  const reference = validateAsset(referenceAsset, "reference");
+  const observation = deriveFounderReferenceColourObservation(referenceMetrics);
+  const treatment = deriveFounderReferenceColourTreatment({ referenceMetrics, sourceMetrics });
+  return validateFounderReferenceStyleProfile({
+    version: "founder-reference-style-profile/1", id: FOUNDER_REFERENCE_STYLE_ASSETS.profile.id,
+    referenceAssetId: reference.id, referenceSha256: reference.sha256,
+    observation: { ...observation, typography: "none", animation: "none", uncertainty: ["Colour is derived from bounded aggregate frame metrics.", "Typography remains creator-specified; local frame statistics cannot infer it."] },
+    colour: { treatment, confidence: "medium", limitations: ["Global source-aware adaptation only; no selective skin, sky, or scene masking.", "Reference/source lighting differences limit pixel-level resemblance."] },
+    typography: { confidence: "low", limitations: ["Generic creator-specified typography; no automatic reference typography inference."] }
   }, reference);
 }

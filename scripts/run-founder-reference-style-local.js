@@ -6,19 +6,19 @@
  */
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { probeVideoFile } from "@/lib/media/media-probe";
-import { createFounderStyleProfileFromObservations, FOUNDER_REFERENCE_STYLE_ASSETS, validateFounderReferenceStyleManifest } from "@/lib/editor-core/founder-reference-style-staging-contract";
+import { createFounderStyleProfileFromColourEvidence, FOUNDER_REFERENCE_STYLE_ASSETS, validateFounderReferenceStyleManifest } from "@/lib/editor-core/founder-reference-style-staging-contract";
+import { FOUNDER_REFERENCE_STYLE_REFERENCES } from "@/lib/editor-core/founder-reference-style-staging";
+import { extractTargetReferenceFrames } from "@/lib/editor-core/reference-style-media";
 
 const root = process.env.FOUNDER_REFERENCE_STYLE_LOCAL_ROOT || path.join(os.homedir(), ".cliponaut-founder-reference-style-local");
 const port = Number(process.env.FOUNDER_REFERENCE_STYLE_LOCAL_PORT || 55432);
 const appPort = Number(process.env.PORT || 3000);
-const referencePath = "/Users/ayaan/Moved to Blore RVE1.mp4";
 const sourcePath = "/Users/ayaan/Gym Outside Test.mp4";
-const checkpointPath = "/Users/ayaan/cliponaut-founder-reference-style-analysis/validated-style-analysis.json";
 const chromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const children = [];
@@ -36,28 +36,31 @@ function launch(command, args, env) {
   children.push(child); return child;
 }
 async function digest(file) { return createHash("sha256").update(await readFile(file)).digest("hex"); }
-async function asset(role, originalPath, destinationPath) {
+async function asset(expected, originalPath) {
   const [metadata, bytes, sha256] = await Promise.all([probeVideoFile(originalPath), stat(originalPath), digest(originalPath)]);
-  await mkdir(path.dirname(destinationPath), { recursive: true, mode: 0o700 });
-  await copyFile(originalPath, destinationPath);
-  const expected = FOUNDER_REFERENCE_STYLE_ASSETS[role];
+  await mkdir(path.dirname(path.join(root, expected.key)), { recursive: true, mode: 0o700 });
+  await copyFile(originalPath, path.join(root, expected.key));
   return { id: expected.id, key: expected.key, type: "video/mp4", size: bytes.size, duration: metadata.duration, width: metadata.width, height: metadata.height, hasAudio: metadata.hasAudio, sha256 };
 }
 async function seed() {
-  const [reference, source, checkpoint] = await Promise.all([
-    asset("reference", referencePath, path.join(root, FOUNDER_REFERENCE_STYLE_ASSETS.reference.key)),
-    asset("source", sourcePath, path.join(root, FOUNDER_REFERENCE_STYLE_ASSETS.source.key)),
-    readFile(checkpointPath, "utf8").then(JSON.parse)
-  ]);
-  const observations = Object.fromEntries((checkpoint.results || []).map((entry) => [entry.role, entry.observation]));
-  const profile = createFounderStyleProfileFromObservations({ referenceAsset: reference, observations });
-  const manifest = validateFounderReferenceStyleManifest({ version: "founder-reference-style-staging/1", reference, source, profile });
-  await writeFile(path.join(root, FOUNDER_REFERENCE_STYLE_ASSETS.profile.key), JSON.stringify(profile, null, 2), { mode: 0o600 });
-  await writeFile(path.join(root, "founder-reference-style/v1/manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
+  const source = await asset(FOUNDER_REFERENCE_STYLE_ASSETS.source, sourcePath);
+  const scratch = await mkdtemp(path.join(root, "colour-evidence-"));
+  try {
+    const sourceEvidence = await extractTargetReferenceFrames({ inputPath: sourcePath, duration: source.duration, scratchDirectory: path.join(scratch, "source"), count: 5 });
+    for (const definition of FOUNDER_REFERENCE_STYLE_REFERENCES) {
+      await stat(definition.path);
+      const reference = await asset(definition, definition.path);
+      const referenceEvidence = await extractTargetReferenceFrames({ inputPath: definition.path, duration: reference.duration, scratchDirectory: path.join(scratch, definition.id), count: 5 });
+      const profile = createFounderStyleProfileFromColourEvidence({ referenceAsset: reference, sourceMetrics: sourceEvidence.metrics, referenceMetrics: referenceEvidence.metrics });
+      const manifest = validateFounderReferenceStyleManifest({ version: "founder-reference-style-staging/1", reference, source, profile });
+      await writeFile(path.join(root, `founder-reference-style/v1/style-profile-${definition.id}.json`), JSON.stringify(profile, null, 2), { mode: 0o600 });
+      await writeFile(path.join(root, `founder-reference-style/v1/manifest-${definition.id}.json`), JSON.stringify(manifest, null, 2), { mode: 0o600 });
+    }
+  } finally { await rm(scratch, { recursive: true, force: true }); }
 }
 async function main() {
   if (!process.env.FOUNDER_TEST_ACCESS_CODE || process.env.FOUNDER_TEST_ACCESS_CODE.length < 32) throw new Error("Set a 32+ character FOUNDER_TEST_ACCESS_CODE in your shell before launch.");
-  await Promise.all([stat(referencePath), stat(sourcePath), stat(checkpointPath), stat(chromePath)]);
+  await Promise.all([stat(sourcePath), stat(chromePath), ...FOUNDER_REFERENCE_STYLE_REFERENCES.map((asset) => stat(asset.path))]);
   await mkdir(root, { recursive: true, mode: 0o700 });
   const data = path.join(root, "postgres");
   try { await stat(path.join(data, "PG_VERSION")); } catch { await run("initdb", ["-D", data, "--auth=trust", "--encoding=UTF8"]); }

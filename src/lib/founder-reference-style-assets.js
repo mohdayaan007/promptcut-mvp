@@ -1,5 +1,6 @@
 import { readFounderStagingJson } from "@/lib/jobs/storage";
 import { FOUNDER_REFERENCE_STYLE_ASSETS, founderReferenceStyleStagingEnabled, validateFounderReferenceStyleManifest } from "@/lib/editor-core/founder-reference-style-staging-contract";
+import { FOUNDER_REFERENCE_STYLE_REFERENCES, founderReferenceStyleReference } from "@/lib/editor-core/founder-reference-style-staging";
 
 function unavailable() { throw new Error("Founder Reference Style staging assets are unavailable"); }
 
@@ -16,10 +17,13 @@ export function assertFounderReferenceStyleStorageIsolation() {
   return stagingBucket;
 }
 
-export async function loadFounderReferenceStyleManifest({ readJson = readFounderStagingJson } = {}) {
+export async function loadFounderReferenceStyleManifest(referenceId = FOUNDER_REFERENCE_STYLE_ASSETS.reference.id, { readJson = readFounderStagingJson } = {}) {
   assertFounderReferenceStyleStorageIsolation();
-  return validateFounderReferenceStyleManifest(await readJson("founder-reference-style/v1/manifest.json"));
+  if (!founderReferenceStyleReference(referenceId)) unavailable();
+  return validateFounderReferenceStyleManifest(await readJson(`founder-reference-style/v1/manifest-${referenceId}.json`));
 }
+
+export function founderReferenceStyleApprovedReferences() { return Object.freeze(FOUNDER_REFERENCE_STYLE_REFERENCES.map(({ id, label }) => Object.freeze({ id, label }))); }
 
 export function founderReferenceStyleSourceManifest(manifest) {
   const source = manifest.source;

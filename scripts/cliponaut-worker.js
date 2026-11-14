@@ -24,6 +24,7 @@ import { cancellationRecoveryEnabled, getDodoTestCancellationState } from "@/lib
 import { createCancellationRecoveryMaintenance } from "@/lib/cancellation-recovery-maintenance";
 import { abortMultipartUpload, deleteObjects, downloadObject, outputObjectKey, uploadOutput } from "@/lib/jobs/storage";
 import { founderReferenceStyleStagingEnabled, FOUNDER_REFERENCE_STYLE_ASSETS, validateFounderReferenceStyleProfile } from "@/lib/editor-core/founder-reference-style-staging-contract";
+import { founderReferenceStyleReference } from "@/lib/editor-core/founder-reference-style-staging";
 import { validateReferenceStyleV1Composition } from "@/lib/editor-core/reference-style-v1-composition";
 import { renderFounderReferenceStyleComposition } from "@/lib/editor-core/founder-reference-style-renderer";
 
@@ -64,7 +65,8 @@ function isFounderReferenceStyleJob(job) { return job.reference?.kind === "found
 function validateFounderReferenceStyleJob(job, media) {
   if (!founderReferenceStyleStagingEnabled() || process.env.FOUNDER_REFERENCE_STYLE_RUNTIME_ENVIRONMENT !== "staging") throw new Error("Founder Reference Style staging is disabled");
   const source = job.sources?.[0]; const reference = job.reference;
-  if (job.sources?.length !== 1 || source?.stagingAssetId !== FOUNDER_REFERENCE_STYLE_ASSETS.source.id || source.key !== FOUNDER_REFERENCE_STYLE_ASSETS.source.key || reference.asset?.id !== FOUNDER_REFERENCE_STYLE_ASSETS.reference.id || reference.asset?.key !== FOUNDER_REFERENCE_STYLE_ASSETS.reference.key) throw new Error("Founder Reference Style job has invalid asset ownership");
+  const approvedReference = founderReferenceStyleReference(reference.asset?.id);
+  if (job.sources?.length !== 1 || source?.stagingAssetId !== FOUNDER_REFERENCE_STYLE_ASSETS.source.id || source.key !== FOUNDER_REFERENCE_STYLE_ASSETS.source.key || !approvedReference || reference.asset?.key !== approvedReference.key) throw new Error("Founder Reference Style job has invalid asset ownership");
   const profile = validateFounderReferenceStyleProfile(reference.profile, reference.asset);
   const composition = validateReferenceStyleV1Composition(reference.composition, media[0].duration);
   return { profile, composition };

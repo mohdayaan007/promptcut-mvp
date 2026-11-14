@@ -29,12 +29,16 @@ export function measureReferenceRgbFrame(frame) {
   let nearBlackPixels = 0;
   let nearWhitePixels = 0;
   let saturationTotal = 0;
+  let redTotal = 0;
+  let greenTotal = 0;
+  let blueTotal = 0;
   const pixelCount = frame.length / 3;
 
   for (let index = 0; index < frame.length; index += 3) {
     const red = frame[index];
     const green = frame[index + 1];
     const blue = frame[index + 2];
+    redTotal += red; greenTotal += green; blueTotal += blue;
     const lumaByte = Math.round((0.2126 * red) + (0.7152 * green) + (0.0722 * blue));
     const maximum = Math.max(red, green, blue);
     const minimum = Math.min(red, green, blue);
@@ -55,7 +59,10 @@ export function measureReferenceRgbFrame(frame) {
     lumaP99: quantileFromHistogram(lumaHistogram, pixelCount, 0.99),
     nearBlackFraction: nearBlackPixels / pixelCount,
     nearWhiteFraction: nearWhitePixels / pixelCount,
-    saturationIndex: saturationTotal / pixelCount
+    saturationIndex: saturationTotal / pixelCount,
+    redMean: redTotal / pixelCount / 255,
+    greenMean: greenTotal / pixelCount / 255,
+    blueMean: blueTotal / pixelCount / 255
   });
 }
 
@@ -70,7 +77,7 @@ export function summarizeReferenceFrameMetrics(measurements) {
   if (!Array.isArray(measurements) || measurements.length === 0) {
     throw metricsError("measurements must be a non-empty array");
   }
-  const fields = ["lumaP05", "lumaP50", "lumaP95", "lumaP99", "nearBlackFraction", "nearWhiteFraction", "saturationIndex"];
+  const fields = ["lumaP05", "lumaP50", "lumaP95", "lumaP99", "nearBlackFraction", "nearWhiteFraction", "saturationIndex", "redMean", "greenMean", "blueMean"];
   for (const measurement of measurements) {
     if (!measurement || typeof measurement !== "object") throw metricsError("measurement must be an object");
     for (const field of fields) {

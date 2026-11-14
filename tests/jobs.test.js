@@ -525,7 +525,10 @@ test("B2 Stage 0 RGB24 headroom metrics are deterministic and bounded", () => {
     lumaP99: 1,
     nearBlackFraction: 0.25,
     nearWhiteFraction: 0.25,
-    saturationIndex: 0.25
+    saturationIndex: 0.25,
+    redMean: (0 + 128 + 255 + 255) / 4 / 255,
+    greenMean: (0 + 128 + 255 + 0) / 4 / 255,
+    blueMean: (0 + 128 + 255 + 0) / 4 / 255
   });
   assert.throws(() => measureReferenceRgbFrame(new Uint8Array()), /non-empty RGB24/);
   assert.throws(() => measureReferenceRgbFrame(Uint8Array.from([1, 2])), /RGB24/);
@@ -538,7 +541,10 @@ test("B2 Stage 0 RGB24 headroom metrics are deterministic and bounded", () => {
     lumaP99: 1,
     nearBlackFraction: 0.25,
     nearWhiteFraction: 0.25,
-    saturationIndex: 0.5
+    saturationIndex: 0.5,
+    redMean: metrics.redMean,
+    greenMean: metrics.greenMean,
+    blueMean: metrics.blueMean
   });
   assert.throws(() => summarizeReferenceFrameMetrics([]), /non-empty array/);
   assert.throws(() => summarizeReferenceFrameMetrics([{ ...metrics, lumaP95: 2 }]), /lumaP95 must be a finite number/);

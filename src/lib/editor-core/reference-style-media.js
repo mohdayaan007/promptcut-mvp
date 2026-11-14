@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn } from "child_process";
-import { readFile } from "fs/promises";
+import { mkdir, readFile } from "fs/promises";
 import path from "path";
 import { measureReferenceRgbFrame, summarizeReferenceFrameMetrics } from "@/lib/editor-core/reference-style-metrics";
 import { buildReferenceStyleTreatmentFilters, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
@@ -41,6 +41,7 @@ export async function validateReferenceImageFile({ inputPath, type, executionCon
 
 /** Five evenly distributed samples, bounded to avoid decoding an unbounded image sequence. */
 export async function extractTargetReferenceFrames({ inputPath, duration, scratchDirectory, executionController, count = 3 }) {
+  await mkdir(scratchDirectory, { recursive: true, mode: 0o700 });
   const timestamps = Array.from({ length: count }, (_, index) => Math.max(0, Math.min(Math.max(0, duration - 0.05), duration * ((index + 1) / (count + 1)))));
   const frames = [];
   for (const [index, timestamp] of timestamps.entries()) {

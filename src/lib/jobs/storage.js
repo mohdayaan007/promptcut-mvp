@@ -8,10 +8,16 @@ import path from "path";
 let client;
 const FOUNDER_LOCAL_OUTPUT = /^jobs\/([0-9a-f-]{36})\/output\/cliponaut\.mp4$/i;
 const FOUNDER_LOCAL_KEYS = new Set([
-  "founder-reference-style/v1/reference.mp4",
+  "founder-reference-style/v1/reference-rve1.mp4",
+  "founder-reference-style/v1/reference-rve3.mp4",
+  "founder-reference-style/v1/reference-rve5.mp4",
   "founder-reference-style/v1/source.mp4",
-  "founder-reference-style/v1/manifest.json",
-  "founder-reference-style/v1/style-profile.json"
+  "founder-reference-style/v1/manifest-founder-rve1-moved-to-blore.json",
+  "founder-reference-style/v1/manifest-founder-rve3-put-myself-out.json",
+  "founder-reference-style/v1/manifest-founder-rve5-film-yourself.json",
+  "founder-reference-style/v1/style-profile-founder-rve1-moved-to-blore.json",
+  "founder-reference-style/v1/style-profile-founder-rve3-put-myself-out.json",
+  "founder-reference-style/v1/style-profile-founder-rve5-film-yourself.json"
 ]);
 
 /**
@@ -68,7 +74,7 @@ export async function downloadObject(key, destination) {
 }
 /** Read a bounded server-owned staging document. It is never exposed to browser callers. */
 export async function readFounderStagingJson(key) {
-  if (!/^founder-reference-style\/v1\/(?:manifest|style-profile)\.json$/.test(key)) throw new Error("Invalid founder staging document");
+  if (!/^founder-reference-style\/v1\/(?:manifest|style-profile)(?:-[a-z0-9-]+)?\.json$/.test(key)) throw new Error("Invalid founder staging document");
   if (founderLocalStorageRoot()) return JSON.parse(await readFile(/*turbopackIgnore: true*/ localPath(key), "utf8"));
   const response = await s3().send(new GetObjectCommand({ Bucket: bucket(), Key: key }));
   if (!response.Body) throw new Error("Founder staging document is unavailable");
