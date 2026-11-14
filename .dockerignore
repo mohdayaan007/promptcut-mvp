@@ -44,3 +44,7 @@ tmp
 # never copied into an image build context.
 founder-reference-style-analysis
 founder-reference-style-staging
+
+# GPL-dependent founder-local MKL evaluation is never part of a production
+# image. Its Python package remains outside package.json and Docker.
+scripts/founder-mkl-local-evaluation.py

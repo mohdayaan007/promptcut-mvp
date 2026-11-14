@@ -53,7 +53,8 @@ async function seed() {
       await stat(definition.path);
       const reference = await asset(definition, definition.path);
       const referenceEvidence = await extractTargetReferenceFrames({ inputPath: definition.path, duration: reference.duration, scratchDirectory: path.join(scratch, definition.id), count: 5 });
-      const profile = createFounderStyleProfileFromColourEvidence({ referenceAsset: reference, sourceMetrics: sourceEvidence.metrics, referenceMetrics: referenceEvidence.metrics });
+      const profile = JSON.parse(JSON.stringify(createFounderStyleProfileFromColourEvidence({ referenceAsset: reference, sourceMetrics: sourceEvidence.metrics, referenceMetrics: referenceEvidence.metrics })));
+      if (process.env.FOUNDER_MKL_LOCAL_EVALUATION_ENABLED === "true") profile.colour.algorithm = "mkl_local_evaluation";
       const manifest = validateFounderReferenceStyleManifest({ version: "founder-reference-style-staging/1", reference, source, profile });
       await writeFile(path.join(root, `founder-reference-style/v1/style-profile-${definition.id}.json`), JSON.stringify(profile, null, 2), { mode: 0o600 });
       await writeFile(path.join(root, `founder-reference-style/v1/manifest-${definition.id}.json`), JSON.stringify(manifest, null, 2), { mode: 0o600 });
@@ -89,7 +90,7 @@ async function main() {
     FOUNDER_REFERENCE_STYLE_STAGING_ENABLED: "true", FOUNDER_REFERENCE_STYLE_RUNTIME_ENVIRONMENT: "staging", FOUNDER_REFERENCE_STYLE_STAGING_BUCKET: "local-founder-reference-style-staging",
     FOUNDER_CONVERSATIONAL_EDITING_ENABLED: "true", FOUNDER_TEST_ACCESS_SECRET: accessCode,
     STORAGE_BUCKET: "local-founder-reference-style-staging", STORAGE_ENDPOINT: "http://127.0.0.1/unused", STORAGE_REGION: "local", STORAGE_ACCESS_KEY_ID: "local", STORAGE_SECRET_ACCESS_KEY: "local", STORAGE_FORCE_PATH_STYLE: "true",
-    JOB_WORKER_CONCURRENCY: "1", JOB_MAX_ATTEMPTS: "1", JOB_SCRATCH_DIRECTORY: path.join(root, "scratch"), PUPPETEER_EXECUTABLE_PATH: chromePath, NEXT_PUBLIC_FOUNDER_REFERENCE_STYLE_LOCAL_MODE: "true", PORT: String(appPort)
+    JOB_WORKER_CONCURRENCY: "1", JOB_MAX_ATTEMPTS: "1", JOB_SCRATCH_DIRECTORY: path.join(root, "scratch"), PUPPETEER_EXECUTABLE_PATH: chromePath, NEXT_PUBLIC_FOUNDER_REFERENCE_STYLE_LOCAL_MODE: "true", FOUNDER_MKL_LOCAL_EVALUATION_ENABLED: process.env.FOUNDER_MKL_LOCAL_EVALUATION_ENABLED || "false", FOUNDER_MKL_LOCAL_PYTHON: process.env.FOUNDER_MKL_LOCAL_PYTHON || "/private/tmp/cliponaut-colour-algorithm-eval/bin/python", PORT: String(appPort)
   };
   const postgres = launch("postgres", ["-D", data, "-h", "127.0.0.1", "-p", String(port)], baseEnv);
   await new Promise((resolve) => setTimeout(resolve, 700));

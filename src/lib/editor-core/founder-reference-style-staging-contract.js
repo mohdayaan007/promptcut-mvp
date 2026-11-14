@@ -15,6 +15,7 @@ const saturation = new Set(["low", "medium", "high"]);
 const contrast = new Set(["low", "medium", "high"]);
 const typography = new Set(["none", "condensed_sans", "serif", "mixed"]);
 const animation = new Set(["none", "phrase_rise", "phrase_slide"]);
+const colourAlgorithms = new Set(["ffmpeg", "mkl_local_evaluation"]);
 const sha256 = /^[a-f0-9]{64}$/;
 
 function fail(message) { throw new Error(`Invalid founder Reference Style staging data: ${message}`); }
@@ -39,7 +40,10 @@ export function validateFounderReferenceStyleProfile(value, referenceAsset) {
   if (!plain(value.observation) || !warmth.has(value.observation.warmth) || !saturation.has(value.observation.saturation) || !contrast.has(value.observation.contrast) || !typography.has(value.observation.typography) || !animation.has(value.observation.animation) || !Array.isArray(value.observation.uncertainty)) fail("profile observation");
   if (!plain(value.colour) || !confidence.has(value.colour.confidence) || !Array.isArray(value.colour.limitations)) fail("profile colour evidence");
   const treatment = createCanonicalReferenceStyleTreatment(value.colour.treatment);
-  return immutable({ version: value.version, id: value.id, referenceAssetId: value.referenceAssetId, referenceSha256: value.referenceSha256, observation: { ...value.observation, uncertainty: value.observation.uncertainty.slice(0, 6).map(String) }, colour: { treatment, confidence: value.colour.confidence, limitations: value.colour.limitations.slice(0, 6).map(String) }, typography: { enabled: value.observation.typography !== "none", treatment: value.observation.animation, confidence: value.typography?.confidence && confidence.has(value.typography.confidence) ? value.typography.confidence : "low", limitations: Array.isArray(value.typography?.limitations) ? value.typography.limitations.slice(0, 6).map(String) : ["Typography is generic creator-supplied treatment, not frame-accurate reference matching."] } });
+  const algorithm = value.colour.algorithm || "ffmpeg";
+  if (!colourAlgorithms.has(algorithm)) fail("profile colour algorithm");
+  if (algorithm === "mkl_local_evaluation" && (process.env.FOUNDER_REFERENCE_STYLE_LOCAL_MODE !== "true" || process.env.FOUNDER_MKL_LOCAL_EVALUATION_ENABLED !== "true")) fail("profile colour algorithm");
+  return immutable({ version: value.version, id: value.id, referenceAssetId: value.referenceAssetId, referenceSha256: value.referenceSha256, observation: { ...value.observation, uncertainty: value.observation.uncertainty.slice(0, 6).map(String) }, colour: { treatment, algorithm, confidence: value.colour.confidence, limitations: value.colour.limitations.slice(0, 6).map(String) }, typography: { enabled: value.observation.typography !== "none", treatment: value.observation.animation, confidence: value.typography?.confidence && confidence.has(value.typography.confidence) ? value.typography.confidence : "low", limitations: Array.isArray(value.typography?.limitations) ? value.typography.limitations.slice(0, 6).map(String) : ["Typography is generic creator-specified treatment, not frame-accurate reference matching."] } });
 }
 
 /** Only the private staging-ingestion command may create this manifest. */

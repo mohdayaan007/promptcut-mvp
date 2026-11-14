@@ -28,6 +28,7 @@ import { founderReferenceStyleStagingEnabled, FOUNDER_REFERENCE_STYLE_ASSETS, va
 import { founderReferenceStyleReference } from "@/lib/editor-core/founder-reference-style-staging";
 import { validateReferenceStyleV1Composition } from "@/lib/editor-core/reference-style-v1-composition";
 import { renderFounderReferenceStyleComposition } from "@/lib/editor-core/founder-reference-style-renderer";
+import { renderFounderLocalMkl } from "@/lib/editor-core/founder-mkl-local";
 
 const config = jobConfig();
 const workerId = `${os.hostname()}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
@@ -169,7 +170,15 @@ async function processJob(job) {
       await throwIfCancelled(job.id);
       if (!await setJobStatus(job.id, workerId, "rendering")) throw new JobCancelledError();
       await syncVersionStatus(job.id, "rendering");
-      const gradedPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: "standard", executionController, jobId: job.id });
+      let gradedPath;
+      if (founder.profile.colour.algorithm === "mkl_local_evaluation") {
+        const referencePath = path.join(scratch, "founder-mkl-reference.mp4");
+        await downloadObject(job.reference.asset.key, referencePath);
+        gradedPath = path.join(scratch, "founder-mkl.mp4");
+        await renderFounderLocalMkl({ sourcePath: inputPaths[0], referencePath, outputPath: gradedPath, reportPath: path.join(scratch, "founder-mkl-report.json"), executionController });
+      } else {
+        gradedPath = await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: "standard", executionController, jobId: job.id });
+      }
       await throwIfCancelled(job.id);
       const finalPath = path.join(scratch, "founder-reference-style.mp4");
       await renderFounderReferenceStyleComposition({ composition: founder.composition, sourcePath: gradedPath, outputPath: finalPath, duration: media[0].duration, temporaryDirectory: path.join(scratch, "hyperframes"), executionController });
