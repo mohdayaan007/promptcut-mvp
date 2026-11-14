@@ -26,6 +26,9 @@ export function measureReferenceRgbFrame(frame) {
   }
 
   const lumaHistogram = new Uint32Array(256);
+  const redHistogram = new Uint32Array(256);
+  const greenHistogram = new Uint32Array(256);
+  const blueHistogram = new Uint32Array(256);
   let nearBlackPixels = 0;
   let nearWhitePixels = 0;
   let saturationTotal = 0;
@@ -46,6 +49,7 @@ export function measureReferenceRgbFrame(frame) {
     const maximum = Math.max(red, green, blue);
     const minimum = Math.min(red, green, blue);
     lumaHistogram[lumaByte] += 1;
+    redHistogram[red] += 1; greenHistogram[green] += 1; blueHistogram[blue] += 1;
     if (lumaByte <= 8) nearBlackPixels += 1;
     if (lumaByte >= 247) nearWhitePixels += 1;
     saturationTotal += maximum === 0 ? 0 : (maximum - minimum) / maximum;
@@ -60,6 +64,15 @@ export function measureReferenceRgbFrame(frame) {
     // It lets B2 constrain only highlight-risky axes without weakening the
     // broader treatment for an otherwise safe target.
     lumaP99: quantileFromHistogram(lumaHistogram, pixelCount, 0.99),
+    redP05: quantileFromHistogram(redHistogram, pixelCount, 0.05),
+    redP50: quantileFromHistogram(redHistogram, pixelCount, 0.5),
+    redP95: quantileFromHistogram(redHistogram, pixelCount, 0.95),
+    greenP05: quantileFromHistogram(greenHistogram, pixelCount, 0.05),
+    greenP50: quantileFromHistogram(greenHistogram, pixelCount, 0.5),
+    greenP95: quantileFromHistogram(greenHistogram, pixelCount, 0.95),
+    blueP05: quantileFromHistogram(blueHistogram, pixelCount, 0.05),
+    blueP50: quantileFromHistogram(blueHistogram, pixelCount, 0.5),
+    blueP95: quantileFromHistogram(blueHistogram, pixelCount, 0.95),
     nearBlackFraction: nearBlackPixels / pixelCount,
     nearWhiteFraction: nearWhitePixels / pixelCount,
     saturationIndex: saturationTotal / pixelCount,
@@ -83,7 +96,7 @@ export function summarizeReferenceFrameMetrics(measurements) {
   if (!Array.isArray(measurements) || measurements.length === 0) {
     throw metricsError("measurements must be a non-empty array");
   }
-  const fields = ["lumaP05", "lumaP50", "lumaP95", "lumaP99", "nearBlackFraction", "nearWhiteFraction", "saturationIndex", "redMean", "greenMean", "blueMean", "shadowWarmth", "midtoneWarmth", "highlightWarmth"];
+  const fields = ["lumaP05", "lumaP50", "lumaP95", "lumaP99", "redP05", "redP50", "redP95", "greenP05", "greenP50", "greenP95", "blueP05", "blueP50", "blueP95", "nearBlackFraction", "nearWhiteFraction", "saturationIndex", "redMean", "greenMean", "blueMean", "shadowWarmth", "midtoneWarmth", "highlightWarmth"];
   for (const measurement of measurements) {
     if (!measurement || typeof measurement !== "object") throw metricsError("measurement must be an object");
     for (const field of fields) {

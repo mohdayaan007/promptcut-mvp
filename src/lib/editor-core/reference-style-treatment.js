@@ -8,6 +8,7 @@ import { createCanonicalVisualRecipe } from "@/lib/editor-core/style-profiles";
 export const REFERENCE_STYLE_TREATMENT_VERSION = 2;
 const SUPPORTED_VERSIONS = new Set([1, REFERENCE_STYLE_TREATMENT_VERSION]);
 const TONAL_TEMPERATURE_FIELDS = Object.freeze(["shadowTemperature", "midtoneTemperature", "highlightTemperature"]);
+const CHANNELS = Object.freeze(["red", "green", "blue"]);
 
 function treatmentError(message) {
   return new Error(`Invalid reference style treatment: ${message}`);
@@ -17,6 +18,23 @@ function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function canonicalChannelCurves(value) {
+  if (value === undefined) return null;
+  if (!isPlainObject(value) || Object.keys(value).some((field) => !CHANNELS.includes(field))) throw treatmentError("channelCurves must contain only RGB channels");
+  const result = {};
+  for (const channel of CHANNELS) {
+    const points = value[channel];
+    if (!Array.isArray(points) || points.length !== 3) throw treatmentError(`channelCurves.${channel} must contain three points`);
+    let previousInput = 0; let previousOutput = 0;
+    result[channel] = points.map((point, index) => {
+      if (!isPlainObject(point) || Object.keys(point).some((field) => field !== "input" && field !== "output") || !Number.isFinite(point.input) || !Number.isFinite(point.output) || point.input <= 0 || point.input >= 1 || point.output < 0 || point.output > 1 || (index && point.input - previousInput < 0.035) || (index && point.output < previousOutput)) throw treatmentError(`channelCurves.${channel} point is invalid`);
+      previousInput = point.input; previousOutput = point.output;
+      return Object.freeze({ input: point.input, output: point.output });
+    });
+  }
+  return Object.freeze(result);
 }
 
 /**
@@ -41,14 +59,15 @@ export function createCanonicalReferenceStyleTreatment(input = {}) {
   }
 
   const rawRecipe = input.recipe || {};
+  const channelCurves = canonicalChannelCurves(rawRecipe.channelCurves);
   const baseFields = new Set(Object.keys(createCanonicalVisualRecipe()));
   const extraFields = TONAL_TEMPERATURE_FIELDS.filter((field) => Object.hasOwn(rawRecipe, field));
   for (const field of Object.keys(rawRecipe)) {
-    if (!baseFields.has(field) && !TONAL_TEMPERATURE_FIELDS.includes(field)) {
+    if (!baseFields.has(field) && !TONAL_TEMPERATURE_FIELDS.includes(field) && field !== "channelCurves") {
       throw treatmentError(`unsupported recipe field: ${field}`);
     }
   }
-  if (version === 1 && extraFields.length) {
+  if (version === 1 && (extraFields.length || channelCurves)) {
     throw treatmentError("version 1 does not support tonal-band temperatures");
   }
   const recipe = {
@@ -61,7 +80,8 @@ export function createCanonicalReferenceStyleTreatment(input = {}) {
         throw treatmentError(`${field} must be a finite number between -1 and 1`);
       }
       return [field, Object.is(value, -0) ? 0 : value];
-    })) : {})
+    })) : {}),
+    ...(channelCurves ? { channelCurves } : {})
   };
   return Object.freeze({ version, recipe: Object.freeze(recipe) });
 }

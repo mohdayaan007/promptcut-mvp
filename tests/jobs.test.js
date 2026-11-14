@@ -523,6 +523,15 @@ test("B2 Stage 0 RGB24 headroom metrics are deterministic and bounded", () => {
     lumaP50: 54 / 255,
     lumaP95: 1,
     lumaP99: 1,
+    redP05: 0,
+    redP50: 128 / 255,
+    redP95: 1,
+    greenP05: 0,
+    greenP50: 0,
+    greenP95: 1,
+    blueP05: 0,
+    blueP50: 0,
+    blueP95: 1,
     nearBlackFraction: 0.25,
     nearWhiteFraction: 0.25,
     saturationIndex: 0.25,
@@ -542,6 +551,15 @@ test("B2 Stage 0 RGB24 headroom metrics are deterministic and bounded", () => {
     lumaP50: (0.25 + (54 / 255)) / 2,
     lumaP95: 1,
     lumaP99: 1,
+    redP05: 0,
+    redP50: 128 / 255,
+    redP95: 1,
+    greenP05: 0,
+    greenP50: 0,
+    greenP95: 1,
+    blueP05: 0,
+    blueP50: 0,
+    blueP95: 1,
     nearBlackFraction: 0.25,
     nearWhiteFraction: 0.25,
     saturationIndex: 0.5,
@@ -4557,7 +4575,7 @@ test("B2 Stage 0 black lift and midtone gamma render safely across the determini
       const metrics = measured[name].rendered;
       assert.ok(metrics.lumaP05 <= metrics.lumaP50 && metrics.lumaP50 <= metrics.lumaP95, `${name} luma percentiles remain ordered`);
       for (const [field, value] of Object.entries(metrics)) {
-        if (field !== "version") assert.ok(value >= 0 && value <= 1, `${name} ${field} remains normalized and bounded`);
+        if (field !== "version") assert.ok(value >= (field.endsWith("Warmth") ? -1 : 0) && value <= 1, `${name} ${field} remains normalized and bounded`);
       }
     }
 

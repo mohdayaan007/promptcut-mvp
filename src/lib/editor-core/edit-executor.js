@@ -291,6 +291,13 @@ function buildReferenceColorBalanceFilter(operation) {
   return `colorbalance=rs=${shadow.toFixed(4)}:gs=${green.toFixed(4)}:bs=${(-shadow).toFixed(4)}:rm=${midtone.toFixed(4)}:gm=${green.toFixed(4)}:bm=${(-midtone).toFixed(4)}:rh=${highlight.toFixed(4)}:gh=${green.toFixed(4)}:bh=${(-highlight).toFixed(4)}:pl=0`;
 }
 
+function buildReferenceChannelCurvesFilter(recipe) {
+  const curves = recipe.channelCurves;
+  if (!curves) return null;
+  const points = (channel) => `0/0 ${curves[channel].map((point) => `${point.input.toFixed(4)}/${point.output.toFixed(4)}`).join(" ")} 1/1`;
+  return `curves=r='${points("red")}':g='${points("green")}':b='${points("blue")}'`;
+}
+
 // Converts bounded server-facing controls to perceptible, still bounded FFmpeg
 // filters. No duration-changing filters are used here, and normalized values
 // never reach FFmpeg directly as user-controlled filter syntax.
@@ -373,13 +380,15 @@ export function buildReferenceStyleTreatmentFilters(recipe = {}) {
   const eq = buildEqFilter(canonical, { includeMidtoneGamma: canonical.midtoneGamma !== 0 });
   const vibrance = buildVibranceFilter(canonical);
   const colorbalance = buildReferenceColorBalanceFilter(canonical);
+  const channelCurves = buildReferenceChannelCurvesFilter(canonical);
   // A reference treatment with no B2 primitive and no color balance is
   // mathematically identical to the established B1 recipe path.
-  if (!colorbalance && canonical.blackLift === 0 && canonical.midtoneGamma === 0) {
+  if (!colorbalance && !channelCurves && canonical.blackLift === 0 && canonical.midtoneGamma === 0) {
     return buildStyleRecipeFilters(canonical);
   }
   const toneCurve = buildReferenceToneCurveFilter(canonical, { protectColorbalanceHighlights: Boolean(colorbalance) });
   if (eq) filters.push(eq);
+  if (channelCurves) filters.push(channelCurves);
   if (vibrance) filters.push(vibrance);
   if (colorbalance) filters.push(colorbalance);
   if (toneCurve) filters.push(toneCurve);

@@ -1,7 +1,7 @@
 import { createCanonicalReferenceStyleTreatment } from "@/lib/editor-core/reference-style-treatment";
 
 const bounded = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
-const needed = ["lumaP05", "lumaP50", "lumaP95", "lumaP99", "nearBlackFraction", "nearWhiteFraction", "saturationIndex", "redMean", "greenMean", "blueMean", "shadowWarmth", "midtoneWarmth", "highlightWarmth"];
+const needed = ["lumaP05", "lumaP50", "lumaP95", "lumaP99", "redP05", "redP50", "redP95", "greenP05", "greenP50", "greenP95", "blueP05", "blueP50", "blueP95", "nearBlackFraction", "nearWhiteFraction", "saturationIndex", "redMean", "greenMean", "blueMean", "shadowWarmth", "midtoneWarmth", "highlightWarmth"];
 
 function metrics(value, label) {
   if (!value || typeof value !== "object" || needed.some((key) => !Number.isFinite(value[key]) || value[key] < (key.endsWith("Warmth") ? -1 : 0) || value[key] > 1)) {
@@ -12,6 +12,19 @@ function metrics(value, label) {
 
 function level(value, low, high) { return value < low ? "low" : value > high ? "high" : "medium"; }
 function warmth(value) { return value > 0.025 ? "warm" : value < -0.025 ? "cool" : "neutral"; }
+function channelCurve(reference, source, channel) {
+  const percentiles = ["P05", "P50", "P95"];
+  const rawInputs = percentiles.map((percentile) => bounded(source[`${channel}${percentile}`], 0.04, 0.96));
+  const inputs = rawInputs[1] - rawInputs[0] >= 0.035 && rawInputs[2] - rawInputs[1] >= 0.035 ? rawInputs : [0.15, 0.5, 0.85];
+  let previousOutput = 0;
+  return percentiles.map((percentile, index) => {
+    const input = inputs[index];
+    const intended = reference[`${channel}${percentile}`];
+    const output = bounded(Math.max(previousOutput, intended), Math.max(0, input - 0.28), Math.min(1, input + 0.28));
+    previousOutput = output;
+    return { input, output };
+  });
+}
 
 /**
  * Transfers server-measured reference colour intent into the existing bounded
@@ -42,7 +55,7 @@ export function deriveFounderReferenceColourTreatment({ referenceMetrics, source
     midtoneTemperature: bounded((reference.midtoneWarmth - source.midtoneWarmth) * 1.1, -0.35, 0.35),
     highlightTemperature: bounded((reference.highlightWarmth - source.highlightWarmth) * 1.1, -0.35, 0.35)
   };
-  return createCanonicalReferenceStyleTreatment({ version: 2, recipe });
+  return createCanonicalReferenceStyleTreatment({ version: 2, recipe: { ...recipe, channelCurves: { red: channelCurve(reference, source, "red"), green: channelCurve(reference, source, "green"), blue: channelCurve(reference, source, "blue") } } });
 }
 
 export function deriveFounderReferenceColourObservation(referenceMetrics) {
