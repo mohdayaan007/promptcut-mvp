@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 
 function isFormRequest(req) { return (req.headers.get("content-type") || "").includes("application/x-www-form-urlencoded"); }
 function redirect(req, path, cookie = null) {
-  const response = Response.redirect(new URL(path, req.url), 303);
+  const response = new Response(null, { status: 303, headers: { Location: new URL(path, req.url).toString() } });
   if (cookie) response.headers.set("Set-Cookie", cookie);
   response.headers.set("Cache-Control", "no-store");
   return response;
