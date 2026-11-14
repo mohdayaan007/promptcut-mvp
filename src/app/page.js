@@ -403,7 +403,7 @@ export default function HomePage() {
     const image = event.target.files?.[0];
     if (!image) return;
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(image.type)) {
-      setError("Style references must be JPG, PNG, or WebP images.");
+      setError("Style references must be JPG, PNG, or WebP images. Reference-video uploads are not available yet because dedicated safety screening is not configured.");
       event.target.value = "";
       return;
     }

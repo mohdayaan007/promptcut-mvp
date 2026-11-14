@@ -83,7 +83,7 @@ export function Workspace({
           </button>
         </div>
         {referenceImage ? <><p className="cliponaut-panel-kicker">Style reference image</p><MediaCard file={referenceImage} kind="image" onRemove={onRemoveReferenceImage} /></> : null}
-        <p className="cliponaut-media-note">{isOriginalState && !videos.length ? "Your original upload list was restored. Re-upload the files to edit them again." : "Add up to five videos. A style reference image is uploaded privately and never becomes a video source."}</p>
+        <p className="cliponaut-media-note">{isOriginalState && !videos.length ? "Your original upload list was restored. Re-upload the files to edit them again." : "Add up to five videos. A style reference image is uploaded privately and never becomes a video source. Video references remain unavailable until dedicated safety screening is configured."}</p>
       </section>
 
       <PreviewPanel
