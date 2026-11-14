@@ -10,12 +10,13 @@ import { createSourceCatalog } from "@/lib/editor-core/source-catalog";
 import { CaptionError, createCaptionCues, extractCaptionCorrection, requestsCaptions } from "@/lib/editor-core/caption-engine";
 import { transcribeSource } from "@/lib/editor-core/spoken-transcription";
 import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, evaluateReferenceStyleProxy, isB2aProxyRefinementEnabled, refineReferenceStyleTreatment, ReferenceStyleError, requestsReferenceStyleMatch } from "@/lib/editor-core/reference-style-matching";
-import { createReferenceStyleProxyFrames, extractTargetReferenceFrames, validateReferenceImageFile } from "@/lib/editor-core/reference-style-media";
+import { createReferenceStyleProxyFrames, extractReferenceVideoFrames, extractTargetReferenceFrames, validateReferenceImageFile, validateReferenceVideoFile } from "@/lib/editor-core/reference-style-media";
 import { analyzeTypographyReference, extractTypographyReferenceSelector, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, TypographyReferenceError } from "@/lib/editor-core/typography-reference-matching";
 import { parseTitle } from "@/lib/title-parser";
 import { is4kCapableMedia } from "@/lib/media/media-config";
 import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
 import { jobConfig } from "@/lib/jobs/job-config";
+import { hasApprovedReferenceVideoSafety } from "@/lib/jobs/reference-video-safety";
 import {
   claimNextJob, completeJob, expireUploadJob, failJob, getAbandonedUploads, getJobsForCleanup, heartbeatJob, isJobCancelled, markOutputCleaned,
   markSourcesCleaned, recoverStaleJobs, saveJobPlan, setJobStatus, syncVersionStatus, leaseDueCancellationRecoveryCases, recordCancellationRecoveryEvidence
@@ -42,6 +43,8 @@ function safeError(error) {
   }
   if (error instanceof ReferenceStyleError) {
     if (error.reason === "REFERENCE_SAFETY_REJECTED") return "This reference can’t be used for style matching. Please choose another image or video.";
+    if (error.reason === "REFERENCE_VIDEO_SAFETY_REQUIRED") return "This reference video needs dedicated safety screening before it can be processed.";
+    if (error.reason === "REFERENCE_INVALID_VIDEO") return "This reference video could not be verified. Use a video under 60 seconds at 1080p or smaller.";
     if (error.reason === "REFERENCE_TARGET_HETEROGENEOUS") return "This first version works best with visually coherent footage. Please choose another video.";
     if (["REFERENCE_TARGET_COUNT", "REFERENCE_COMPATIBILITY_WEAK"].includes(error.reason)) return error.message;
     return "This reference image could not be used safely.";
@@ -57,6 +60,24 @@ function safeError(error) {
   return "Unable to process this video. Please try again.";
 }
 class JobCancelledError extends Error {}
+async function prepareReferenceStyleMedia({ reference, scratch, executionController }) {
+  if (reference?.kind !== "video") {
+    const extension = reference.type === "image/png" ? "png" : reference.type === "image/webp" ? "webp" : "jpg";
+    const referencePath = path.join(scratch, `reference.${extension}`);
+    await downloadObject(reference.key, referencePath);
+    await validateReferenceImageFile({ inputPath: referencePath, type: reference.type, executionController });
+    return { referencePath, referenceMimeType: reference.type, evidence: null };
+  }
+  // A generic moderation signal, MIME validation, or a "minor" classifier is
+  // never accepted as CSAM screening. Public video jobs need dedicated,
+  // server-owned coverage before any frames can reach analysis or rendering.
+  if (!hasApprovedReferenceVideoSafety(reference)) throw new ReferenceStyleError("REFERENCE_VIDEO_SAFETY_REQUIRED", "This reference video cannot be processed until dedicated safety screening is available.");
+  const referencePath = path.join(scratch, "reference-video");
+  await downloadObject(reference.key, referencePath);
+  const media = await validateReferenceVideoFile({ inputPath: referencePath, type: reference.type, executionController });
+  const frames = await extractReferenceVideoFrames({ inputPath: referencePath, media, scratchDirectory: path.join(scratch, "reference-video-frames"), executionController });
+  return { referencePath: frames[0].imagePath, referenceMimeType: "image/jpeg", evidence: { kind: "video_frames", frameCount: frames.length, frameEvidenceIds: frames.map((frame) => frame.evidenceId) } };
+}
 async function throwIfCancelled(jobId) {
   if (await isJobCancelled(jobId, workerId)) throw new JobCancelledError();
 }
@@ -127,14 +148,11 @@ async function processJob(job) {
     const typographyReferenceActive = Boolean(job.reference && requestsTypographyReferenceMatch(job.prompt, true));
     if (typographyReferenceActive) {
       if (sources.length !== 1) throw new TypographyReferenceError("TYPOGRAPHY_TARGET_COUNT");
-      const extension = job.reference.type === "image/png" ? "png" : job.reference.type === "image/webp" ? "webp" : "jpg";
-      const referencePath = path.join(scratch, `reference.${extension}`);
-      await downloadObject(job.reference.key, referencePath);
-      await validateReferenceImageFile({ inputPath: referencePath, type: job.reference.type, executionController });
+      const { referencePath, referenceMimeType } = await prepareReferenceStyleMedia({ reference: job.reference, scratch, executionController });
       const selector = extractTypographyReferenceSelector(job.prompt);
       let result;
       try {
-        result = await analyzeTypographyReference({ referencePath, referenceMimeType: job.reference.type, selector });
+        result = await analyzeTypographyReference({ referencePath, referenceMimeType, selector });
       } catch (error) {
         if (error instanceof TypographyReferenceError && error.selectionDiagnostic) {
           console.info("Typography reference selection rejected:", { jobId: job.id, reason: error.reason, ...error.selectionDiagnostic });
@@ -153,18 +171,15 @@ async function processJob(job) {
       });
     } else if (job.reference && requestsReferenceStyleMatch(job.prompt, true)) {
       if (sources.length !== 1) throw new ReferenceStyleError("REFERENCE_TARGET_COUNT", "Reference style matching currently supports one target video.");
-      const extension = job.reference.type === "image/png" ? "png" : job.reference.type === "image/webp" ? "webp" : "jpg";
-      const referencePath = path.join(scratch, `reference.${extension}`);
-      await downloadObject(job.reference.key, referencePath);
-      await validateReferenceImageFile({ inputPath: referencePath, type: job.reference.type, executionController });
+      const { referencePath, referenceMimeType } = await prepareReferenceStyleMedia({ reference: job.reference, scratch, executionController });
       const samples = await extractTargetReferenceFrames({ inputPath: inputPaths[0], duration: media[0].duration, scratchDirectory: scratch, executionController });
-      const result = await analyzeReferenceStyle({ referencePath, referenceMimeType: job.reference.type, targetFrames: samples.frames, metrics: samples.metrics });
+      const result = await analyzeReferenceStyle({ referencePath, referenceMimeType, targetFrames: samples.frames, metrics: samples.metrics });
       referenceTreatment = result.treatment;
       if (isB2aProxyRefinementEnabled()) {
         try {
         executionController.throwIfCancelled();
         const proxy = await createReferenceStyleProxyFrames({ targetFrames: samples.frames, treatment: referenceTreatment, scratchDirectory: scratch, executionController });
-        const evaluation = await evaluateReferenceStyleProxy({ referencePath, referenceMimeType: job.reference.type, proxyFrames: proxy.frames, metrics: proxy.metrics, executionController });
+        const evaluation = await evaluateReferenceStyleProxy({ referencePath, referenceMimeType, proxyFrames: proxy.frames, metrics: proxy.metrics, executionController });
         executionController.throwIfCancelled();
         const refinement = refineReferenceStyleTreatment({ initialTreatment: referenceTreatment, analysis: result.analysis, metrics: proxy.metrics, evaluation });
         referenceTreatment = refinement.treatment;

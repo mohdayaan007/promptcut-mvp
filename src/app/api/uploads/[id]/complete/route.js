@@ -1,7 +1,7 @@
 import { abortMultipartUpload, completeMultipartUpload, headObject } from "@/lib/jobs/storage";
 import { createEditingSession, getAuthorizedJob, queueJob } from "@/lib/jobs/job-store";
 import { jsonError, jobToken, PublicRequestError, safeJobResponse } from "@/lib/jobs/http";
-import { validateJobRequest, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { assertCustomerReferenceVideoUploadAllowed, validateJobRequest, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { hasFounderTestAccess } from "@/lib/founder-test-access";
 import { authorizePaidJob } from "@/lib/paid-editing";
 import { paidEditingEnforced } from "@/lib/jobs/job-store";
@@ -33,7 +33,12 @@ export async function POST(req, { params }) {
       if (parts.some((part) => !part.ETag || !Number.isInteger(part.PartNumber) || part.PartNumber < 1)) throw new PublicRequestError("Upload completion contained invalid reference parts");
       reference = { ...job.reference, parts };
     } else if (submittedReference) throw new PublicRequestError("Upload completion included an unexpected style reference");
-    try { validateUploadManifest(sources); validateReferenceManifest(reference); validateJobRequest({ prompt, exportQuality, sources }); } catch (error) { throw new PublicRequestError(error.message); }
+    try {
+      validateUploadManifest(sources);
+      const validatedReference = validateReferenceManifest(reference);
+      assertCustomerReferenceVideoUploadAllowed(validatedReference);
+      validateJobRequest({ prompt, exportQuality, sources });
+    } catch (error) { throw new PublicRequestError(error.message); }
     for (const source of sources) {
       await completeMultipartUpload({ key: source.key, uploadId: source.uploadId, parts: source.parts });
       const object = await headObject(source.key);

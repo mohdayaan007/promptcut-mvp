@@ -1,7 +1,7 @@
 import { abortMultipartUpload, beginMultipartUpload, referenceObjectKey, sourceObjectKey } from "@/lib/jobs/storage";
 import { createUploadJob, failUploadJob, releaseUnattachedRenderReservation, setUploadSources } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError, safeJobResponse } from "@/lib/jobs/http";
-import { MULTIPART_PART_SIZE_BYTES, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { assertCustomerReferenceVideoUploadAllowed, MULTIPART_PART_SIZE_BYTES, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { authorizePaidEdit } from "@/lib/paid-editing";
 
 export const runtime = "nodejs";
@@ -15,7 +15,11 @@ export async function POST(req) {
     authorization = await authorizePaidEdit(req);
     const { files, reference: requestedReference } = await req.json();
     let initialReference;
-    try { validateUploadManifest(files); initialReference = validateReferenceManifest(requestedReference); } catch (error) { throw new PublicRequestError(error.message); }
+    try {
+      validateUploadManifest(files);
+      initialReference = validateReferenceManifest(requestedReference);
+      assertCustomerReferenceVideoUploadAllowed(initialReference);
+    } catch (error) { throw new PublicRequestError(error.message); }
     console.info("upload-session: request validated", { sourceCount: files.length });
     const initialSources = files.map((file, index) => ({ index, name: file.name, type: file.type, size: file.size }));
     stage = "database job creation";
@@ -33,7 +37,7 @@ export async function POST(req) {
     }
     let reference = null;
     if (initialReference) {
-      const key = referenceObjectKey(job.id);
+      const key = referenceObjectKey(job.id, initialReference);
       stage = "reference bucket multipart creation";
       const uploadId = await beginMultipartUpload({ key, contentType: initialReference.type });
       started.push({ key, uploadId });

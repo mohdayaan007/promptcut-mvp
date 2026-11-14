@@ -4,6 +4,14 @@ export const MAX_DIRECT_UPLOAD_FILE_BYTES = 5 * 1024 * 1024 * 1024;
 export const MAX_DIRECT_UPLOAD_JOB_BYTES = 25 * 1024 * 1024 * 1024;
 export const MAX_REFERENCE_IMAGE_BYTES = 25 * 1024 * 1024;
 export const REFERENCE_IMAGE_TYPES = Object.freeze(["image/jpeg", "image/png", "image/webp"]);
+// Reference video is deliberately much smaller and shorter than an edit
+// source: it is sampled for style evidence only and must never become a
+// timeline source.
+export const MAX_REFERENCE_VIDEO_BYTES = 250 * 1024 * 1024;
+export const MAX_REFERENCE_VIDEO_DURATION_SECONDS = 60;
+export const MAX_REFERENCE_VIDEO_DIMENSION = 1920;
+export const MAX_REFERENCE_VIDEO_PIXELS = 1920 * 1080;
+export const REFERENCE_VIDEO_TYPES = Object.freeze(["video/mp4", "video/quicktime", "video/webm"]);
 export const MULTIPART_PART_SIZE_BYTES = 16 * 1024 * 1024;
 export const UPLOAD_URL_BATCH_SIZE = 8;
 export const JOB_STATUSES = ["uploading", "queued", "analyzing", "rendering", "completed", "failed", "cancelled"];
@@ -40,11 +48,28 @@ export function validateUploadManifest(files) {
 export function validateReferenceManifest(reference) {
   if (reference == null) return null;
   if (!reference || typeof reference.name !== "string" || typeof reference.type !== "string" || !Number.isSafeInteger(reference.size)) {
-    throw new Error("The style reference must include valid image metadata");
+    throw new Error("The style reference must include valid media metadata");
   }
-  if (!REFERENCE_IMAGE_TYPES.includes(reference.type)) throw new Error("Style references must be JPG, PNG, or WebP images");
-  if (reference.size <= 0 || reference.size > MAX_REFERENCE_IMAGE_BYTES) throw new Error("The style reference image must be 25 MB or smaller");
-  return { kind: "image", name: reference.name, type: reference.type, size: reference.size };
+  if (REFERENCE_IMAGE_TYPES.includes(reference.type)) {
+    if (reference.size <= 0 || reference.size > MAX_REFERENCE_IMAGE_BYTES) throw new Error("The style reference image must be 25 MB or smaller");
+    return { kind: "image", name: reference.name, type: reference.type, size: reference.size };
+  }
+  if (REFERENCE_VIDEO_TYPES.includes(reference.type)) {
+    if (reference.size <= 0 || reference.size > MAX_REFERENCE_VIDEO_BYTES) throw new Error("The style reference video must be 250 MB or smaller");
+    return { kind: "video", name: reference.name, type: reference.type, size: reference.size };
+  }
+  throw new Error("Style references must be JPG, PNG, WebP, MP4, MOV, or WebM files");
+}
+
+/**
+ * Customer reference videos are intentionally fail-closed until a trusted,
+ * server-owned safety service can attach dedicated evidence. A MIME type,
+ * video probe, or generic nude/minor classification is not that evidence.
+ */
+export function assertCustomerReferenceVideoUploadAllowed(reference) {
+  if (reference?.kind === "video") {
+    throw new Error("Reference-video uploads are not available yet because dedicated safety screening is not configured");
+  }
 }
 
 export function validateJobRequest({ prompt, exportQuality, sources }) {
