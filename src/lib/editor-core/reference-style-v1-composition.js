@@ -7,6 +7,17 @@ function changeColourStrength(composition, factor) {
   const recipe = composition?.profile?.colour?.treatment?.recipe;
   if (!recipe || typeof recipe !== "object") fail("reference colour treatment is unavailable");
   for (const [field, value] of Object.entries(recipe)) {
+    if (field === "channelCurves") {
+      if (!value || typeof value !== "object") fail("reference colour treatment is invalid");
+      for (const points of Object.values(value)) {
+        if (!Array.isArray(points)) fail("reference colour treatment is invalid");
+        for (const point of points) {
+          if (!point || typeof point.input !== "number" || typeof point.output !== "number") fail("reference colour treatment is invalid");
+          point.output = Math.max(0, Math.min(1, point.input + ((point.output - point.input) * factor)));
+        }
+      }
+      continue;
+    }
     if (typeof value !== "number") fail("reference colour treatment is invalid");
     recipe[field] = Math.max(-1, Math.min(1, value * factor));
   }

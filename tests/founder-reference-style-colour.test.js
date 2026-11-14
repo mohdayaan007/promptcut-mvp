@@ -27,5 +27,7 @@ test("local colour profiles remain reference-bound and reject incomplete evidenc
   const profile = createFounderStyleProfileFromColourEvidence({ referenceAsset: reference, sourceMetrics: source, referenceMetrics: cool });
   assert.equal(profile.referenceSha256, reference.sha256);
   assert.equal(profile.observation.typography, "none");
+  assert.ok(profile.colour.treatment.recipe.channelCurves, "the profile preserves the V3 channel relationship treatment");
+  assert.ok(buildReferenceStyleTreatmentFilters(profile.colour.treatment.recipe).some((filter) => filter.startsWith("curves=r=")));
   assert.throws(() => deriveFounderReferenceColourTreatment({ referenceMetrics: { ...cool, redMean: NaN }, sourceMetrics: source }), /invalid/);
 });

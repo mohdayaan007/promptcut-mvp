@@ -23,8 +23,8 @@ export async function POST(req) {
     if (body.action === "revise") {
       if (typeof body.sessionId !== "string" || !Number.isInteger(body.expectedVersion) || typeof body.request !== "string") return Response.json({ error: "The revision is invalid." }, { status: 422 });
       const session = await getAuthorizedSession(body.sessionId, token(req)); if (!session) return unavailable();
-      const manifest = await loadFounderReferenceStyleManifest(current.profile.referenceAssetId);
       const current = await getFounderReferenceStyleComposition(session); if (!current) return unavailable();
+      const manifest = await loadFounderReferenceStyleManifest(current.profile.referenceAssetId);
       const historyJob = await createFounderReferenceStyleRevision(session, { expectedVersion: body.expectedVersion, composition: applyReferenceStyleV1Revision(current, body.request, manifest.source.duration), prompt: body.request.trim() });
       if (!historyJob) return Response.json({ error: "A newer revision already exists." }, { status: 409 });
       return Response.json({ jobId: historyJob.job.id, accessToken: historyJob.accessToken, version: historyJob.version });

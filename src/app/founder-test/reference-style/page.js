@@ -7,7 +7,7 @@ const savedKey = "cliponaut-founder-reference-style-session";
 export default function FounderReferenceStylePage() {
   const [title, setTitle] = useState("A Trip to New York");
   const [referenceId, setReferenceId] = useState("founder-rve1-moved-to-blore");
-  const [references, setReferences] = useState([]);
+  const [references, setReferences] = useState(null);
   const [request, setRequest] = useState("");
   const [session, setSession] = useState(null);
   const [job, setJob] = useState(null);
@@ -15,7 +15,12 @@ export default function FounderReferenceStylePage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => { const timer = setTimeout(() => { try { const value = JSON.parse(localStorage.getItem(savedKey)); if (value?.session?.id && value?.session?.accessToken) setSession(value.session); if (value?.job?.id && value?.job?.accessToken) setJob(value.job); } catch {} }, 0); return () => clearTimeout(timer); }, []);
-  useEffect(() => { fetch("/api/founder-test/reference-style/session").then((response) => response.ok ? response.json() : null).then((value) => { if (value?.references) setReferences(value.references); }).catch(() => {}); }, []);
+  useEffect(() => { let active = true; fetch("/api/founder-test/reference-style/session").then(async (response) => {
+    if (!response.ok) throw new Error("Approved references could not be loaded.");
+    const value = await response.json();
+    if (!Array.isArray(value?.references) || value.references.length === 0) throw new Error("No approved references are available.");
+    if (active) setReferences(value.references);
+  }).catch((value) => { if (active) setError(value.message); }); return () => { active = false; }; }, []);
 
   useEffect(() => {
     if (!job?.id || !job.accessToken) return undefined;
@@ -39,5 +44,5 @@ export default function FounderReferenceStylePage() {
     catch (value) { setError(value.message); } finally { setBusy(false); }
   };
   const newEdit = () => { localStorage.removeItem(savedKey); setSession(null); setJob(null); setRequest(""); setError(null); };
-  return <main className="cliponaut-page-shell"><section className="cliponaut-empty-state"><p className="cliponaut-panel-kicker">Founder-only local session</p><h1>Reference Style</h1><p>Approved source: <strong>Gym Outside Test</strong></p><p>Cliponaut derives a bounded colour treatment from the selected approved reference. Typography is creator-specified and preserves the source timeline and audio.</p>{!session ? <form onSubmit={create}><label htmlFor="reference-style-reference">Reference</label><select id="reference-style-reference" value={referenceId} onChange={(event) => setReferenceId(event.target.value)}>{references.map((reference) => <option key={reference.id} value={reference.id}>{reference.label}</option>)}</select><label htmlFor="reference-style-title">Animated title</label><input id="reference-style-title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={48} required /><button disabled={busy || !references.length}>{busy ? "Starting…" : "Apply Reference Style"}</button></form> : <><p>Revision {session.version} · {job?.status || "queued"}</p><button type="button" onClick={newEdit} disabled={busy}>New Edit</button>{job?.error ? <p role="alert">{job.error}</p> : null}{job?.outputUrl ? <><video controls src={job.outputUrl} style={{ width: "100%" }} /><p><a href={job.outputUrl} download="cliponaut-reference-style.mp4">Export MP4</a></p></> : null}<form onSubmit={revise}><label htmlFor="reference-style-request">Supported correction</label><input id="reference-style-request" value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Change A Trip to New York to Exploring Bangalore." required /><button disabled={busy || !request.trim()}>{busy ? "Saving…" : "Create revision"}</button></form></>}{error ? <p role="alert">{error}</p> : null}</section></main>;
+  return <main className="cliponaut-page-shell"><section className="cliponaut-empty-state"><p className="cliponaut-panel-kicker">Founder-only local session</p><h1>Reference Style</h1><p>Approved source: <strong>Gym Outside Test</strong></p><p>Cliponaut derives a bounded colour treatment from the selected approved reference. Typography is creator-specified and preserves the source timeline and audio.</p>{!session ? <form onSubmit={create}><label htmlFor="reference-style-reference">Reference</label><select id="reference-style-reference" value={referenceId} onChange={(event) => setReferenceId(event.target.value)} disabled={!references?.length}>{references?.map((reference) => <option key={reference.id} value={reference.id}>{reference.label}</option>)}</select>{!references ? <p role="status">Loading approved references…</p> : null}<label htmlFor="reference-style-title">Animated title</label><input id="reference-style-title" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={48} required /><button disabled={busy || !references?.length}>{busy ? "Starting…" : "Apply Reference Style"}</button></form> : <><p>Revision {session.version} · {job?.status || "queued"}</p><button type="button" onClick={newEdit} disabled={busy}>New Edit</button>{job?.error ? <p role="alert">{job.error}</p> : null}{job?.outputUrl ? <><video controls src={job.outputUrl} style={{ width: "100%" }} /><p><a href={job.outputUrl} download="cliponaut-reference-style.mp4">Export MP4</a></p></> : null}<form onSubmit={revise}><label htmlFor="reference-style-request">Supported correction</label><input id="reference-style-request" value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Change A Trip to New York to Exploring Bangalore." required /><button disabled={busy || !request.trim()}>{busy ? "Saving…" : "Create revision"}</button></form></>}{error ? <p role="alert">{error}</p> : null}</section></main>;
 }
