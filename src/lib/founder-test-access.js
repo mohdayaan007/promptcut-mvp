@@ -10,6 +10,13 @@ function config() {
   return { enabled: enabled && secret.length >= MIN_SECRET_LENGTH, secret };
 }
 
+function cookieSecurityAttribute() {
+  // The local founder harness binds Next only to loopback and never runs in
+  // production. Browsers reject Secure cookies on its HTTP origin; all other
+  // modes retain the production Secure attribute.
+  return process.env.FOUNDER_REFERENCE_STYLE_LOCAL_MODE === "true" && process.env.NODE_ENV !== "production" ? "" : "; Secure";
+}
+
 function signature(value, secret) {
   return crypto.createHmac("sha256", secret).update(value).digest("base64url");
 }
@@ -45,9 +52,9 @@ export function grantFounderTestAccess(accessCode, now = Date.now()) {
   const expiresAt = now + MAX_COOKIE_AGE_SECONDS * 1000;
   const nonce = crypto.randomBytes(24).toString("base64url");
   const value = `${expiresAt}.${nonce}`;
-  return `${FOUNDER_TEST_COOKIE}=${value}.${signature(value, secret)}; Path=/; Max-Age=${MAX_COOKIE_AGE_SECONDS}; HttpOnly; Secure; SameSite=Strict`;
+  return `${FOUNDER_TEST_COOKIE}=${value}.${signature(value, secret)}; Path=/; Max-Age=${MAX_COOKIE_AGE_SECONDS}; HttpOnly${cookieSecurityAttribute()}; SameSite=Strict`;
 }
 
 export function clearFounderTestAccess() {
-  return `${FOUNDER_TEST_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict`;
+  return `${FOUNDER_TEST_COOKIE}=; Path=/; Max-Age=0; HttpOnly${cookieSecurityAttribute()}; SameSite=Strict`;
 }

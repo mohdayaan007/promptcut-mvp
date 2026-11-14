@@ -11,6 +11,22 @@ function setGate({ enabled, accessSecret = secret }) {
   else process.env.FOUNDER_TEST_ACCESS_SECRET = accessSecret;
 }
 
+function withEnvironment(values, callback) {
+  const previous = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
+  try {
+    for (const [key, value] of Object.entries(values)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    return callback();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 test("founder conversational access is default-off and uses an opaque secure HTTP-only cookie", async () => {
   setGate({ enabled: false, accessSecret: null });
   assert.equal(isFounderTestEnabled(), false);
@@ -30,6 +46,18 @@ test("founder conversational access is default-off and uses an opaque secure HTT
 
   setGate({ enabled: false });
   assert.equal(hasFounderTestAccess(request, now + 1), false, "disabling the environment gate immediately revokes access");
+});
+
+test("the loopback-only founder harness uses an HTTP cookie while all other modes remain Secure", () => {
+  setGate({ enabled: true });
+  withEnvironment({ NODE_ENV: "development", FOUNDER_REFERENCE_STYLE_LOCAL_MODE: "true" }, () => {
+    const localCookie = grantFounderTestAccess(secret);
+    assert.ok(localCookie?.includes("HttpOnly; SameSite=Strict"));
+    assert.ok(!localCookie?.includes("; Secure"));
+  });
+  withEnvironment({ NODE_ENV: "development", FOUNDER_REFERENCE_STYLE_LOCAL_MODE: undefined }, () => {
+    assert.ok(grantFounderTestAccess(secret)?.includes("; Secure"));
+  });
 });
 
 test("editing-session routes reject an ordinary request before reading session data", async () => {

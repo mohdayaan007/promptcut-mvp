@@ -1,12 +1,13 @@
 /**
  * Starts an isolated, localhost-only founder Reference Style application.
  * It creates no cloud resources and never reads production configuration.
- * The caller supplies FOUNDER_TEST_ACCESS_CODE in their shell; it is inherited
- * by child processes but is never written to disk or printed.
+ * A caller supplies FOUNDER_TEST_ACCESS_CODE once; the harness stores it only
+ * in its private root (owner-readable) for subsequent local restarts. It is
+ * never printed or exposed to the browser.
  */
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +23,7 @@ const sourcePath = "/Users/ayaan/Gym Outside Test.mp4";
 const chromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const children = [];
+const accessCodePath = path.join(root, "founder-access-code");
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -58,17 +60,34 @@ async function seed() {
     }
   } finally { await rm(scratch, { recursive: true, force: true }); }
 }
+async function founderAccessCode() {
+  const supplied = process.env.FOUNDER_TEST_ACCESS_CODE;
+  if (supplied) {
+    if (supplied.length < 32) throw new Error("FOUNDER_TEST_ACCESS_CODE must be at least 32 characters.");
+    await writeFile(accessCodePath, supplied, { encoding: "utf8", mode: 0o600 });
+    return supplied;
+  }
+  try {
+    const info = await lstat(accessCodePath);
+    if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o077) !== 0) throw new Error("unsafe");
+    const saved = await readFile(accessCodePath, "utf8");
+    if (saved.length < 32) throw new Error("invalid");
+    return saved;
+  } catch {
+    throw new Error("Set FOUNDER_TEST_ACCESS_CODE once (32+ characters). It will be saved locally with owner-only permissions for future launches.");
+  }
+}
 async function main() {
-  if (!process.env.FOUNDER_TEST_ACCESS_CODE || process.env.FOUNDER_TEST_ACCESS_CODE.length < 32) throw new Error("Set a 32+ character FOUNDER_TEST_ACCESS_CODE in your shell before launch.");
   await Promise.all([stat(sourcePath), stat(chromePath), ...FOUNDER_REFERENCE_STYLE_REFERENCES.map((asset) => stat(asset.path))]);
   await mkdir(root, { recursive: true, mode: 0o700 });
+  const accessCode = await founderAccessCode();
   const data = path.join(root, "postgres");
   try { await stat(path.join(data, "PG_VERSION")); } catch { await run("initdb", ["-D", data, "--auth=trust", "--encoding=UTF8"]); }
   const baseEnv = {
     ...process.env, NODE_ENV: "development", DATABASE_URL: `postgresql://127.0.0.1:${port}/cliponaut_founder_reference_style`,
     FOUNDER_REFERENCE_STYLE_LOCAL_MODE: "true", FOUNDER_REFERENCE_STYLE_LOCAL_ROOT: root,
     FOUNDER_REFERENCE_STYLE_STAGING_ENABLED: "true", FOUNDER_REFERENCE_STYLE_RUNTIME_ENVIRONMENT: "staging", FOUNDER_REFERENCE_STYLE_STAGING_BUCKET: "local-founder-reference-style-staging",
-    FOUNDER_CONVERSATIONAL_EDITING_ENABLED: "true", FOUNDER_TEST_ACCESS_SECRET: process.env.FOUNDER_TEST_ACCESS_CODE,
+    FOUNDER_CONVERSATIONAL_EDITING_ENABLED: "true", FOUNDER_TEST_ACCESS_SECRET: accessCode,
     STORAGE_BUCKET: "local-founder-reference-style-staging", STORAGE_ENDPOINT: "http://127.0.0.1/unused", STORAGE_REGION: "local", STORAGE_ACCESS_KEY_ID: "local", STORAGE_SECRET_ACCESS_KEY: "local", STORAGE_FORCE_PATH_STYLE: "true",
     JOB_WORKER_CONCURRENCY: "1", JOB_MAX_ATTEMPTS: "1", JOB_SCRATCH_DIRECTORY: path.join(root, "scratch"), PUPPETEER_EXECUTABLE_PATH: chromePath, NEXT_PUBLIC_FOUNDER_REFERENCE_STYLE_LOCAL_MODE: "true", PORT: String(appPort)
   };
@@ -78,7 +97,7 @@ async function main() {
   await seed();
   await run(path.join(repository, "node_modules/.bin/tsx"), ["scripts/migrate-jobs.js"], { cwd: repository, env: baseEnv });
   launch(path.join(repository, "node_modules/.bin/tsx"), ["scripts/cliponaut-worker.js"], baseEnv);
-  launch(path.join(repository, "node_modules/.bin/next"), ["dev", "-p", String(appPort)], baseEnv);
+  launch(path.join(repository, "node_modules/.bin/next"), ["dev", "-H", "127.0.0.1", "-p", String(appPort)], baseEnv);
   console.log(`Founder Reference Style is ready at http://127.0.0.1:${appPort}/founder-test`);
   const stop = () => { for (const child of children.reverse()) child.kill("SIGTERM"); };
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
