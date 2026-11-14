@@ -4,6 +4,8 @@ import path from "path";
 import { measureReferenceRgbFrame, summarizeReferenceFrameMetrics } from "@/lib/editor-core/reference-style-metrics";
 import { buildReferenceStyleTreatmentFilters, EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
 import { ReferenceStyleError } from "@/lib/editor-core/reference-style-matching";
+import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
+import { MAX_REFERENCE_VIDEO_DIMENSION, MAX_REFERENCE_VIDEO_DURATION_SECONDS, MAX_REFERENCE_VIDEO_PIXELS, REFERENCE_VIDEO_TYPES } from "@/lib/jobs/job-config";
 
 function run(cmd, args, { executionController, spawn = nodeSpawn, binary = false } = {}) {
   executionController?.throwIfCancelled();
@@ -37,6 +39,43 @@ export async function validateReferenceImageFile({ inputPath, type, executionCon
     throw new ReferenceStyleError("REFERENCE_INVALID_IMAGE", "This reference image could not be verified.");
   }
   return Object.freeze({ width: stream.width, height: stream.height });
+}
+
+/**
+ * Validates an already-private, worker-downloaded reference video. The client
+ * MIME declaration is checked, but FFprobe remains authoritative for the
+ * decoded stream and resource bounds.
+ */
+export async function validateReferenceVideoFile({ inputPath, type, executionController, probe = probeVideoFile }) {
+  if (!REFERENCE_VIDEO_TYPES.includes(type)) throw new ReferenceStyleError("REFERENCE_INVALID_VIDEO", "This reference video could not be verified.");
+  let media;
+  try { media = await probe(inputPath); }
+  catch (error) {
+    if (error instanceof MediaProbeError) throw new ReferenceStyleError("REFERENCE_INVALID_VIDEO", "This reference video could not be verified.");
+    throw error;
+  }
+  executionController?.throwIfCancelled();
+  if (!Number.isFinite(media.duration) || media.duration <= 0 || media.duration > MAX_REFERENCE_VIDEO_DURATION_SECONDS ||
+    !Number.isInteger(media.width) || !Number.isInteger(media.height) || media.width < 32 || media.height < 32 ||
+    media.width > MAX_REFERENCE_VIDEO_DIMENSION || media.height > MAX_REFERENCE_VIDEO_DIMENSION || media.width * media.height > MAX_REFERENCE_VIDEO_PIXELS) {
+    throw new ReferenceStyleError("REFERENCE_INVALID_VIDEO", "This reference video exceeds the supported 60-second 1080p limit.");
+  }
+  return Object.freeze({ duration: media.duration, width: media.width, height: media.height, frameRate: media.frameRate || null, hasAudio: Boolean(media.hasAudio), videoCodec: media.videoCodec || null });
+}
+
+/** Six evenly distributed server-owned JPEGs. They are scratch-only and never become browser-visible assets. */
+export async function extractReferenceVideoFrames({ inputPath, media, scratchDirectory, executionController, count = 6, runCommand = run }) {
+  if (!Number.isInteger(count) || count < 1 || count > 6) throw new Error("Reference video frame count is invalid");
+  if (!Number.isFinite(media?.duration) || media.duration <= 0 || media.duration > MAX_REFERENCE_VIDEO_DURATION_SECONDS) throw new Error("Reference video metadata is invalid");
+  await mkdir(scratchDirectory, { recursive: true, mode: 0o700 });
+  const frames = [];
+  for (let index = 0; index < count; index += 1) {
+    const timestamp = Math.max(0, Math.min(media.duration - 0.05, media.duration * ((index + 1) / (count + 1))));
+    const imagePath = path.join(scratchDirectory, `reference-video-${index + 1}.jpg`);
+    await runCommand("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-ss", String(timestamp), "-i", inputPath, "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "3", imagePath], { executionController });
+    frames.push(Object.freeze({ evidenceId: `reference-video-frame-${index + 1}`, timestamp, imagePath }));
+  }
+  return Object.freeze(frames);
 }
 
 /** Five evenly distributed samples, bounded to avoid decoding an unbounded image sequence. */

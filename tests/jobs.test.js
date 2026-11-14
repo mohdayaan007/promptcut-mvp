@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, MAX_REFERENCE_IMAGE_BYTES, validateJobRequest, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { assertCustomerReferenceVideoUploadAllowed, MAX_DIRECT_UPLOAD_FILE_BYTES, JOB_STATUSES, MAX_REFERENCE_IMAGE_BYTES, MAX_REFERENCE_VIDEO_BYTES, validateJobRequest, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { buildNormalizationFilter, createMediaProfile } from "@/lib/editor-core/media-profile";
 import { DIRECT_UPLOAD_CORS } from "@/lib/jobs/storage";
 import { safeSourceMetadata } from "@/lib/jobs/http";
@@ -33,7 +33,8 @@ import { extractVisualAdjustmentIntent, reconcileVisualAdjustments } from "@/lib
 import { CANONICAL_VISUAL_RECIPE_FIELDS, CANONICAL_VISUAL_RECIPE_LIMITS, NEUTRAL_VISUAL_RECIPE, STYLE_PROFILE_CATALOG, STYLE_PROFILE_CONSTRAINTS, STYLE_PROFILE_IDS, STYLE_PROFILE_STRENGTHS, compileStyleProfile, createCanonicalVisualRecipe, interpolateCanonicalVisualRecipe, resolveCurrentStyleProfile, resolveStyleProfile } from "@/lib/editor-core/style-profiles";
 import { createCanonicalReferenceStyleTreatment, REFERENCE_STYLE_TREATMENT_VERSION } from "@/lib/editor-core/reference-style-treatment";
 import { measureReferenceRgbFrame, REFERENCE_FRAME_METRICS_VERSION, summarizeReferenceFrameMetrics } from "@/lib/editor-core/reference-style-metrics";
-import { createReferenceStyleProxyFrames, extractTargetReferenceFrames } from "@/lib/editor-core/reference-style-media";
+import { createReferenceStyleProxyFrames, extractReferenceVideoFrames, extractTargetReferenceFrames, validateReferenceVideoFile } from "@/lib/editor-core/reference-style-media";
+import { hasApprovedReferenceVideoSafety } from "@/lib/jobs/reference-video-safety";
 import { extractStyleProfileIntent, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, requiresDelegatedStyleJudgment } from "@/lib/editor-core/style-intent";
 import { analyzeReferenceStyle, createReferenceStyleDiagnostic, createReferenceStyleFailureDiagnostic, deriveReferenceStyleTreatment, evaluateReferenceStyleProxy, isB2aProxyRefinementEnabled, refineReferenceStyleTreatment, REFERENCE_STYLE_SAFE_ERROR, ReferenceStyleError, referenceStyleAnalysisSchema, referenceStyleProxyEvaluationSchema, referenceStyleReferenceAnalysisSchema, referenceStyleTargetAnalysisSchema, requestsReferenceStyleMatch, TONAL_COLOR_BIASES, validateReferenceStyleAnalysis } from "@/lib/editor-core/reference-style-matching";
 import { analyzeTypographyReference, deriveTypographyTitleTreatment, extractTypographyReferenceSelector, reconcileTypographyReferenceTitlePlan, requestsTypographyReferenceMatch, selectTypographyReferenceCandidate, typographyReferenceAnalysisSchema, TypographyReferenceError, validateTypographyReferenceAnalysis } from "@/lib/editor-core/typography-reference-matching";
@@ -576,8 +577,13 @@ test("B2 Stage 0 RGB24 headroom metrics are deterministic and bounded", () => {
 
 test("B2A reference style contracts keep private image metadata separate and derive bounded target-aware treatments", () => {
   assert.deepEqual(validateReferenceManifest({ name: "look.jpg", type: "image/jpeg", size: 42 }), { kind: "image", name: "look.jpg", type: "image/jpeg", size: 42 });
+  const referenceVideo = validateReferenceManifest({ name: "look.mp4", type: "video/mp4", size: 42 });
+  assert.deepEqual(referenceVideo, { kind: "video", name: "look.mp4", type: "video/mp4", size: 42 });
+  assert.throws(() => assertCustomerReferenceVideoUploadAllowed(referenceVideo), /dedicated safety screening/);
+  assert.throws(() => validateReferenceManifest({ name: "look.mp4", type: "video/mp4", size: MAX_REFERENCE_VIDEO_BYTES + 1 }), /250 MB/);
+  assert.throws(() => validateReferenceManifest({ name: "look.avi", type: "video/x-msvideo", size: 42 }), /MP4, MOV, or WebM/);
   assert.equal(validateReferenceManifest(null), null);
-  assert.throws(() => validateReferenceManifest({ name: "look.gif", type: "image/gif", size: 42 }), /JPG, PNG, or WebP/);
+  assert.throws(() => validateReferenceManifest({ name: "look.gif", type: "image/gif", size: 42 }), /JPG, PNG, WebP, MP4, MOV, or WebM/);
   assert.throws(() => validateReferenceManifest({ name: "look.jpg", type: "image/jpeg", size: MAX_REFERENCE_IMAGE_BYTES + 1 }), /25 MB/);
   assert.equal(requestsReferenceStyleMatch("Make my video look like this.", true), true);
   assert.equal(requestsReferenceStyleMatch("Make my video look like this.", false), false);
@@ -607,6 +613,46 @@ test("B2A reference style contracts keep private image metadata separate and der
   assert.deepEqual(diagnostic.recipe, treatment.recipe);
   assert.ok(diagnostic.filters.every((filter) => typeof filter === "string"));
   assert.doesNotMatch(JSON.stringify(diagnostic), /uri|path|secret|token|https?:/i);
+});
+
+test("customer reference-video evidence requires dedicated server-owned CSAM coverage", () => {
+  const approved = {
+    kind: "video",
+    safety: { version: 1, decision: "approved", evidenceId: "screening_evidence_1234", coveredCategories: ["sexual_content", "violence", "csam"] }
+  };
+  assert.equal(hasApprovedReferenceVideoSafety(approved), true);
+  assert.equal(hasApprovedReferenceVideoSafety({ ...approved, safety: { ...approved.safety, coveredCategories: ["sexual_content", "violence", "minors"] } }), false, "generic minor detection is not CSAM coverage");
+  assert.equal(hasApprovedReferenceVideoSafety({ ...approved, safety: { ...approved.safety, evidenceId: "short" } }), false);
+  assert.equal(hasApprovedReferenceVideoSafety({ kind: "video" }), false);
+});
+
+test("customer reference-video media validation and frame extraction stay bounded", async () => {
+  const media = await validateReferenceVideoFile({
+    inputPath: "/private/reference.mp4",
+    type: "video/mp4",
+    probe: async () => ({ duration: 42, width: 1280, height: 720, frameRate: 30, hasAudio: true, videoCodec: "h264" })
+  });
+  assert.deepEqual(media, { duration: 42, width: 1280, height: 720, frameRate: 30, hasAudio: true, videoCodec: "h264" });
+  await assert.rejects(
+    validateReferenceVideoFile({ inputPath: "/private/reference.mp4", type: "video/mp4", probe: async () => ({ duration: 61, width: 1280, height: 720 }) }),
+    /60-second 1080p/
+  );
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "cliponaut-reference-video-"));
+  try {
+    const commands = [];
+    const frames = await extractReferenceVideoFrames({
+      inputPath: "/private/reference.mp4", media, scratchDirectory: scratch,
+      runCommand: async (command, args) => { commands.push({ command, args }); return ""; }
+    });
+    assert.equal(frames.length, 6);
+    assert.deepEqual(frames.map((frame) => frame.evidenceId), ["reference-video-frame-1", "reference-video-frame-2", "reference-video-frame-3", "reference-video-frame-4", "reference-video-frame-5", "reference-video-frame-6"]);
+    assert.ok(frames.every((frame) => frame.timestamp > 0 && frame.timestamp < media.duration));
+    assert.equal(commands.length, 6);
+    assert.ok(commands.every(({ command, args }) => command === "ffmpeg" && args.includes("scale=640:-2")));
+    await assert.rejects(extractReferenceVideoFrames({ inputPath: "/private/reference.mp4", media, scratchDirectory: scratch, count: 7 }), /frame count/);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 });
 
 test("B2A reference-directed signatures retain strong bounded authority while skin protects only hue axes", () => {
