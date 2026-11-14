@@ -32,6 +32,7 @@ export function measureReferenceRgbFrame(frame) {
   let redTotal = 0;
   let greenTotal = 0;
   let blueTotal = 0;
+  const bands = [{ count: 0, red: 0, blue: 0 }, { count: 0, red: 0, blue: 0 }, { count: 0, red: 0, blue: 0 }];
   const pixelCount = frame.length / 3;
 
   for (let index = 0; index < frame.length; index += 3) {
@@ -40,6 +41,8 @@ export function measureReferenceRgbFrame(frame) {
     const blue = frame[index + 2];
     redTotal += red; greenTotal += green; blueTotal += blue;
     const lumaByte = Math.round((0.2126 * red) + (0.7152 * green) + (0.0722 * blue));
+    const band = bands[lumaByte <= 64 ? 0 : lumaByte <= 191 ? 1 : 2];
+    band.count += 1; band.red += red; band.blue += blue;
     const maximum = Math.max(red, green, blue);
     const minimum = Math.min(red, green, blue);
     lumaHistogram[lumaByte] += 1;
@@ -62,7 +65,10 @@ export function measureReferenceRgbFrame(frame) {
     saturationIndex: saturationTotal / pixelCount,
     redMean: redTotal / pixelCount / 255,
     greenMean: greenTotal / pixelCount / 255,
-    blueMean: blueTotal / pixelCount / 255
+    blueMean: blueTotal / pixelCount / 255,
+    shadowWarmth: bands[0].count ? (bands[0].red - bands[0].blue) / bands[0].count / 255 : 0,
+    midtoneWarmth: bands[1].count ? (bands[1].red - bands[1].blue) / bands[1].count / 255 : 0,
+    highlightWarmth: bands[2].count ? (bands[2].red - bands[2].blue) / bands[2].count / 255 : 0
   });
 }
 
@@ -77,11 +83,11 @@ export function summarizeReferenceFrameMetrics(measurements) {
   if (!Array.isArray(measurements) || measurements.length === 0) {
     throw metricsError("measurements must be a non-empty array");
   }
-  const fields = ["lumaP05", "lumaP50", "lumaP95", "lumaP99", "nearBlackFraction", "nearWhiteFraction", "saturationIndex", "redMean", "greenMean", "blueMean"];
+  const fields = ["lumaP05", "lumaP50", "lumaP95", "lumaP99", "nearBlackFraction", "nearWhiteFraction", "saturationIndex", "redMean", "greenMean", "blueMean", "shadowWarmth", "midtoneWarmth", "highlightWarmth"];
   for (const measurement of measurements) {
     if (!measurement || typeof measurement !== "object") throw metricsError("measurement must be an object");
     for (const field of fields) {
-      if (!Number.isFinite(measurement[field]) || measurement[field] < 0 || measurement[field] > 1) {
+      if (!Number.isFinite(measurement[field]) || measurement[field] < (field.endsWith("Warmth") ? -1 : 0) || measurement[field] > 1) {
         throw metricsError(`${field} must be a finite number between 0 and 1`);
       }
     }

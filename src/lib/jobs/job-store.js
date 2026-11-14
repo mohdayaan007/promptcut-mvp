@@ -664,7 +664,7 @@ export async function createFounderReferenceStyleRevision(session, { expectedVer
     const reference = base.rows[0]?.reference;
     if (!reference || reference.kind !== "founder_reference_style_v1") throw new Error("Founder Reference Style source is unavailable");
     const id = newId(); const accessToken = newToken(); const version = expectedVersion + 1;
-    const nextReference = { ...reference, composition };
+    const nextReference = { ...reference, profile: composition.profile, composition };
     const result = await client.query(`INSERT INTO edit_jobs (id,access_token,status,prompt,export_quality,sources,reference,session_id)
       VALUES ($1,$2,'queued',$3,'standard',$4::jsonb,$5::jsonb,$6) RETURNING *`, [id, accessToken, prompt, JSON.stringify(base.rows[0].sources), JSON.stringify(nextReference), session.id]);
     await client.query("INSERT INTO editing_versions (session_id,version,job_id,prompt,status) VALUES ($1,$2,$3,$4,'queued')", [session.id, version, id, prompt]);

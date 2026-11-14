@@ -1,10 +1,10 @@
 import { createCanonicalReferenceStyleTreatment } from "@/lib/editor-core/reference-style-treatment";
 
 const bounded = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
-const needed = ["lumaP05", "lumaP50", "lumaP95", "lumaP99", "nearBlackFraction", "nearWhiteFraction", "saturationIndex", "redMean", "greenMean", "blueMean"];
+const needed = ["lumaP05", "lumaP50", "lumaP95", "lumaP99", "nearBlackFraction", "nearWhiteFraction", "saturationIndex", "redMean", "greenMean", "blueMean", "shadowWarmth", "midtoneWarmth", "highlightWarmth"];
 
 function metrics(value, label) {
-  if (!value || typeof value !== "object" || needed.some((key) => !Number.isFinite(value[key]) || value[key] < 0 || value[key] > 1)) {
+  if (!value || typeof value !== "object" || needed.some((key) => !Number.isFinite(value[key]) || value[key] < (key.endsWith("Warmth") ? -1 : 0) || value[key] > 1)) {
     throw new Error(`Founder reference colour evidence is invalid: ${label}`);
   }
   return value;
@@ -14,9 +14,9 @@ function level(value, low, high) { return value < low ? "low" : value > high ? "
 function warmth(value) { return value > 0.025 ? "warm" : value < -0.025 ? "cool" : "neutral"; }
 
 /**
- * Maps only server-measured, aggregate RGB statistics into the existing
- * canonical grading envelope. It deliberately does not claim scene matching,
- * skin selection, LUT recovery, or reference typography inference.
+ * Transfers server-measured reference colour intent into the existing bounded
+ * renderer controls. Deliberate colour casts and black/highlight character
+ * retain authority; limits prevent broken channels and non-monotonic curves.
  */
 export function deriveFounderReferenceColourTreatment({ referenceMetrics, sourceMetrics }) {
   const reference = metrics(referenceMetrics, "reference metrics");
@@ -28,17 +28,19 @@ export function deriveFounderReferenceColourTreatment({ referenceMetrics, source
   const referenceGreen = reference.greenMean - ((reference.redMean + reference.blueMean) / 2);
   const sourceGreen = source.greenMean - ((source.redMean + source.blueMean) / 2);
   const recipe = {
-    brightness: bounded((reference.lumaP50 - source.lumaP50) * 0.32, -0.045, 0.045),
-    contrast: bounded((referenceRange - sourceRange) * 0.22, -0.055, 0.055),
-    saturation: bounded((reference.saturationIndex - source.saturationIndex) * 0.22, -0.07, 0.07),
-    temperature: bounded((referenceWarmth - sourceWarmth) * 0.22, -0.065, 0.065),
-    tint: bounded((referenceGreen - sourceGreen) * 0.16, -0.035, 0.035),
-    shadows: bounded((reference.lumaP05 - source.lumaP05) * 0.16, -0.04, 0.04),
-    highlights: bounded((reference.lumaP95 - source.lumaP95) * 0.13, -0.035, 0.035),
-    vibrance: bounded((reference.saturationIndex - source.saturationIndex) * 0.12, -0.04, 0.04),
-    shadowTemperature: 0,
-    midtoneTemperature: bounded((referenceWarmth - sourceWarmth) * 0.1, -0.025, 0.025),
-    highlightTemperature: 0
+    brightness: bounded((reference.lumaP50 - source.lumaP50) * 0.85, -0.18, 0.18),
+    contrast: bounded((referenceRange - sourceRange) * 0.9, -0.32, 0.32),
+    saturation: bounded((reference.saturationIndex - source.saturationIndex) * 0.85, -0.35, 0.35),
+    temperature: bounded((referenceWarmth - sourceWarmth) * 0.95, -0.35, 0.35),
+    tint: bounded((referenceGreen - sourceGreen) * 0.7, -0.18, 0.18),
+    shadows: bounded((reference.lumaP05 - source.lumaP05) * 0.55, -0.2, 0.2),
+    highlights: bounded((reference.lumaP95 - source.lumaP95) * 0.55, -0.18, 0.18),
+    vibrance: bounded((reference.saturationIndex - source.saturationIndex) * 0.5, -0.18, 0.18),
+    blackLift: bounded((source.nearBlackFraction - reference.nearBlackFraction) * 0.8, -0.35, 0.35),
+    midtoneGamma: bounded((reference.lumaP50 - source.lumaP50) * 0.7, -0.3, 0.3),
+    shadowTemperature: bounded((reference.shadowWarmth - source.shadowWarmth) * 1.1, -0.35, 0.35),
+    midtoneTemperature: bounded((reference.midtoneWarmth - source.midtoneWarmth) * 1.1, -0.35, 0.35),
+    highlightTemperature: bounded((reference.highlightWarmth - source.highlightWarmth) * 1.1, -0.35, 0.35)
   };
   return createCanonicalReferenceStyleTreatment({ version: 2, recipe });
 }
