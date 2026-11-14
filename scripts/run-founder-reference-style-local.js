@@ -55,7 +55,7 @@ async function seed() {
       const referenceEvidence = await extractTargetReferenceFrames({ inputPath: definition.path, duration: reference.duration, scratchDirectory: path.join(scratch, definition.id), count: 5 });
       const profile = JSON.parse(JSON.stringify(createFounderStyleProfileFromColourEvidence({ referenceAsset: reference, sourceMetrics: sourceEvidence.metrics, referenceMetrics: referenceEvidence.metrics })));
       if (process.env.FOUNDER_MKL_LOCAL_EVALUATION_ENABLED === "true") profile.colour.algorithm = "mkl_local_evaluation";
-      const manifest = validateFounderReferenceStyleManifest({ version: "founder-reference-style-staging/1", reference, source, profile });
+      const manifest = validateFounderReferenceStyleManifest({ version: "founder-reference-style-staging/1", reference, source, profile }, { allowMklLocal: process.env.FOUNDER_MKL_LOCAL_EVALUATION_ENABLED === "true" });
       await writeFile(path.join(root, `founder-reference-style/v1/style-profile-${definition.id}.json`), JSON.stringify(profile, null, 2), { mode: 0o600 });
       await writeFile(path.join(root, `founder-reference-style/v1/manifest-${definition.id}.json`), JSON.stringify(manifest, null, 2), { mode: 0o600 });
     }

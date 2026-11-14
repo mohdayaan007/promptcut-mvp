@@ -35,23 +35,23 @@ function validateAsset(value, role) {
   return { id: value.id, key: value.key, type: value.type, sha256: value.sha256, size: value.size, duration: value.duration, width: value.width, height: value.height, hasAudio: Boolean(value.hasAudio) };
 }
 
-export function validateFounderReferenceStyleProfile(value, referenceAsset) {
+export function validateFounderReferenceStyleProfile(value, referenceAsset, { allowMklLocal = false } = {}) {
   if (!plain(value) || value.version !== "founder-reference-style-profile/1" || value.id !== FOUNDER_REFERENCE_STYLE_ASSETS.profile.id || value.referenceAssetId !== referenceAsset.id || value.referenceSha256 !== referenceAsset.sha256) fail("profile identity");
   if (!plain(value.observation) || !warmth.has(value.observation.warmth) || !saturation.has(value.observation.saturation) || !contrast.has(value.observation.contrast) || !typography.has(value.observation.typography) || !animation.has(value.observation.animation) || !Array.isArray(value.observation.uncertainty)) fail("profile observation");
   if (!plain(value.colour) || !confidence.has(value.colour.confidence) || !Array.isArray(value.colour.limitations)) fail("profile colour evidence");
   const treatment = createCanonicalReferenceStyleTreatment(value.colour.treatment);
   const algorithm = value.colour.algorithm || "ffmpeg";
   if (!colourAlgorithms.has(algorithm)) fail("profile colour algorithm");
-  if (algorithm === "mkl_local_evaluation" && (process.env.FOUNDER_REFERENCE_STYLE_LOCAL_MODE !== "true" || process.env.FOUNDER_MKL_LOCAL_EVALUATION_ENABLED !== "true")) fail("profile colour algorithm");
+  if (algorithm === "mkl_local_evaluation" && !allowMklLocal && (process.env.FOUNDER_REFERENCE_STYLE_LOCAL_MODE !== "true" || process.env.FOUNDER_MKL_LOCAL_EVALUATION_ENABLED !== "true")) fail("profile colour algorithm");
   return immutable({ version: value.version, id: value.id, referenceAssetId: value.referenceAssetId, referenceSha256: value.referenceSha256, observation: { ...value.observation, uncertainty: value.observation.uncertainty.slice(0, 6).map(String) }, colour: { treatment, algorithm, confidence: value.colour.confidence, limitations: value.colour.limitations.slice(0, 6).map(String) }, typography: { enabled: value.observation.typography !== "none", treatment: value.observation.animation, confidence: value.typography?.confidence && confidence.has(value.typography.confidence) ? value.typography.confidence : "low", limitations: Array.isArray(value.typography?.limitations) ? value.typography.limitations.slice(0, 6).map(String) : ["Typography is generic creator-specified treatment, not frame-accurate reference matching."] } });
 }
 
 /** Only the private staging-ingestion command may create this manifest. */
-export function validateFounderReferenceStyleManifest(value) {
+export function validateFounderReferenceStyleManifest(value, { allowMklLocal = false } = {}) {
   if (!plain(value) || value.version !== FOUNDER_REFERENCE_STYLE_STAGING_VERSION) fail("manifest version");
   const reference = validateAsset(value.reference, "reference");
   const source = validateAsset(value.source, "source");
-  const profile = validateFounderReferenceStyleProfile(value.profile, reference);
+  const profile = validateFounderReferenceStyleProfile(value.profile, reference, { allowMklLocal });
   return immutable({ version: value.version, reference, source, profile });
 }
 

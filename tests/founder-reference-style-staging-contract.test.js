@@ -19,6 +19,9 @@ test("founder staging rejects substituted paths, asset IDs, and unbound profiles
   assert.throws(() => validateFounderReferenceStyleManifest(replaced), /source asset identity/);
   const unbound = manifest(); unbound.profile.referenceSha256 = "b".repeat(64);
   assert.throws(() => validateFounderReferenceStyleManifest(unbound), /profile identity/);
+  const mkl = manifest(); mkl.profile.colour.algorithm = "mkl_local_evaluation";
+  assert.throws(() => validateFounderReferenceStyleManifest(mkl), /profile colour algorithm/);
+  assert.equal(validateFounderReferenceStyleManifest(mkl, { allowMklLocal: true }).profile.colour.algorithm, "mkl_local_evaluation");
 });
 
 test("founder staging requires an explicitly isolated staging bucket", () => {
