@@ -18,6 +18,26 @@ FRAME_BYTES = WIDTH * HEIGHT * 3
 SAMPLE_RATIOS = (0.10, 0.30, 0.50, 0.70, 0.90)
 
 
+def release_matcher(matcher):
+    """Release ColorMatcher's per-transfer self-reference once its output is safe.
+
+    ColorMatcher stores bound matcher methods in ``_funs``, ``_fun_dict`` and
+    ``_fun_call``.  Those methods keep the matcher alive through a reference
+    cycle, which in turn retains full-resolution float64 source and reference
+    arrays until Python's cyclic collector eventually runs.  A video render
+    creates one matcher per frame, so delayed collection can retain many GiB
+    of completed frames.
+
+    This only clears bookkeeping after the original transfer result has been
+    copied to the uint8 frame sent to FFmpeg; it does not change the original
+    MKL calculation or reuse a transform between frames.
+    """
+    if matcher is not None:
+        matcher._funs.clear()
+        matcher._fun_dict.clear()
+        matcher._fun_call = None
+
+
 def run(args, capture=False):
     return subprocess.check_output(args) if capture else subprocess.check_call(args)
 
@@ -47,34 +67,41 @@ def mosaic(path, duration):
 
 def transformation(source_samples, reference_samples):
     matcher = ColorMatcher()
-    # Same evaluator and MKL method used by the original acceptance comparison.
-    matcher.transfer(src=source_samples, ref=reference_samples, method="mkl")
-    matrix = np.asarray(matcher.transfer_mat, dtype=np.float64)
-    source_mean = np.asarray(matcher.mu_r[:, 0], dtype=np.float64)
-    reference_mean = np.asarray(matcher.mu_z[:, 0], dtype=np.float64)
-    if matrix.shape != (3, 3) or source_mean.shape != (3,) or reference_mean.shape != (3,) or not (np.isfinite(matrix).all() and np.isfinite(source_mean).all() and np.isfinite(reference_mean).all()):
-        raise RuntimeError("non-finite MKL transform")
-    rank = np.linalg.matrix_rank(matrix)
-    condition = float(np.linalg.cond(matrix))
-    if rank != 3 or not np.isfinite(condition) or condition > 1e12:
-        raise RuntimeError("degenerate MKL covariance transform")
+    try:
+        # Same evaluator and MKL method used by the original acceptance comparison.
+        matcher.transfer(src=source_samples, ref=reference_samples, method="mkl")
+        matrix = np.asarray(matcher.transfer_mat, dtype=np.float64)
+        source_mean = np.asarray(matcher.mu_r[:, 0], dtype=np.float64)
+        reference_mean = np.asarray(matcher.mu_z[:, 0], dtype=np.float64)
+        if matrix.shape != (3, 3) or source_mean.shape != (3,) or reference_mean.shape != (3,) or not (np.isfinite(matrix).all() and np.isfinite(source_mean).all() and np.isfinite(reference_mean).all()):
+            raise RuntimeError("non-finite MKL transform")
+        rank = np.linalg.matrix_rank(matrix)
+        condition = float(np.linalg.cond(matrix))
+        if rank != 3 or not np.isfinite(condition) or condition > 1e12:
+            raise RuntimeError("degenerate MKL covariance transform")
+    finally:
+        release_matcher(matcher)
 
     def apply(image):
         # Keep the original ColorMatcher MKL evaluator authoritative. Running
         # it on the decoded source frame preserves source detail instead of
         # discarding it before the colour transfer.
-        with np.errstate(over="raise", invalid="raise", divide="raise"):
-            matcher = ColorMatcher()
-            transformed = np.asarray(matcher.transfer(src=image.astype(np.float64), ref=reference_samples, method="mkl"), dtype=np.float64)
-        frame_matrix = np.asarray(matcher.transfer_mat, dtype=np.float64)
-        frame_source_mean = np.asarray(matcher.mu_r[:, 0], dtype=np.float64)
-        frame_reference_mean = np.asarray(matcher.mu_z[:, 0], dtype=np.float64)
-        frame_condition = float(np.linalg.cond(frame_matrix))
-        if frame_matrix.shape != (3, 3) or frame_source_mean.shape != (3,) or frame_reference_mean.shape != (3,) or not (np.isfinite(frame_matrix).all() and np.isfinite(frame_source_mean).all() and np.isfinite(frame_reference_mean).all()) or np.linalg.matrix_rank(frame_matrix) != 3 or not np.isfinite(frame_condition) or frame_condition > 1e12:
-            raise RuntimeError("invalid MKL frame covariance transform")
-        if transformed.shape != image.shape or not np.isfinite(transformed).all():
-            raise RuntimeError("non-finite MKL frame output")
-        return np.clip(transformed, 0, 255).astype(np.uint8)
+        matcher = None
+        try:
+            with np.errstate(over="raise", invalid="raise", divide="raise"):
+                matcher = ColorMatcher()
+                transformed = np.asarray(matcher.transfer(src=image.astype(np.float64), ref=reference_samples, method="mkl"), dtype=np.float64)
+            frame_matrix = np.asarray(matcher.transfer_mat, dtype=np.float64)
+            frame_source_mean = np.asarray(matcher.mu_r[:, 0], dtype=np.float64)
+            frame_reference_mean = np.asarray(matcher.mu_z[:, 0], dtype=np.float64)
+            frame_condition = float(np.linalg.cond(frame_matrix))
+            if frame_matrix.shape != (3, 3) or frame_source_mean.shape != (3,) or frame_reference_mean.shape != (3,) or not (np.isfinite(frame_matrix).all() and np.isfinite(frame_source_mean).all() and np.isfinite(frame_reference_mean).all()) or np.linalg.matrix_rank(frame_matrix) != 3 or not np.isfinite(frame_condition) or frame_condition > 1e12:
+                raise RuntimeError("invalid MKL frame covariance transform")
+            if transformed.shape != image.shape or not np.isfinite(transformed).all():
+                raise RuntimeError("non-finite MKL frame output")
+            return np.clip(transformed, 0, 255).astype(np.uint8)
+        finally:
+            release_matcher(matcher)
     return apply, condition
 
 
