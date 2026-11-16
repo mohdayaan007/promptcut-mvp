@@ -3,6 +3,7 @@ import { jsonError, PublicRequestError } from "@/lib/jobs/http";
 import { customerMklRuntimeConfig } from "@/lib/editor-core/prepared-mkl-runtime";
 import { customerSessionToken } from "@/lib/customer-auth";
 import { getCustomerSession, isFounderSubscriber } from "@/lib/jobs/job-store";
+import { founderTypographyV1aEnabled } from "@/lib/editor-core/typography-v1a";
 
 export const runtime = "nodejs";
 
@@ -15,10 +16,18 @@ export async function GET(req) {
       const session = await getCustomerSession(customerSessionToken(req));
       founderAuthorized = Boolean(session && await isFounderSubscriber(session.subscriber_id));
     }
+    const session = await getCustomerSession(customerSessionToken(req));
+    const typographyFounderAuthorized = Boolean(session && await isFounderSubscriber(session.subscriber_id));
+    const typographyV1a = founderTypographyV1aEnabled({ founderAuthorized: typographyFounderAuthorized });
     customerMklRuntimeConfig({ founderAuthorized });
-    return Response.json({ localReferenceVideoMkl: true }, { headers: { "Cache-Control": "private, no-store" } });
+    return Response.json({ localReferenceVideoMkl: true, typographyV1a }, { headers: { "Cache-Control": "private, no-store" } });
   } catch {
-    return Response.json({ localReferenceVideoMkl: false }, { headers: { "Cache-Control": "private, no-store" } });
+    let typographyV1a = false;
+    try {
+      const session = await getCustomerSession(customerSessionToken(req));
+      typographyV1a = founderTypographyV1aEnabled({ founderAuthorized: Boolean(session && await isFounderSubscriber(session.subscriber_id)) });
+    } catch { /* fail closed */ }
+    return Response.json({ localReferenceVideoMkl: false, typographyV1a }, { headers: { "Cache-Control": "private, no-store" } });
   }
 }
 

@@ -2,6 +2,7 @@ import { abortMultipartUpload, completeMultipartUpload, headObject } from "@/lib
 import { createEditingSession, getAuthorizedJob, queueJob } from "@/lib/jobs/job-store";
 import { jsonError, jobToken, PublicRequestError, safeJobResponse } from "@/lib/jobs/http";
 import { assertCustomerReferenceVideoUploadAllowed, validateJobRequest, referenceColourProfilesMatch, validateReferenceColourProfile, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { validateTypographyV1a } from "@/lib/editor-core/typography-v1a";
 import { hasFounderTestAccess } from "@/lib/founder-test-access";
 import { authorizePaidJob } from "@/lib/paid-editing";
 import { paidEditingEnforced } from "@/lib/jobs/job-store";
@@ -13,7 +14,7 @@ export async function POST(req, { params }) {
     const { id } = await params;
     const job = await authorizePaidJob(req, id, jobToken(req)) || await getAuthorizedJob(id, jobToken(req));
     if (!job || job.status !== "uploading") return jsonError(new PublicRequestError("Upload session was not found", 404));
-    const { prompt, exportQuality = "standard", files, reference: submittedReference, referenceProfile } = await req.json();
+    const { prompt, exportQuality = "standard", files, reference: submittedReference, referenceProfile, typographyV1a: submittedTypographyV1a } = await req.json();
     if (!Array.isArray(files) || files.length !== job.sources.length) return jsonError(new PublicRequestError("Upload completion did not match the selected videos"));
     const sources = job.sources.map((source, index) => {
       const submitted = files[index];
@@ -41,6 +42,9 @@ export async function POST(req, { params }) {
       const validatedReference = reference?.kind === "video_profile" ? null : validateReferenceManifest(reference);
       if (reference?.kind === "video_profile") validateReferenceColourProfile(reference.profile); else assertCustomerReferenceVideoUploadAllowed(validatedReference);
       validateJobRequest({ prompt, exportQuality, sources });
+      const storedTypographyV1a = validateTypographyV1a(job.typographyV1a);
+      const requestedTypographyV1a = validateTypographyV1a(submittedTypographyV1a);
+      if (JSON.stringify(storedTypographyV1a) !== JSON.stringify(requestedTypographyV1a)) throw new Error("Upload completion did not match the selected export font");
     } catch (error) { throw new PublicRequestError(error.message); }
     for (const source of sources) {
       await completeMultipartUpload({ key: source.key, uploadId: source.uploadId, parts: source.parts });
@@ -56,7 +60,7 @@ export async function POST(req, { params }) {
       delete reference.uploadId;
       delete reference.parts;
     }
-    const queued = await queueJob(id, { prompt: prompt.trim(), exportQuality, sources, reference });
+    const queued = await queueJob(id, { prompt: prompt.trim(), exportQuality, sources, reference, typographyV1a: job.typographyV1a });
     if (!queued) throw new PublicRequestError("This upload session can no longer be queued");
     // Google-owned jobs retain subscriber ownership even in an unpaid test environment.
     const session = paidEditingEnforced() || job.subscriberId

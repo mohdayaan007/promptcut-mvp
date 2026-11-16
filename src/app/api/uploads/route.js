@@ -4,6 +4,7 @@ import { jsonError, PublicRequestError, safeJobResponse } from "@/lib/jobs/http"
 import { assertCustomerReferenceVideoUploadAllowed, MULTIPART_PART_SIZE_BYTES, referenceRequiresMultipartUpload, validateReferenceColourProfile, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { authorizePaidEdit } from "@/lib/paid-editing";
 import { customerMklRuntimeConfig } from "@/lib/editor-core/prepared-mkl-runtime";
+import { assertFounderTypographyV1a, validateTypographyV1a } from "@/lib/editor-core/typography-v1a";
 
 export const runtime = "nodejs";
 
@@ -14,8 +15,9 @@ export async function POST(req) {
   let authorization;
   try {
     authorization = await authorizePaidEdit(req);
-    const { files, reference: requestedReference, referenceProfile } = await req.json();
+    const { files, reference: requestedReference, referenceProfile, typographyV1a: requestedTypographyV1a } = await req.json();
     let initialReference;
+    let typographyV1a;
     try {
       validateUploadManifest(files);
       initialReference = validateReferenceManifest(requestedReference);
@@ -24,11 +26,13 @@ export async function POST(req) {
         // The client-side picker is not an authorization boundary.
         customerMklRuntimeConfig({ founderAuthorized: authorization.founderUnlimited === true });
       }
+      typographyV1a = validateTypographyV1a(requestedTypographyV1a);
+      if (typographyV1a) assertFounderTypographyV1a({ founderAuthorized: authorization.founderUnlimited === true });
     } catch (error) { throw new PublicRequestError(error.message); }
     console.info("upload-session: request validated", { sourceCount: files.length });
     const initialSources = files.map((file, index) => ({ index, name: file.name, type: file.type, size: file.size }));
     stage = "database job creation";
-    const created = await createUploadJob(initialSources, initialReference, { subscriberId: authorization.subscriberId, reservationId: authorization.reservationId });
+    const created = await createUploadJob(initialSources, initialReference, { subscriberId: authorization.subscriberId, reservationId: authorization.reservationId, typographyV1a });
     job = created.job;
     console.info("upload-session: database job created", { jobId: job.id, sourceCount: initialSources.length });
     const sources = [];
@@ -51,7 +55,7 @@ export async function POST(req) {
       reference = { ...initialReference, key, uploadId, parts: [] };
     }
     stage = "database upload-session update";
-    await setUploadSources(job.id, sources, reference);
+    await setUploadSources(job.id, sources, reference, typographyV1a);
     console.info("upload-session: ready", { jobId: job.id, sourceCount: sources.length });
     return Response.json({
       ...safeJobResponse(job), accessToken: created.accessToken, partSize: MULTIPART_PART_SIZE_BYTES,

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS edit_jobs (
   export_quality TEXT NOT NULL DEFAULT 'standard' CHECK (export_quality IN ('standard','4k')),
   sources JSONB NOT NULL DEFAULT '[]'::jsonb,
   reference JSONB,
+  typography_v1a JSONB,
   output_key TEXT,
   error_message TEXT,
   attempt_count INTEGER NOT NULL DEFAULT 0,
@@ -167,7 +168,7 @@ function newToken() { return crypto.randomBytes(32).toString("base64url"); }
 function safeRow(row) {
   return {
     id: row.id, status: row.status, prompt: row.prompt, exportQuality: row.export_quality,
-    sources: row.sources, reference: row.reference, outputKey: row.output_key, errorMessage: row.error_message,
+    sources: row.sources, reference: row.reference, typographyV1a: row.typography_v1a, outputKey: row.output_key, errorMessage: row.error_message,
     attemptCount: row.attempt_count, workerId: row.worker_id, claimedAt: row.claimed_at,
     heartbeatAt: row.heartbeat_at, sourceCleanedAt: row.source_cleaned_at,
     outputCleanedAt: row.output_cleaned_at, sessionId: row.session_id, editPlan: row.edit_plan, sourceCatalog: row.source_catalog,
@@ -179,6 +180,7 @@ function safeRow(row) {
 export async function migrateEditJobs() {
   await database().query(EDIT_JOBS_SCHEMA);
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS reference JSONB;");
+  await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS typography_v1a JSONB;");
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS session_id UUID;");
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS edit_plan JSONB;");
   await database().query("ALTER TABLE edit_jobs ADD COLUMN IF NOT EXISTS source_catalog JSONB;");
@@ -676,8 +678,8 @@ export async function createConversationJob(session, { prompt, plan, confirmatio
     const source = await client.query("SELECT * FROM edit_jobs WHERE id=$1", [locked.rows[0].source_job_id]);
     if (!source.rows[0]) throw new Error("Original media is no longer available");
     const id = newId(); const accessToken = newToken(); const version = locked.rows[0].latest_version + 1;
-    const result = await client.query(`INSERT INTO edit_jobs (id,access_token,status,prompt,export_quality,sources,reference,session_id,edit_plan,source_catalog,subscriber_id,quota_reservation_id)
-      VALUES ($1,$2,'queued',$3,$4,$5::jsonb,$6::jsonb,$7,$8::jsonb,$9::jsonb,$10,$11) RETURNING *`, [id, accessToken, prompt, source.rows[0].export_quality, JSON.stringify(source.rows[0].sources), JSON.stringify(source.rows[0].reference), session.id, JSON.stringify(plan), JSON.stringify(source.rows[0].source_catalog), subscriberId, reservationId]);
+    const result = await client.query(`INSERT INTO edit_jobs (id,access_token,status,prompt,export_quality,sources,reference,typography_v1a,session_id,edit_plan,source_catalog,subscriber_id,quota_reservation_id)
+      VALUES ($1,$2,'queued',$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8,$9::jsonb,$10::jsonb,$11,$12) RETURNING *`, [id, accessToken, prompt, source.rows[0].export_quality, JSON.stringify(source.rows[0].sources), JSON.stringify(source.rows[0].reference), JSON.stringify(source.rows[0].typography_v1a), session.id, JSON.stringify(plan), JSON.stringify(source.rows[0].source_catalog), subscriberId, reservationId]);
     if (reservationId) { const attached = await client.query("UPDATE render_quota_reservations SET job_id=$2,updated_at=now() WHERE id=$1 AND subscriber_id=$3 AND job_id IS NULL AND state='reserved' RETURNING id", [reservationId, id, subscriberId]); if (!attached.rowCount) throw new Error("Render quota reservation is unavailable"); }
     await client.query("INSERT INTO editing_versions (session_id,version,job_id,prompt,plan,confirmation,status) VALUES ($1,$2,$3,$4,$5::jsonb,$6,'queued')", [session.id, version, id, prompt, JSON.stringify(plan), confirmation]);
     await client.query("UPDATE editing_sessions SET latest_version=$2, updated_at=now() WHERE id=$1", [session.id, version]);
@@ -696,9 +698,9 @@ export async function getJobConfirmation(id) {
   const { rows } = await database().query("SELECT confirmation FROM editing_versions WHERE job_id=$1", [id]);
   return rows[0]?.confirmation || null;
 }
-export async function createUploadJob(sources, reference = null, { subscriberId = null, reservationId = null } = {}) {
+export async function createUploadJob(sources, reference = null, { subscriberId = null, reservationId = null, typographyV1a = null } = {}) {
   const id = newId(); const accessToken = newToken();
-  const { rows } = await database().query("INSERT INTO edit_jobs (id, access_token, status, sources, reference, subscriber_id, quota_reservation_id) VALUES ($1,$2,'uploading',$3::jsonb,$4::jsonb,$5,$6) RETURNING *", [id, accessToken, JSON.stringify(sources), JSON.stringify(reference), subscriberId, reservationId]);
+  const { rows } = await database().query("INSERT INTO edit_jobs (id, access_token, status, sources, reference, typography_v1a, subscriber_id, quota_reservation_id) VALUES ($1,$2,'uploading',$3::jsonb,$4::jsonb,$5::jsonb,$6,$7) RETURNING *", [id, accessToken, JSON.stringify(sources), JSON.stringify(reference), JSON.stringify(typographyV1a), subscriberId, reservationId]);
   await attachReservationToJob(reservationId, id, subscriberId);
   return { job: safeRow(rows[0]), accessToken };
 }
@@ -732,12 +734,12 @@ export async function isJobCancelled(id, workerId) {
   const { rows } = await database().query("SELECT status FROM edit_jobs WHERE id=$1 AND worker_id=$2", [id, workerId]);
   return rows[0]?.status === "cancelled";
 }
-export async function setUploadSources(id, sources, reference) {
-  const { rows } = await database().query("UPDATE edit_jobs SET sources=$2::jsonb, reference=$3::jsonb, updated_at=now() WHERE id=$1 RETURNING *", [id, JSON.stringify(sources), JSON.stringify(reference ?? null)]);
+export async function setUploadSources(id, sources, reference, typographyV1a = null) {
+  const { rows } = await database().query("UPDATE edit_jobs SET sources=$2::jsonb, reference=$3::jsonb, typography_v1a=$4::jsonb, updated_at=now() WHERE id=$1 RETURNING *", [id, JSON.stringify(sources), JSON.stringify(reference ?? null), JSON.stringify(typographyV1a)]);
   return rows[0] ? safeRow(rows[0]) : null;
 }
-export async function queueJob(id, { prompt, exportQuality, sources, reference = null }) {
-  const { rows } = await database().query(`UPDATE edit_jobs SET status='queued', prompt=$2, export_quality=$3, sources=$4::jsonb, reference=$5::jsonb, error_message=NULL, worker_id=NULL, claimed_at=NULL, heartbeat_at=NULL, updated_at=now() WHERE id=$1 AND status='uploading' RETURNING *`, [id, prompt, exportQuality, JSON.stringify(sources), JSON.stringify(reference)]);
+export async function queueJob(id, { prompt, exportQuality, sources, reference = null, typographyV1a = null }) {
+  const { rows } = await database().query(`UPDATE edit_jobs SET status='queued', prompt=$2, export_quality=$3, sources=$4::jsonb, reference=$5::jsonb, typography_v1a=$6::jsonb, error_message=NULL, worker_id=NULL, claimed_at=NULL, heartbeat_at=NULL, updated_at=now() WHERE id=$1 AND status='uploading' RETURNING *`, [id, prompt, exportQuality, JSON.stringify(sources), JSON.stringify(reference), JSON.stringify(typographyV1a)]);
   return rows[0] ? safeRow(rows[0]) : null;
 }
 export async function failUploadJob(id, message) { const client = await database().connect(); try { await client.query("BEGIN"); const { rows } = await client.query("UPDATE edit_jobs SET status='failed', error_message=$2, updated_at=now() WHERE id=$1 AND status='uploading' RETURNING id", [id, message]); if (rows[0]) await client.query("UPDATE render_quota_reservations SET state='released',updated_at=now() WHERE job_id=$1 AND state='reserved'", [id]); await client.query("COMMIT"); } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); } }

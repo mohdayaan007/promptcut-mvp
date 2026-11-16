@@ -26,6 +26,7 @@ import { createCancellationRecoveryMaintenance } from "@/lib/cancellation-recove
 import { abortMultipartUpload, deleteObjects, downloadObject, outputObjectKey, uploadOutput } from "@/lib/jobs/storage";
 import { customerMklRuntimeConfig } from "@/lib/editor-core/prepared-mkl-runtime";
 import { renderCustomerMkl } from "@/lib/editor-core/founder-mkl-local";
+import { applyTypographyV1aToPlan, assertFounderTypographyV1a, validateTypographyV1a } from "@/lib/editor-core/typography-v1a";
 
 const config = jobConfig();
 const workerId = `${os.hostname()}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
@@ -38,6 +39,8 @@ function customerMklEnabled(founderAuthorized = false) { try { customerMklRuntim
 function safeError(error) {
   if (error instanceof MediaProbeError) return error.message;
   if (error instanceof UnsupportedEditRequestError) return error.message;
+  if (error?.message === "Add a title in your request to use the selected export font") return error.message;
+  if (error?.message === "Typography V1A is not enabled for this account") return "Typography V1A is not enabled for this account.";
   if (/4K export requires every uploaded video to be 4K-capable/.test(error?.message)) return error.message;
   if (error instanceof CaptionError) {
     if (error.message === "CAPTION_CORRECTION_AMBIGUOUS") return "The subtitle correction matches more than one caption.";
@@ -149,6 +152,14 @@ async function processJob(job) {
     let referenceTreatment = null;
     let mklReferencePath = null;
     let typographyTreatment = null;
+    const typographyV1a = validateTypographyV1a(job.typographyV1a);
+    // This is deliberately independent of the web gate. A queued job is not
+    // trusted merely because it contains a marker: re-check its persisted
+    // subscriber identity at execution time.
+    if (typographyV1a) {
+      const founderAuthorizedForTypography = Boolean(job.subscriberId && await isFounderSubscriber(job.subscriberId));
+      assertFounderTypographyV1a({ founderAuthorized: founderAuthorizedForTypography });
+    }
     const founderAuthorizedForMkl = Boolean(
       job.reference?.kind === "video_profile" && job.subscriberId &&
       await isFounderSubscriber(job.subscriberId)
@@ -243,6 +254,7 @@ async function processJob(job) {
     }
     if (referenceTreatment) plan.operations = [...plan.operations, { type: "reference_style_treatment", treatment: referenceTreatment }];
     if (typographyTreatment) plan = reconcileTypographyReferenceTitlePlan(plan, parseTitle(job.prompt, { stripQuotedText: true }), typographyTreatment);
+    if (typographyV1a) plan = applyTypographyV1aToPlan(plan, typographyV1a);
     if (requestsCaptions(job.prompt) && !plan.operations.some((operation) => operation.type === "captions")) plan.operations.push({ type: "captions" });
     const editPlan = validateEditPlan(plan, { sourceCatalog });
     await saveJobPlan(job.id, workerId, editPlan, sourceCatalog);

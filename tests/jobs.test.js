@@ -3034,11 +3034,13 @@ test("direct multipart retry observes cancellation and counts progress only afte
     name: "source.mp4", size: 4, type: "video/mp4",
     slice: () => new Blob([new Uint8Array([1, 2, 3, 4])])
   };
+  const requestBodies = [];
   const result = await uploadAndQueueJob({
-    videos: [file], prompt: "Mute the video.", exportQuality: "standard",
+    videos: [file], prompt: "Mute the video.", exportQuality: "standard", typographyV1a: { version: 1, font: "inter" },
     onProgress: (value) => progress.push(value),
     sleepFn: async () => {},
-    fetchFn: async (url) => {
+    fetchFn: async (url, options = {}) => {
+      if (url === "/api/uploads" || url === "/api/uploads/job-1/complete") requestBodies.push(JSON.parse(options.body));
       if (url === "/api/uploads") return Response.json({ id: "job-1", accessToken: "opaque-token", partSize: 5, uploads: [{ index: 0, key: "private-key", uploadId: "upload-1" }] });
       if (url === "/api/uploads/job-1/parts") return Response.json({ parts: [{ partNumber: 1, url: "https://storage.example/signed-part" }] });
       if (url === "https://storage.example/signed-part") {
@@ -3052,6 +3054,7 @@ test("direct multipart retry observes cancellation and counts progress only afte
   assert.equal(result.status, "queued");
   assert.equal(signedAttempts, 2);
   assert.deepEqual(progress, [{ uploadedBytes: 4, totalBytes: 4 }]);
+  assert.deepEqual(requestBodies.map((body) => body.typographyV1a), [{ version: 1, font: "inter" }, { version: 1, font: "inter" }]);
 });
 
 test("single-step Undo state migrates legacy sessions and retains only current and previous successful states", () => {

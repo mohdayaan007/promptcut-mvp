@@ -8,6 +8,7 @@ import { EditorAccessNotice } from "@/components/cliponaut/EditorAccessNotice";
 import { PromptComposer } from "@/components/cliponaut/PromptComposer";
 import { PromptSuggestions } from "@/components/cliponaut/PromptSuggestions";
 import { Workspace } from "@/components/cliponaut/Workspace";
+import { TypographyFontBrowser } from "@/components/cliponaut/TypographyFontBrowser";
 import { JobRecoveryModal } from "@/components/cliponaut/JobRecoveryModal";
 import { recordConversationCompletion } from "@/lib/client/conversation-presentation";
 import {
@@ -52,6 +53,7 @@ import {
 import { browserVideoPreflightError } from "@/lib/client/media-preflight";
 import { analyseReferenceVideoLocally } from "@/lib/client/reference-video-profile";
 import { editorAccessState } from "@/lib/editor-access-presentation";
+import { resolveFontId } from "@/lib/title-config";
 
 const MAX_VIDEO_COUNT = 5;
 
@@ -87,6 +89,8 @@ export default function HomePage() {
   const [referenceProfile, setReferenceProfile] = useState(null);
   const [referenceProfileStatus, setReferenceProfileStatus] = useState("idle");
   const [localReferenceVideoMkl, setLocalReferenceVideoMkl] = useState(false);
+  const [typographyV1aAvailable, setTypographyV1aAvailable] = useState(false);
+  const [typographyV1a, setTypographyV1a] = useState(null);
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState(null);
@@ -425,7 +429,15 @@ export default function HomePage() {
     catch (error) { setReferenceProfile(null); setReferenceProfileStatus("error"); setError(error.message || "Reference video could not be analysed locally."); }
   };
 
-  useEffect(() => { fetch("/api/editing-capabilities", { cache: "no-store" }).then((response) => response.ok ? response.json() : {}).then((value) => setLocalReferenceVideoMkl(value.localReferenceVideoMkl === true)).catch(() => setLocalReferenceVideoMkl(false)); }, [editorAccess.phase]);
+  useEffect(() => {
+    fetch("/api/editing-capabilities", { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : {})
+      .then((value) => {
+        setLocalReferenceVideoMkl(value.localReferenceVideoMkl === true);
+        setTypographyV1aAvailable(value.typographyV1a === true);
+      })
+      .catch(() => { setLocalReferenceVideoMkl(false); setTypographyV1aAvailable(false); });
+  }, [editorAccess.phase]);
 
   const handleRemoveVideo = (index) => {
     setVideos((currentVideos) => currentVideos.filter((_, videoIndex) => videoIndex !== index));
@@ -507,7 +519,7 @@ export default function HomePage() {
       }
       if (capability.kind === "unsupported" || capability.kind === "ambiguous") throw new Error(capability.message);
       const job = await uploadAndQueueJob({
-        videos, referenceImage, referenceProfile, prompt: submittedPrompt, exportQuality, signal: controller.signal,
+        videos, referenceImage, referenceProfile, typographyV1a, prompt: submittedPrompt, exportQuality, signal: controller.signal,
         onProgress: setUploadProgress,
         onSession: (session) => {
           if (!isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
@@ -578,6 +590,9 @@ export default function HomePage() {
     setVideoMetadata([]);
     setExportQuality("standard");
     setReferenceImage(null);
+    setReferenceProfile(null);
+    setReferenceProfileStatus("idle");
+    setTypographyV1a(null);
     setPrompt("");
     setStatus("idle");
     setError(null);
@@ -791,6 +806,22 @@ export default function HomePage() {
             editingDisabled={accessState.blocking}
           />
           <div className="cliponaut-workspace-prompt-area">
+            {typographyV1aAvailable && !editingSession ? (
+              <section aria-label="Founder Typography V1A" style={{ marginBottom: 18, padding: 16, border: "1px solid rgba(255,255,255,.18)", borderRadius: 14 }}>
+                <p className="cliponaut-panel-kicker">Founder-only experimental typography</p>
+                <p className="cliponaut-media-note">Choose one of the bundled export fonts, then ask Cliponaut to add a title. Other catalogue fonts remain preview-only.</p>
+                {typographyV1a ? <p className="cliponaut-media-note" aria-live="polite">Selected for this render: {typographyV1a.font}</p> : null}
+                <TypographyFontBrowser
+                  initialText={prompt || "BANGALORE AFTER DARK"}
+                  onUseFont={(family) => {
+                    const font = resolveFontId(family);
+                    if (!font) { setError("That font is not installed for export."); return; }
+                    setTypographyV1a({ version: 1, font });
+                    setError(null);
+                  }}
+                />
+              </section>
+            ) : null}
             <PromptSuggestions className="is-workspace" onSelect={setPrompt} />
             <div className="cliponaut-mobile-composer-dock">
               <PromptComposer
