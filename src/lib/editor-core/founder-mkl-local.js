@@ -59,9 +59,9 @@ export async function renderFounderLocalMkl({ sourcePath, referencePath, outputP
 
 /** Customer entry point: the prepared-runtime and customer-release gates are
  * checked before the same file/JSON subprocess boundary is used. */
-export async function renderCustomerMkl({ sourcePath, referencePath, referenceProfilePath, outputPath, reportPath, executionController, runCommand = run, read = readFile, remove = rm }) {
+export async function renderCustomerMkl({ sourcePath, referencePath, referenceProfilePath, outputPath, reportPath, executionController, founderAuthorized = false, runCommand = run, read = readFile, remove = rm }) {
   if (![sourcePath, outputPath, reportPath].every((value) => typeof value === "string" && path.isAbsolute(value)) || Boolean(referencePath) === Boolean(referenceProfilePath) || ![referencePath, referenceProfilePath].filter(Boolean).every(path.isAbsolute)) throw new Error("Customer MKL evaluation needs trusted paths");
-  const { python, runner } = customerMklRuntimeConfig();
+  const { python, runner } = customerMklRuntimeConfig({ founderAuthorized });
   try {
     await runCommand(python, [runner, "--source", sourcePath, ...(referencePath ? ["--reference", referencePath] : ["--reference-profile", referenceProfilePath]), "--output", outputPath, "--report", reportPath], { executionController });
     return validateFounderMklReport(JSON.parse(await read(reportPath, "utf8")));
