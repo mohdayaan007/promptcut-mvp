@@ -32,6 +32,21 @@ export function validateReferenceColourProfile(profile) {
   return Object.freeze({ kind: "video_profile", profile: { version: 1, colorSpace: profile.colorSpace, width: profile.width, height: profile.height, sampleCount: profile.sampleCount, mean: [...profile.mean], covariance: profile.covariance.map((row) => [...row]) } });
 }
 
+/**
+ * The client includes sampling metadata while the job stores the validated
+ * numerical subset in Postgres JSONB. Compare normalized numerical fields,
+ * never raw JSON key order or optional browser-only sampling metadata.
+ */
+export function referenceColourProfilesMatch(submitted, stored) {
+  try {
+    const a = validateReferenceColourProfile(submitted);
+    const b = validateReferenceColourProfile(stored);
+    return Boolean(a && b && JSON.stringify(a.profile) === JSON.stringify(b.profile));
+  } catch {
+    return false;
+  }
+}
+
 export function jobConfig() {
   return {
     workerConcurrency: Number(process.env.JOB_WORKER_CONCURRENCY || 1),
