@@ -62,7 +62,7 @@ jobs:
             node -e "const p=require(\"/app/package.json\");if(!p.scripts.worker || !p.scripts.worker.includes(\"cliponaut-worker\"))process.exit(1)"
             cd /app
             CLIPONAUT_MKL_PYTHON=/opt/cliponaut-mkl-venv/bin/python npm run test:mkl-runtime
-            ./node_modules/.bin/tsx --test tests/prepared-mkl-runtime.test.js tests/founder-mkl-local.test.js tests/reference-profile-upload.test.js
+            ./node_modules/.bin/tsx --test tests/prepared-mkl-runtime.test.js tests/founder-mkl-local.test.js tests/reference-profile-upload.test.js tests/reference-colour-intent.test.js
           '
 
       - name: Document unrelated Linux preset-test variance
