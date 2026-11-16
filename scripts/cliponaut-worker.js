@@ -181,7 +181,7 @@ async function processJob(job) {
       }
       await throwIfCancelled(job.id);
       const finalPath = path.join(scratch, "founder-reference-style.mp4");
-      await renderFounderReferenceStyleComposition({ composition: founder.composition, sourcePath: gradedPath, outputPath: finalPath, duration: media[0].duration, temporaryDirectory: path.join(scratch, "hyperframes"), executionController });
+      await renderFounderReferenceStyleComposition({ composition: founder.composition, sourcePath: gradedPath, outputPath: finalPath, duration: media[0].duration, width: media[0].width, height: media[0].height, temporaryDirectory: path.join(scratch, "hyperframes"), executionController });
       await throwIfCancelled(job.id);
       outputKey = outputObjectKey(job.id);
       await uploadOutput(outputKey, finalPath);
