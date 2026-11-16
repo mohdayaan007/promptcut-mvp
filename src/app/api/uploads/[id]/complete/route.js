@@ -1,7 +1,7 @@
 import { abortMultipartUpload, completeMultipartUpload, headObject } from "@/lib/jobs/storage";
 import { createEditingSession, getAuthorizedJob, queueJob } from "@/lib/jobs/job-store";
 import { jsonError, jobToken, PublicRequestError, safeJobResponse } from "@/lib/jobs/http";
-import { assertCustomerReferenceVideoUploadAllowed, validateJobRequest, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { assertCustomerReferenceVideoUploadAllowed, validateJobRequest, validateReferenceColourProfile, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { hasFounderTestAccess } from "@/lib/founder-test-access";
 import { authorizePaidJob } from "@/lib/paid-editing";
 import { paidEditingEnforced } from "@/lib/jobs/job-store";
@@ -13,7 +13,7 @@ export async function POST(req, { params }) {
     const { id } = await params;
     const job = await authorizePaidJob(req, id, jobToken(req)) || await getAuthorizedJob(id, jobToken(req));
     if (!job || job.status !== "uploading") return jsonError(new PublicRequestError("Upload session was not found", 404));
-    const { prompt, exportQuality = "standard", files, reference: submittedReference } = await req.json();
+    const { prompt, exportQuality = "standard", files, reference: submittedReference, referenceProfile } = await req.json();
     if (!Array.isArray(files) || files.length !== job.sources.length) return jsonError(new PublicRequestError("Upload completion did not match the selected videos"));
     const sources = job.sources.map((source, index) => {
       const submitted = files[index];
@@ -25,7 +25,10 @@ export async function POST(req, { params }) {
       return { ...source, parts };
     });
     let reference = null;
-    if (job.reference) {
+    if (job.reference?.kind === "video_profile") {
+      if (submittedReference || JSON.stringify(referenceProfile) !== JSON.stringify(job.reference.profile)) throw new PublicRequestError("Upload completion did not match the local reference profile");
+      reference = job.reference;
+    } else if (job.reference) {
       if (!submittedReference || submittedReference.key !== job.reference.key || submittedReference.uploadId !== job.reference.uploadId || !Array.isArray(submittedReference.parts) || !submittedReference.parts.length) {
         throw new PublicRequestError("Upload completion did not match the selected style reference");
       }
@@ -35,8 +38,8 @@ export async function POST(req, { params }) {
     } else if (submittedReference) throw new PublicRequestError("Upload completion included an unexpected style reference");
     try {
       validateUploadManifest(sources);
-      const validatedReference = validateReferenceManifest(reference);
-      assertCustomerReferenceVideoUploadAllowed(validatedReference);
+      const validatedReference = reference?.kind === "video_profile" ? null : validateReferenceManifest(reference);
+      if (reference?.kind === "video_profile") validateReferenceColourProfile(reference.profile); else assertCustomerReferenceVideoUploadAllowed(validatedReference);
       validateJobRequest({ prompt, exportQuality, sources });
     } catch (error) { throw new PublicRequestError(error.message); }
     for (const source of sources) {
@@ -46,7 +49,7 @@ export async function POST(req, { params }) {
       delete source.uploadId;
       delete source.parts;
     }
-    if (reference) {
+    if (reference && reference.kind !== "video_profile") {
       await completeMultipartUpload({ key: reference.key, uploadId: reference.uploadId, parts: reference.parts });
       const object = await headObject(reference.key);
       if (Number(object.ContentLength) !== reference.size) throw new PublicRequestError("Uploaded style reference size could not be verified");

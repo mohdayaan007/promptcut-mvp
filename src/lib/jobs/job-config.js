@@ -15,6 +15,17 @@ export const REFERENCE_VIDEO_TYPES = Object.freeze(["video/mp4", "video/quicktim
 export const MULTIPART_PART_SIZE_BYTES = 16 * 1024 * 1024;
 export const UPLOAD_URL_BATCH_SIZE = 8;
 export const JOB_STATUSES = ["uploading", "queued", "analyzing", "rendering", "completed", "failed", "cancelled"];
+export const REFERENCE_PROFILE_MAX_BYTES = 4096;
+
+export function validateReferenceColourProfile(profile) {
+  if (profile == null) return null;
+  if (Buffer.byteLength(JSON.stringify(profile), "utf8") > REFERENCE_PROFILE_MAX_BYTES || profile.version !== 1 || profile.colorSpace !== "srgb-rgb24-canvas" || profile.width !== 640 || profile.height !== 360 || !Number.isInteger(profile.sampleCount) || profile.sampleCount !== 640 * 360 * 5 || !Array.isArray(profile.mean) || profile.mean.length !== 3 || !Array.isArray(profile.covariance) || profile.covariance.length !== 3 || !profile.covariance.every((row) => Array.isArray(row) && row.length === 3)) throw new Error("Reference colour profile is invalid");
+  const values = [...profile.mean, ...profile.covariance.flat()];
+  if (!values.every(Number.isFinite) || profile.mean.some((value) => value < 0 || value > 255) || profile.covariance.some((row, i) => row.some((value, j) => Math.abs(value - profile.covariance[j][i]) > 1e-6))) throw new Error("Reference colour profile is invalid");
+  const a=profile.covariance; const minors=[a[0][0],a[1][1],a[2][2],a[0][0]*a[1][1]-a[0][1]**2,a[0][0]*a[2][2]-a[0][2]**2,a[1][1]*a[2][2]-a[1][2]**2,a[0][0]*(a[1][1]*a[2][2]-a[1][2]**2)-a[0][1]*(a[0][1]*a[2][2]-a[1][2]*a[0][2])+a[0][2]*(a[0][1]*a[1][2]-a[1][1]*a[0][2])];
+  if (minors.some((value) => value < -1e-5)) throw new Error("Reference colour profile covariance is invalid");
+  return Object.freeze({ kind: "video_profile", profile: { version: 1, colorSpace: profile.colorSpace, width: profile.width, height: profile.height, sampleCount: profile.sampleCount, mean: [...profile.mean], covariance: profile.covariance.map((row) => [...row]) } });
+}
 
 export function jobConfig() {
   return {
