@@ -67,8 +67,6 @@ function extractStartTime(prompt) {
   }
   return { font: TITLE_DEFAULTS.font };
 }
-font: "__unavailable__" } : { font: TITLE_DEFAULTS.font };
-}
 
 export function parseTitle(prompt = "", options = {}) {
   const text = extractTitleText(prompt, options);
