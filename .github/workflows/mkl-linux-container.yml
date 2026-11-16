@@ -13,6 +13,8 @@ on:
       - python/**
       - scripts/founder-mkl-local-evaluation.py
       - scripts/cliponaut-worker.js
+      - tests/reference-profile-upload.test.js
+      - tests/prepared-mkl-runtime.test.js
       - src/**
   workflow_dispatch:
 
