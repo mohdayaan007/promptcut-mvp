@@ -18,7 +18,7 @@ import { MediaProbeError, probeVideoFile } from "@/lib/media/media-probe";
 import { jobConfig } from "@/lib/jobs/job-config";
 import { hasApprovedReferenceVideoSafety } from "@/lib/jobs/reference-video-safety";
 import {
-  claimNextJob, completeJob, expireUploadJob, failJob, getAbandonedUploads, getJobsForCleanup, heartbeatJob, isJobCancelled, markOutputCleaned,
+  claimNextJob, completeJob, expireUploadJob, failJob, getAbandonedUploads, getJobsForCleanup, heartbeatJob, isFounderSubscriber, isJobCancelled, markOutputCleaned,
   markSourcesCleaned, recoverStaleJobs, saveJobPlan, setJobStatus, syncVersionStatus, leaseDueCancellationRecoveryCases, recordCancellationRecoveryEvidence
 } from "@/lib/jobs/job-store";
 import { cancellationRecoveryEnabled, getDodoTestCancellationState } from "@/lib/dodo-test-mode";
@@ -34,7 +34,7 @@ let lastCleanup = 0;
 let lastCancellationRecovery = 0;
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
-function customerMklEnabled() { try { customerMklRuntimeConfig(); return true; } catch { return false; } }
+function customerMklEnabled(founderAuthorized = false) { try { customerMklRuntimeConfig({ founderAuthorized }); return true; } catch { return false; } }
 function safeError(error) {
   if (error instanceof MediaProbeError) return error.message;
   if (error instanceof UnsupportedEditRequestError) return error.message;
@@ -149,6 +149,10 @@ async function processJob(job) {
     let referenceTreatment = null;
     let mklReferencePath = null;
     let typographyTreatment = null;
+    const founderAuthorizedForMkl = Boolean(
+      job.reference?.kind === "video_profile" && job.subscriberId &&
+      await isFounderSubscriber(job.subscriberId)
+    );
     const typographyReferenceActive = Boolean(job.reference && requestsTypographyReferenceMatch(job.prompt, true));
     if (typographyReferenceActive) {
       if (sources.length !== 1) throw new TypographyReferenceError("TYPOGRAPHY_TARGET_COUNT");
@@ -173,7 +177,7 @@ async function processJob(job) {
         position: typographyTreatment.position,
         selectedCandidateId: typographyTreatment.selectedCandidateId
       });
-    } else if (job.reference && requestsReferenceStyleMatch(job.prompt, true) && customerMklEnabled() && ["video", "video_profile"].includes(job.reference.kind)) {
+    } else if (job.reference && requestsReferenceStyleMatch(job.prompt, true) && customerMklEnabled(founderAuthorizedForMkl) && ["video", "video_profile"].includes(job.reference.kind)) {
       if (sources.length !== 1) throw new ReferenceStyleError("REFERENCE_TARGET_COUNT", "Reference style matching currently supports one target video.");
       if (job.reference.kind === "video") {
         if (!hasApprovedReferenceVideoSafety(job.reference)) throw new ReferenceStyleError("REFERENCE_VIDEO_SAFETY_REQUIRED", "This reference video cannot be processed until dedicated safety screening is available.");
@@ -267,7 +271,7 @@ async function processJob(job) {
     if (!await setJobStatus(job.id, workerId, "rendering")) throw new JobCancelledError();
     await syncVersionStatus(job.id, "rendering");
     const outputPath = mklReferencePath
-      ? (await renderCustomerMkl({ sourcePath: inputPaths[0], ...(job.reference.kind === "video_profile" ? { referenceProfilePath: mklReferencePath } : { referencePath: mklReferencePath }), outputPath: path.join(scratch, "customer-mkl.mp4"), reportPath: path.join(scratch, "customer-mkl-report.json"), executionController }), path.join(scratch, "customer-mkl.mp4"))
+      ? (await renderCustomerMkl({ sourcePath: inputPaths[0], ...(job.reference.kind === "video_profile" ? { referenceProfilePath: mklReferencePath } : { referencePath: mklReferencePath }), outputPath: path.join(scratch, "customer-mkl.mp4"), reportPath: path.join(scratch, "customer-mkl-report.json"), executionController, founderAuthorized: founderAuthorizedForMkl }), path.join(scratch, "customer-mkl.mp4"))
       : await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality, executionController, captionCues, captionCorrection, jobId: job.id });
     await throwIfCancelled(job.id);
     outputKey = outputObjectKey(job.id);
