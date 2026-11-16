@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Founder-local MKL adapter.
+"""Original MKL adapter, isolated as a GPL-3.0 Python component.
 
-This script uses the separately installed GPL-3.0 ``color-matcher`` package
-only in the local founder evaluation environment. It is excluded from Docker
-build context and is not a customer or production runtime dependency.
+The Node worker invokes this script only through trusted paths, an MP4 output,
+and a numerical JSON report. A prepared image may include the component, but
+customer execution remains separately release-gated in the Node layer.
 """
 import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 
-import numpy as np
-from color_matcher import ColorMatcher
+try:
+    import numpy as np
+    from color_matcher import ColorMatcher
+except ImportError as error:
+    raise SystemExit(f"MKL runtime dependency missing: {error.name or 'unknown'}") from error
 
 WIDTH, HEIGHT = 640, 360
 FRAME_BYTES = WIDTH * HEIGHT * 3
@@ -139,11 +143,17 @@ def render(source, destination, fps, width, height, transform):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", required=True)
-    parser.add_argument("--reference", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--report", required=True)
+    parser.add_argument("--source")
+    parser.add_argument("--reference")
+    parser.add_argument("--output")
+    parser.add_argument("--report")
+    parser.add_argument("--runtime-check", action="store_true")
     args = parser.parse_args()
+    if args.runtime_check:
+        print(json.dumps({"version": "cliponaut-mkl-runtime/1", "status": "ok", "python": sys.version_info[:3], "numpy": np.__version__}))
+        return
+    if not all((args.source, args.reference, args.output, args.report)):
+        parser.error("--source, --reference, --output, and --report are required unless --runtime-check is used")
     source, reference, output, report = (Path(value) for value in (args.source, args.reference, args.output, args.report))
     source_duration, fps, width, height = probe(source)
     reference_duration, _, _, _ = probe(reference)
