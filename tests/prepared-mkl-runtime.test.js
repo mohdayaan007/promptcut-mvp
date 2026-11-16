@@ -22,3 +22,16 @@ test("customer MKL cannot be invoked merely because the runtime was prepared", (
   assert.throws(() => customerMklRuntimeConfig({ env: prepared }), /pending safety and legal approval/);
   assert.deepEqual(customerMklRuntimeConfig({ env: { ...prepared, CLIPONAUT_CUSTOMER_MKL_RELEASE_ENABLED: "true" } }), preparedMklRuntimeConfig({ env: prepared }));
 });
+
+test("founder-only MKL can run only for an explicitly authorized founder with both separate gates", () => {
+  const founderOnly = {
+    ...prepared,
+    CLIPONAUT_MKL_FOUNDER_ONLY_TEST_ENABLED: "true",
+    CLIPONAUT_CUSTOMER_MKL_RELEASE_ENABLED: "false"
+  };
+  assert.throws(() => customerMklRuntimeConfig({ env: founderOnly }), /disabled pending safety and legal approval/);
+  assert.throws(() => customerMklRuntimeConfig({ env: founderOnly, founderAuthorized: false }), /disabled pending safety and legal approval/);
+  assert.deepEqual(customerMklRuntimeConfig({ env: founderOnly, founderAuthorized: true }), preparedMklRuntimeConfig({ env: prepared }));
+  assert.throws(() => customerMklRuntimeConfig({ env: { ...founderOnly, CLIPONAUT_MKL_FOUNDER_ONLY_TEST_ENABLED: "false" }, founderAuthorized: true }), /disabled pending safety and legal approval/);
+  assert.throws(() => customerMklRuntimeConfig({ env: { ...founderOnly, CLIPONAUT_MKL_RUNTIME_PREPARED: "false" }, founderAuthorized: true }), /disabled/);
+});
