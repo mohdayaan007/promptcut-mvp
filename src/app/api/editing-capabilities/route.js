@@ -1,7 +1,13 @@
 import { analyzeEditRequestCapabilities } from "@/lib/editor-core/edit-plan";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
+import { customerMklRuntimeConfig } from "@/lib/editor-core/prepared-mkl-runtime";
 
 export const runtime = "nodejs";
+
+export async function GET() {
+  try { customerMklRuntimeConfig(); return Response.json({ localReferenceVideoMkl: true }); }
+  catch { return Response.json({ localReferenceVideoMkl: false }); }
+}
 
 // A deliberately media-free gate. It prevents uploads and worker planning for
 // an instruction whose unsupported portion is already deterministic.

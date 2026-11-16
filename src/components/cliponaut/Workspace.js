@@ -10,6 +10,8 @@ export function Workspace({
   videos,
   restoredSources,
   referenceImage,
+  referenceProfile,
+  referenceProfileStatus,
   status,
   uploadProgress,
   error,
@@ -20,6 +22,7 @@ export function Workspace({
   onExportQualityChange,
   onSelectVideos,
   onSelectReferenceImage,
+  onSelectReferenceVideo,
   onRemoveVideo,
   onRemoveReferenceImage,
   onEditAgain,
@@ -81,8 +84,10 @@ export function Workspace({
             <ImageIcon />
             {referenceImage ? "Replace style reference" : "Add style reference"}
           </button>
+          {onSelectReferenceVideo ? <button className="cliponaut-add-media" type="button" onClick={onSelectReferenceVideo} disabled={editingDisabled || referenceProfileStatus === "analysing"}><VideoIcon />{referenceProfileStatus === "analysing" ? "Analysing reference…" : referenceProfile ? "Replace local video reference" : "Add local video reference"}</button> : null}
         </div>
         {referenceImage ? <><p className="cliponaut-panel-kicker">Style reference image</p><MediaCard file={referenceImage} kind="image" onRemove={onRemoveReferenceImage} /></> : null}
+        {referenceProfile ? <p className="cliponaut-media-note">Local video reference analysed. Only aggregate colour statistics will be sent.</p> : null}
         <p className="cliponaut-media-note">{isOriginalState && !videos.length ? "Your original upload list was restored. Re-upload the files to edit them again." : "Add up to five videos. A style reference image is uploaded privately and never becomes a video source."}</p>
       </section>
 
