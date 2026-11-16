@@ -35,8 +35,10 @@ export async function POST(req) {
       started.push({ key, uploadId });
       sources.push({ ...file, key, uploadId, parts: [] });
     }
-    let reference = null;
-    if (initialReference) {
+    // A browser-local profile is numerical job metadata, not uploadable media.
+    // Preserve it in the job record without creating a bucket object.
+    let reference = initialReference?.kind === "video_profile" ? initialReference : null;
+    if (initialReference && initialReference.kind !== "video_profile") {
       const key = referenceObjectKey(job.id, initialReference);
       stage = "reference bucket multipart creation";
       const uploadId = await beginMultipartUpload({ key, contentType: initialReference.type });
