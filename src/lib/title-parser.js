@@ -1,4 +1,5 @@
-import { TITLE_DEFAULTS, resolveFontId, resolveSemanticFontIntent } from "@/lib/title-config";
+import { TITLE_DEFAULTS } from "@/lib/title-config";
+import { namedTypographyFont, recommendTypographyFonts } from "@/lib/typography/font-recommendations";
 
 const STYLE_VALUES = {
   position: ["top-left", "top-center", "top-right", "center-left", "center", "center-right", "bottom-left", "bottom-center", "bottom-right", "top", "bottom"],
@@ -46,24 +47,27 @@ function extractTitleText(prompt, { stripQuotedText = false } = {}) {
 
 function extractStartTime(prompt) {
   const match = prompt.match(/\bat\s+(\d+):(\d+)\b/i);
-  return match ? parseInt(match[1]) * 60 + parseInt(match[2]) : 0;
-}
+  return function extractFont(prompt) {
+  const exact = namedTypographyFont(prompt);
+  if (exact) return { font: exact };
 
-function extractFont(prompt) {
-  for (const candidate of ["Instrument Serif", "JetBrains Mono", "Inter"]) {
-    if (new RegExp(`\\b${candidate.replace(" ", "\\s+")}\\b`, "i").test(prompt)) return { font: resolveFontId(candidate) };
+  // Explicit unavailable font requests remain errors. Never replace a named
+  // font with an unrelated one without telling the customer.
+  const unknownExact = prompt.match(/\b(?:using|use|in)\s+(?:the\s+)?([a-z][a-z\s-]{1,40}?)\s+(?:font|typeface)\b/i);
+  const genericModifiers = /^(?:(?:a|an|the)\s+)?(?:(?:very|slightly|really|super)\s+)?(?:small|medium|large|bold|regular|italic|modern|minimal|clean|elegant|luxury|cinematic|retro|vintage|sporty|futuristic|technical|condensed|serif|sans-serif|handwritten|playful|premium|powerful)(?:[\s-]+(?:small|medium|large|bold|regular|italic|modern|minimal|clean|elegant|luxury|cinematic|retro|vintage|sporty|futuristic|technical|condensed|serif|sans-serif|handwritten|playful|premium|powerful))*$/i;
+  if (unknownExact && !genericModifiers.test(unknownExact[1].trim())) return { font: "__unavailable__" };
+
+  // Only infer font character when the prompt actually talks about text
+  // styling, not when words such as "cinematic" appear in video colour requests.
+  const fontContext = /\b(?:font|typeface|typography|lettering|title|headline|text)\b/i.test(prompt);
+  const descriptions = /\b(?:cinematic|luxury|luxurious|elegant|modern|minimal|minimalist|sporty|condensed|retro|vintage|futuristic|technical|hacker|gaming|handwritten|premium|editorial|powerful|bold|playful|clean|sophisticated)\b/i.test(prompt);
+  if (fontContext && descriptions) {
+    const choices = recommendTypographyFonts(prompt);
+    if (choices.length) return { font: choices[0].fontId, fontIntent: choices[0].matched.join(" ") };
   }
-  const semantic = prompt.match(/\b(clean|minimal|elegant|classy|luxury|editorial|gaming|futuristic|technical|fun|playful|retro|vintage|cinematic)\b(?:[-\s]style)?\s+(?:font|typeface)\b/i)
-    || prompt.match(/\b(?:font|typeface)\b.*\b(clean|minimal|elegant|classy|luxury|editorial|gaming|futuristic|technical|fun|playful|retro|vintage|cinematic)\b/i);
-  const fontIntent = semantic?.[1]?.toLowerCase();
-  if (fontIntent) return { font: resolveSemanticFontIntent(fontIntent), fontIntent };
-  // The deterministic fallback must not quietly substitute a made-up exact font
-  // request with a local asset. The validator turns this marker into a safe rejection.
-  const exactRequest = prompt.match(/\b(?:use|using|in)\s+(?:the\s+)?([a-z][a-z\s-]{1,40}?)\s+(?:font|typeface)\b/i);
-  if (exactRequest && /^(?:a\s+)?(?:small|medium|large|bold|regular)$/i.test(exactRequest[1].trim())) {
-    return { font: TITLE_DEFAULTS.font };
-  }
-  return exactRequest ? { font: "__unavailable__" } : { font: TITLE_DEFAULTS.font };
+  return { font: TITLE_DEFAULTS.font };
+}
+font: "__unavailable__" } : { font: TITLE_DEFAULTS.font };
 }
 
 export function parseTitle(prompt = "", options = {}) {
