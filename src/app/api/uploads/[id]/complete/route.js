@@ -1,7 +1,7 @@
 import { abortMultipartUpload, completeMultipartUpload, headObject } from "@/lib/jobs/storage";
 import { createEditingSession, getAuthorizedJob, queueJob } from "@/lib/jobs/job-store";
 import { jsonError, jobToken, PublicRequestError, safeJobResponse } from "@/lib/jobs/http";
-import { assertCustomerReferenceVideoUploadAllowed, validateJobRequest, validateReferenceColourProfile, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { assertCustomerReferenceVideoUploadAllowed, validateJobRequest, referenceColourProfilesMatch, validateReferenceColourProfile, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { hasFounderTestAccess } from "@/lib/founder-test-access";
 import { authorizePaidJob } from "@/lib/paid-editing";
 import { paidEditingEnforced } from "@/lib/jobs/job-store";
@@ -26,7 +26,7 @@ export async function POST(req, { params }) {
     });
     let reference = null;
     if (job.reference?.kind === "video_profile") {
-      if (submittedReference || JSON.stringify(referenceProfile) !== JSON.stringify(job.reference.profile)) throw new PublicRequestError("Upload completion did not match the local reference profile");
+      if (submittedReference || !referenceColourProfilesMatch(referenceProfile, job.reference.profile)) throw new PublicRequestError("Upload completion did not match the local reference profile");
       reference = job.reference;
     } else if (job.reference) {
       if (!submittedReference || submittedReference.key !== job.reference.key || submittedReference.uploadId !== job.reference.uploadId || !Array.isArray(submittedReference.parts) || !submittedReference.parts.length) {
