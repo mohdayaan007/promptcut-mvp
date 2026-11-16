@@ -1,7 +1,7 @@
 import { abortMultipartUpload, beginMultipartUpload, referenceObjectKey, sourceObjectKey } from "@/lib/jobs/storage";
 import { createUploadJob, failUploadJob, releaseUnattachedRenderReservation, setUploadSources } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError, safeJobResponse } from "@/lib/jobs/http";
-import { assertCustomerReferenceVideoUploadAllowed, MULTIPART_PART_SIZE_BYTES, validateReferenceColourProfile, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { assertCustomerReferenceVideoUploadAllowed, MULTIPART_PART_SIZE_BYTES, referenceRequiresMultipartUpload, validateReferenceColourProfile, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { authorizePaidEdit } from "@/lib/paid-editing";
 
 export const runtime = "nodejs";
@@ -38,7 +38,7 @@ export async function POST(req) {
     // A browser-local profile is numerical job metadata, not uploadable media.
     // Preserve it in the job record without creating a bucket object.
     let reference = initialReference?.kind === "video_profile" ? initialReference : null;
-    if (initialReference && initialReference.kind !== "video_profile") {
+    if (referenceRequiresMultipartUpload(initialReference)) {
       const key = referenceObjectKey(job.id, initialReference);
       stage = "reference bucket multipart creation";
       const uploadId = await beginMultipartUpload({ key, contentType: initialReference.type });
