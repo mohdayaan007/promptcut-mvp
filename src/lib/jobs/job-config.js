@@ -17,6 +17,11 @@ export const UPLOAD_URL_BATCH_SIZE = 8;
 export const JOB_STATUSES = ["uploading", "queued", "analyzing", "rendering", "completed", "failed", "cancelled"];
 export const REFERENCE_PROFILE_MAX_BYTES = 4096;
 
+/** Local colour profiles are job metadata; only actual image/video references use multipart storage. */
+export function referenceRequiresMultipartUpload(reference) {
+  return reference?.kind === "image" || reference?.kind === "video";
+}
+
 export function validateReferenceColourProfile(profile) {
   if (profile == null) return null;
   if (Buffer.byteLength(JSON.stringify(profile), "utf8") > REFERENCE_PROFILE_MAX_BYTES || profile.version !== 1 || profile.colorSpace !== "srgb-rgb24-canvas" || profile.width !== 640 || profile.height !== 360 || !Number.isInteger(profile.sampleCount) || profile.sampleCount !== 640 * 360 * 5 || !Array.isArray(profile.mean) || profile.mean.length !== 3 || !Array.isArray(profile.covariance) || profile.covariance.length !== 3 || !profile.covariance.every((row) => Array.isArray(row) && row.length === 3)) throw new Error("Reference colour profile is invalid");
