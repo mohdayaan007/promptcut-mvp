@@ -35,7 +35,7 @@ export function TypographyFontBrowser({ initialText = "BANGALORE AFTER DARK", on
             link.onload = resolve;
             link.onerror = reject;
           });
-          await document.fonts.load(`400 26px "${font.family.replace(/["\\]/g, "")}"`, sample || "Typography");
+          await document.fonts.load(`400 26px "${font.family.replace(/["\\]/g, "")}"`, "Typography");
           if (!cancelled) setLoaded((current) => ({ ...current, [font.slug]: true }));
         } catch {
           if (!cancelled) setLoaded((current) => ({ ...current, [font.slug]: false }));
@@ -44,7 +44,7 @@ export function TypographyFontBrowser({ initialText = "BANGALORE AFTER DARK", on
     }
     load();
     return () => { cancelled = true; for (const node of nodes) node.remove(); };
-  }, [page, sample]);
+  }, [page]);
 
   const chosen = active && page.families.find((font) => font.slug === active);
   return (
