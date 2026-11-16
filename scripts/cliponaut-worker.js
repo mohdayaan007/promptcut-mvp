@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "fs/promises";
 import os from "os";
 import path from "path";
 import crypto from "crypto";
@@ -173,12 +173,12 @@ async function processJob(job) {
         position: typographyTreatment.position,
         selectedCandidateId: typographyTreatment.selectedCandidateId
       });
-    } else if (job.reference && requestsReferenceStyleMatch(job.prompt, true) && customerMklEnabled() && job.reference.kind === "video") {
+    } else if (job.reference && requestsReferenceStyleMatch(job.prompt, true) && customerMklEnabled() && ["video", "video_profile"].includes(job.reference.kind)) {
       if (sources.length !== 1) throw new ReferenceStyleError("REFERENCE_TARGET_COUNT", "Reference style matching currently supports one target video.");
-      if (!hasApprovedReferenceVideoSafety(job.reference)) throw new ReferenceStyleError("REFERENCE_VIDEO_SAFETY_REQUIRED", "This reference video cannot be processed until dedicated safety screening is available.");
-      mklReferencePath = path.join(scratch, "customer-mkl-reference");
-      await downloadObject(job.reference.key, mklReferencePath);
-      await validateReferenceVideoFile({ inputPath: mklReferencePath, type: job.reference.type, executionController });
+      if (job.reference.kind === "video") {
+        if (!hasApprovedReferenceVideoSafety(job.reference)) throw new ReferenceStyleError("REFERENCE_VIDEO_SAFETY_REQUIRED", "This reference video cannot be processed until dedicated safety screening is available.");
+        mklReferencePath = path.join(scratch, "customer-mkl-reference"); await downloadObject(job.reference.key, mklReferencePath); await validateReferenceVideoFile({ inputPath: mklReferencePath, type: job.reference.type, executionController });
+      } else { mklReferencePath = path.join(scratch, "customer-mkl-profile.json"); await writeFile(mklReferencePath, JSON.stringify(job.reference.profile), { mode: 0o600 }); }
     } else if (job.reference && requestsReferenceStyleMatch(job.prompt, true)) {
       if (sources.length !== 1) throw new ReferenceStyleError("REFERENCE_TARGET_COUNT", "Reference style matching currently supports one target video.");
       const { referencePath, referenceMimeType } = await prepareReferenceStyleMedia({ reference: job.reference, scratch, executionController });
@@ -267,7 +267,7 @@ async function processJob(job) {
     if (!await setJobStatus(job.id, workerId, "rendering")) throw new JobCancelledError();
     await syncVersionStatus(job.id, "rendering");
     const outputPath = mklReferencePath
-      ? (await renderCustomerMkl({ sourcePath: inputPaths[0], referencePath: mklReferencePath, outputPath: path.join(scratch, "customer-mkl.mp4"), reportPath: path.join(scratch, "customer-mkl-report.json"), executionController }), path.join(scratch, "customer-mkl.mp4"))
+      ? (await renderCustomerMkl({ sourcePath: inputPaths[0], ...(job.reference.kind === "video_profile" ? { referenceProfilePath: mklReferencePath } : { referencePath: mklReferencePath }), outputPath: path.join(scratch, "customer-mkl.mp4"), reportPath: path.join(scratch, "customer-mkl-report.json"), executionController }), path.join(scratch, "customer-mkl.mp4"))
       : await executeEditPlan({ inputPaths, media, plan: editPlan, sourceCatalog, tempDirectory: scratch, exportQuality: job.exportQuality, executionController, captionCues, captionCorrection, jobId: job.id });
     await throwIfCancelled(job.id);
     outputKey = outputObjectKey(job.id);

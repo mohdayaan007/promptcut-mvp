@@ -69,6 +69,29 @@ def mosaic(path, duration):
     return np.concatenate([frame(path, duration * ratio) for ratio in SAMPLE_RATIOS], axis=0).astype(np.float64)
 
 
+def profile_mosaic(path):
+    """Build a non-image synthetic sample with the supplied RGB moments.
+
+    color-matcher's MKL reference contribution is its channel mean/covariance.
+    Six centred points reproduce an unbiased 3x3 covariance without conveying
+    any reference frame pixels to this process.
+    """
+    profile = json.loads(path.read_text(encoding="utf-8"))
+    if profile.get("version") != 1 or profile.get("colorSpace") != "srgb-rgb24-canvas":
+        raise RuntimeError("invalid MKL reference profile")
+    mean = np.asarray(profile.get("mean"), dtype=np.float64)
+    covariance = np.asarray(profile.get("covariance"), dtype=np.float64)
+    if mean.shape != (3,) or covariance.shape != (3, 3) or not (np.isfinite(mean).all() and np.isfinite(covariance).all()) or not np.allclose(covariance, covariance.T, atol=1e-6):
+        raise RuntimeError("invalid MKL reference profile")
+    values, vectors = np.linalg.eigh(covariance)
+    if not np.isfinite(values).all() or np.min(values) < -1e-5:
+        raise RuntimeError("invalid MKL reference covariance")
+    root = vectors @ np.diag(np.sqrt(np.maximum(values, 0)))
+    # np.cov defaults to ddof=1: ±sqrt(5/2) columns give exactly covariance.
+    points = np.concatenate((mean + np.sqrt(2.5) * root.T, mean - np.sqrt(2.5) * root.T), axis=0)
+    return points.reshape(6, 1, 3)
+
+
 def transformation(source_samples, reference_samples):
     matcher = ColorMatcher()
     try:
@@ -145,6 +168,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source")
     parser.add_argument("--reference")
+    parser.add_argument("--reference-profile")
     parser.add_argument("--output")
     parser.add_argument("--report")
     parser.add_argument("--runtime-check", action="store_true")
@@ -152,12 +176,15 @@ def main():
     if args.runtime_check:
         print(json.dumps({"version": "cliponaut-mkl-runtime/1", "status": "ok", "python": sys.version_info[:3], "numpy": np.__version__}))
         return
-    if not all((args.source, args.reference, args.output, args.report)):
-        parser.error("--source, --reference, --output, and --report are required unless --runtime-check is used")
-    source, reference, output, report = (Path(value) for value in (args.source, args.reference, args.output, args.report))
+    if not args.source or not args.output or not args.report or bool(args.reference) == bool(args.reference_profile):
+        parser.error("--source, --output, --report, and exactly one reference input are required unless --runtime-check is used")
+    source, output, report = (Path(value) for value in (args.source, args.output, args.report))
     source_duration, fps, width, height = probe(source)
-    reference_duration, _, _, _ = probe(reference)
-    transform, condition = transformation(mosaic(source, source_duration), mosaic(reference, reference_duration))
+    if args.reference:
+        reference = Path(args.reference); reference_duration, _, _, _ = probe(reference); reference_samples = mosaic(reference, reference_duration)
+    else:
+        reference_samples = profile_mosaic(Path(args.reference_profile))
+    transform, condition = transformation(mosaic(source, source_duration), reference_samples)
     output.parent.mkdir(parents=True, exist_ok=True)
     frames = render(source, output, fps, width, height, transform)
     report.write_text(json.dumps({"version": "founder-mkl-evaluation/1", "status": "ok", "frameCount": frames, "matrixFinite": True, "outputFinite": True, "matrixCondition": condition}), encoding="utf-8")
