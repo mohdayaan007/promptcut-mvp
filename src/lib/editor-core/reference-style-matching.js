@@ -427,7 +427,12 @@ export function createReferenceStyleFailureDiagnostic({ jobId, error }) {
 }
 
 export function requestsReferenceStyleMatch(prompt = "", hasReference = false) {
-  return Boolean(hasReference && /\b(?:make|match|use|give)\b[\s\S]{0,80}\b(?:look like this|this style|reference (?:style|look)|style reference|same look)\b/i.test(prompt));
+  if (!hasReference) return false;
+  // Reference-video colour grading is a first-class operation, including the
+  // founder's natural-language hosted acceptance prompt. Do not broaden this
+  // into a catch-all for unrelated edits or prompts lacking a reference.
+  const colourMatch = /\b(?:use|apply|copy|match|give|make)\b[\s\S]{0,100}\b(?:colou?r\s+(?:grading|grade|treatment|palette|tones?)|grading)\b[\s\S]{0,100}\b(?:reference\s+(?:video|clip|footage)|style\s+reference)\b/i;
+  return colourMatch.test(prompt) || /\b(?:make|match|use|give)\b[\s\S]{0,80}\b(?:look like this|this style|reference (?:style|look)|style reference|same look)\b/i.test(prompt);
 }
 
 /** Deliberately opt-in: production keeps the accepted initial B2A treatment by default. */
