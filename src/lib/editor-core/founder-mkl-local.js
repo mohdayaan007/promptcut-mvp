@@ -2,6 +2,7 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { EditExecutionCancelledError } from "@/lib/editor-core/edit-executor";
+import { customerMklRuntimeConfig } from "@/lib/editor-core/prepared-mkl-runtime";
 
 const EVALUATION_ROOT = "/private/tmp/cliponaut-colour-algorithm-eval";
 
@@ -46,6 +47,21 @@ function run(command, args, { executionController, spawn = nodeSpawn } = {}) {
 export async function renderFounderLocalMkl({ sourcePath, referencePath, outputPath, reportPath, executionController, runCommand = run, read = readFile, remove = rm }) {
   if (![sourcePath, referencePath, outputPath, reportPath].every((value) => typeof value === "string" && path.isAbsolute(value))) throw new Error("Founder-local MKL evaluation needs trusted paths");
   const { python, runner } = localConfig();
+  try {
+    await runCommand(python, [runner, "--source", sourcePath, "--reference", referencePath, "--output", outputPath, "--report", reportPath], { executionController });
+    return validateFounderMklReport(JSON.parse(await read(reportPath, "utf8")));
+  } catch (error) {
+    await remove(outputPath, { force: true }).catch(() => {});
+    await remove(reportPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+/** Customer entry point: the prepared-runtime and customer-release gates are
+ * checked before the same file/JSON subprocess boundary is used. */
+export async function renderCustomerMkl({ sourcePath, referencePath, outputPath, reportPath, executionController, runCommand = run, read = readFile, remove = rm }) {
+  if (![sourcePath, referencePath, outputPath, reportPath].every((value) => typeof value === "string" && path.isAbsolute(value))) throw new Error("Customer MKL evaluation needs trusted paths");
+  const { python, runner } = customerMklRuntimeConfig();
   try {
     await runCommand(python, [runner, "--source", sourcePath, "--reference", referencePath, "--output", outputPath, "--report", reportPath], { executionController });
     return validateFounderMklReport(JSON.parse(await read(reportPath, "utf8")));
