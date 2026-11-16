@@ -41,8 +41,10 @@ Corresponding Source available alongside the artifact or through a clear,
 durable source offer. That source set must include the unmodified upstream
 `color-matcher` 0.6.0 source and license, this runner including its
 memory-release change, the dependency lock, and these build instructions.
-This repository does not yet publish a GPL-component source bundle or a
-source-offer endpoint.
+The repository carries the exact upstream archive and bundle inventory in
+`docs/MKL_GPL_SOURCE_BUNDLE.md`. Before conveying an image, publish that
+inventory with the release artifact or a durable source offer under Cliponaut's
+control.
 
 ## Outstanding legal review
 
