@@ -47,7 +47,10 @@ function extractTitleText(prompt, { stripQuotedText = false } = {}) {
 
 function extractStartTime(prompt) {
   const match = prompt.match(/\bat\s+(\d+):(\d+)\b/i);
-  return function extractFont(prompt) {
+  return match ? parseInt(match[1]) * 60 + parseInt(match[2]) : 0;
+}
+
+function extractFont(prompt) {
   const exact = namedTypographyFont(prompt);
   if (exact) return { font: exact };
 
