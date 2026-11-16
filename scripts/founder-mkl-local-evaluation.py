@@ -23,13 +23,15 @@ def run(args, capture=False):
 
 
 def probe(path):
-    value = json.loads(run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,avg_frame_rate", "-of", "json", str(path)], True))
+    value = json.loads(run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,avg_frame_rate,width,height", "-of", "json", str(path)], True))
     duration = float(value["format"]["duration"])
-    rate = next((entry.get("avg_frame_rate") for entry in value.get("streams", []) if entry.get("codec_type") == "video"), "0/0")
+    video = next((entry for entry in value.get("streams", []) if entry.get("codec_type") == "video"), None)
+    rate = video.get("avg_frame_rate") if video else "0/0"
     numerator, denominator = (float(part) for part in rate.split("/", 1))
-    if not np.isfinite(duration) or duration <= 0 or denominator == 0 or numerator <= 0:
+    width, height = (int(video.get(key, 0)) if video else 0 for key in ("width", "height"))
+    if not np.isfinite(duration) or duration <= 0 or denominator == 0 or numerator <= 0 or width < 2 or height < 2:
         raise RuntimeError("unreadable video timing")
-    return duration, numerator / denominator
+    return duration, numerator / denominator, width, height
 
 
 def frame(path, timestamp):
@@ -58,31 +60,38 @@ def transformation(source_samples, reference_samples):
         raise RuntimeError("degenerate MKL covariance transform")
 
     def apply(image):
-        # Keep the original acceptance evaluator's path rather than attempting
-        # to reconstruct color-matcher's internal normalization from its
-        # exposed matrix. The matrix is validated above only as a degeneracy
-        # guard; ColorMatcher remains authoritative for per-frame transfer.
+        # Keep the original ColorMatcher MKL evaluator authoritative. Running
+        # it on the decoded source frame preserves source detail instead of
+        # discarding it before the colour transfer.
         with np.errstate(over="raise", invalid="raise", divide="raise"):
-            transformed = np.asarray(ColorMatcher().transfer(src=image.astype(np.float64), ref=reference_samples, method="mkl"), dtype=np.float64)
+            matcher = ColorMatcher()
+            transformed = np.asarray(matcher.transfer(src=image.astype(np.float64), ref=reference_samples, method="mkl"), dtype=np.float64)
+        frame_matrix = np.asarray(matcher.transfer_mat, dtype=np.float64)
+        frame_source_mean = np.asarray(matcher.mu_r[:, 0], dtype=np.float64)
+        frame_reference_mean = np.asarray(matcher.mu_z[:, 0], dtype=np.float64)
+        frame_condition = float(np.linalg.cond(frame_matrix))
+        if frame_matrix.shape != (3, 3) or frame_source_mean.shape != (3,) or frame_reference_mean.shape != (3,) or not (np.isfinite(frame_matrix).all() and np.isfinite(frame_source_mean).all() and np.isfinite(frame_reference_mean).all()) or np.linalg.matrix_rank(frame_matrix) != 3 or not np.isfinite(frame_condition) or frame_condition > 1e12:
+            raise RuntimeError("invalid MKL frame covariance transform")
         if transformed.shape != image.shape or not np.isfinite(transformed).all():
             raise RuntimeError("non-finite MKL frame output")
         return np.clip(transformed, 0, 255).astype(np.uint8)
     return apply, condition
 
 
-def render(source, destination, fps, transform):
+def render(source, destination, fps, width, height, transform):
     silent = destination.with_suffix(".silent.mp4")
-    decoder = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(source), "-an", "-vsync", "0", "-vf", f"scale={WIDTH}:{HEIGHT}", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], stdout=subprocess.PIPE)
-    encoder = subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", f"{WIDTH}x{HEIGHT}", "-framerate", str(fps), "-i", "pipe:0", "-an", "-c:v", "libx264", "-crf", "18", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(silent)], stdin=subprocess.PIPE)
+    frame_bytes = width * height * 3
+    decoder = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(source), "-an", "-vsync", "0", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], stdout=subprocess.PIPE)
+    encoder = subprocess.Popen(["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", f"{width}x{height}", "-framerate", str(fps), "-i", "pipe:0", "-an", "-c:v", "libx264", "-crf", "18", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(silent)], stdin=subprocess.PIPE)
     frames = 0
     try:
         while True:
-            raw = decoder.stdout.read(FRAME_BYTES)
+            raw = decoder.stdout.read(frame_bytes)
             if not raw:
                 break
-            if len(raw) != FRAME_BYTES:
+            if len(raw) != frame_bytes:
                 raise RuntimeError("partial source frame")
-            image = np.frombuffer(raw, dtype=np.uint8).reshape(HEIGHT, WIDTH, 3).copy()
+            image = np.frombuffer(raw, dtype=np.uint8).reshape(height, width, 3).copy()
             result = transform(image)
             if not np.isfinite(result).all():
                 raise RuntimeError("non-finite encoded frame")
@@ -94,9 +103,9 @@ def render(source, destination, fps, transform):
         decoder.wait(); encoder.wait()
     if decoder.returncode or encoder.returncode or frames < 1:
         raise RuntimeError("MKL encoding failed")
-    # Preserve source audio and do not use -shortest: some source AAC streams
-    # end a few frames before their visual container duration.
-    run(["ffmpeg", "-y", "-v", "error", "-i", str(silent), "-i", str(source), "-map", "0:v:0", "-map", "1:a?", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", str(destination)])
+    # Preserve compatible source AAC bit-for-bit and avoid a second lossy
+    # encode of the completed MKL visual stream.
+    run(["ffmpeg", "-y", "-v", "error", "-i", str(silent), "-i", str(source), "-map", "0:v:0", "-map", "1:a?", "-c:v", "copy", "-c:a", "copy", "-movflags", "+faststart", str(destination)])
     silent.unlink(missing_ok=True)
     return frames
 
@@ -109,11 +118,11 @@ def main():
     parser.add_argument("--report", required=True)
     args = parser.parse_args()
     source, reference, output, report = (Path(value) for value in (args.source, args.reference, args.output, args.report))
-    source_duration, fps = probe(source)
-    reference_duration, _ = probe(reference)
+    source_duration, fps, width, height = probe(source)
+    reference_duration, _, _, _ = probe(reference)
     transform, condition = transformation(mosaic(source, source_duration), mosaic(reference, reference_duration))
     output.parent.mkdir(parents=True, exist_ok=True)
-    frames = render(source, output, fps, transform)
+    frames = render(source, output, fps, width, height, transform)
     report.write_text(json.dumps({"version": "founder-mkl-evaluation/1", "status": "ok", "frameCount": frames, "matrixFinite": True, "outputFinite": True, "matrixCondition": condition}), encoding="utf-8")
 
 
