@@ -48,7 +48,7 @@ export function recommendTypographyFonts(description, { limit = 4 } = {}) {
     .map((font) => {
       const matched = font.tags.filter((tag) => {
         const parts = tag.split(/[^a-z0-9]+/).filter(Boolean);
-        return parts.every((part) => intents.has(part));
+        return intents.has(tag) || parts.every((part) => intents.has(part));
       });
       return { fontId: font.id, family: font.family, matched, score: matched.length };
     })
@@ -64,7 +64,7 @@ export function namedTypographyFont(description) {
   const found = Object.values(FONT_CATALOG).find((font) =>
     [font.family, ...font.aliases].some((alias) => {
       const label = alias.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-      return label && new RegExp(`(?:^|\\s)${label.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}(?:$|\\s)`).test(normalized);
+      return label && ` ${normalized} `.includes(` ${label} `);
     })
   );
   return found ? resolveFontId(found.family) : null;
