@@ -1,0 +1,30 @@
+name: Typography V1A production-container acceptance
+
+on:
+  push:
+    branches:
+      - feature/typography-v1a-20261116
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  title-slice:
+    name: Validate Typography V1A inside production Docker image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build actual production Dockerfile
+        run: docker build --pull --tag cliponaut-typography-v1a:${{ github.sha }} --build-arg NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID=ci-placeholder .
+      - name: Run typography and existing editor tests inside deployed image
+        run: |
+          docker run --rm --entrypoint /bin/sh cliponaut-typography-v1a:${{ github.sha }} -ec '
+            cd /app
+            ./node_modules/.bin/tsx --test tests/typography-v1a.test.js
+            ./node_modules/.bin/tsx --test tests/jobs.test.js
+          '
+      - name: Clarify scope
+        run: |
+          echo "This validates the actual Railway Docker build and the text/planner tests, not a hosted typography render or the future Google Fonts catalogue." >> "$GITHUB_STEP_SUMMARY"
