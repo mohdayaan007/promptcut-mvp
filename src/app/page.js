@@ -50,6 +50,7 @@ import {
   waitForBrowserPaint,
 } from "@/lib/client/direct-upload";
 import { browserVideoPreflightError } from "@/lib/client/media-preflight";
+import { analyseReferenceVideoLocally } from "@/lib/client/reference-video-profile";
 import { editorAccessState } from "@/lib/editor-access-presentation";
 
 const MAX_VIDEO_COUNT = 5;
@@ -83,6 +84,9 @@ export default function HomePage() {
   const [videoMetadata, setVideoMetadata] = useState([]);
   const [exportQuality, setExportQuality] = useState("standard");
   const [referenceImage, setReferenceImage] = useState(null);
+  const [referenceProfile, setReferenceProfile] = useState(null);
+  const [referenceProfileStatus, setReferenceProfileStatus] = useState("idle");
+  const [localReferenceVideoMkl, setLocalReferenceVideoMkl] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState(null);
@@ -107,6 +111,7 @@ export default function HomePage() {
 
   const videoInputRef = useRef(null);
   const imageInputRef = useRef(null);
+  const referenceVideoInputRef = useRef(null);
   const promptRef = useRef(null);
   const requestControllerRef = useRef(null);
   const undoStateRef = useRef(null);
@@ -408,8 +413,19 @@ export default function HomePage() {
       return;
     }
     setReferenceImage(image);
+    setReferenceProfile(null);
     event.target.value = "";
   };
+
+  const handleReferenceVideoChange = async (event) => {
+    const video = event.target.files?.[0]; event.target.value = "";
+    if (!video) return;
+    setReferenceProfileStatus("analysing"); setError(null);
+    try { setReferenceProfile(await analyseReferenceVideoLocally(video)); setReferenceImage(null); setReferenceProfileStatus("ready"); }
+    catch (error) { setReferenceProfile(null); setReferenceProfileStatus("error"); setError(error.message || "Reference video could not be analysed locally."); }
+  };
+
+  useEffect(() => { fetch("/api/editing-capabilities", { cache: "no-store" }).then((response) => response.ok ? response.json() : {}).then((value) => setLocalReferenceVideoMkl(value.localReferenceVideoMkl === true)).catch(() => setLocalReferenceVideoMkl(false)); }, [editorAccess.phase]);
 
   const handleRemoveVideo = (index) => {
     setVideos((currentVideos) => currentVideos.filter((_, videoIndex) => videoIndex !== index));
@@ -491,7 +507,7 @@ export default function HomePage() {
       }
       if (capability.kind === "unsupported" || capability.kind === "ambiguous") throw new Error(capability.message);
       const job = await uploadAndQueueJob({
-        videos, referenceImage, prompt: submittedPrompt, exportQuality, signal: controller.signal,
+        videos, referenceImage, referenceProfile, prompt: submittedPrompt, exportQuality, signal: controller.signal,
         onProgress: setUploadProgress,
         onSession: (session) => {
           if (!isCurrentPresentationAttempt(presentationAttempt, presentationAttemptRef.current)) return;
@@ -726,6 +742,7 @@ export default function HomePage() {
         disabled={accessState.blocking}
         onChange={handleVideosChange}
       />
+      {localReferenceVideoMkl ? <input ref={referenceVideoInputRef} type="file" accept="video/*" className="cliponaut-visually-hidden" disabled={accessState.blocking || referenceProfileStatus === "analysing"} onChange={handleReferenceVideoChange} /> : null}
       <input
         ref={imageInputRef}
         type="file"
@@ -741,6 +758,8 @@ export default function HomePage() {
             videos={videos}
             restoredSources={restoredSources}
             referenceImage={referenceImage}
+            referenceProfile={referenceProfile}
+            referenceProfileStatus={referenceProfileStatus}
             status={status}
             uploadProgress={uploadProgress}
             error={error}
@@ -751,8 +770,9 @@ export default function HomePage() {
             onExportQualityChange={setExportQuality}
             onSelectVideos={() => canStartNewRender ? videoInputRef.current?.click() : setError(accessState.detail || "Editing access is unavailable.")}
             onSelectReferenceImage={() => canStartNewRender ? imageInputRef.current?.click() : setError(accessState.detail || "Editing access is unavailable.")}
+            onSelectReferenceVideo={localReferenceVideoMkl ? () => referenceVideoInputRef.current?.click() : null}
             onRemoveVideo={handleRemoveVideo}
-            onRemoveReferenceImage={() => setReferenceImage(null)}
+            onRemoveReferenceImage={() => { setReferenceImage(null); setReferenceProfile(null); setReferenceProfileStatus("idle"); }}
             onEditAgain={handleEditAgain}
             canViewPreviousEdit={status === "error" && undoState?.current?.kind === "job"}
             onViewPreviousEdit={handleViewPreviousEdit}

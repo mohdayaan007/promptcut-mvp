@@ -1,8 +1,9 @@
 import { abortMultipartUpload, beginMultipartUpload, referenceObjectKey, sourceObjectKey } from "@/lib/jobs/storage";
 import { createUploadJob, failUploadJob, releaseUnattachedRenderReservation, setUploadSources } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError, safeJobResponse } from "@/lib/jobs/http";
-import { MULTIPART_PART_SIZE_BYTES, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
+import { assertCustomerReferenceVideoUploadAllowed, MULTIPART_PART_SIZE_BYTES, referenceRequiresMultipartUpload, validateReferenceColourProfile, validateReferenceManifest, validateUploadManifest } from "@/lib/jobs/job-config";
 import { authorizePaidEdit } from "@/lib/paid-editing";
+import { customerMklRuntimeConfig } from "@/lib/editor-core/prepared-mkl-runtime";
 
 export const runtime = "nodejs";
 
@@ -13,9 +14,17 @@ export async function POST(req) {
   let authorization;
   try {
     authorization = await authorizePaidEdit(req);
-    const { files, reference: requestedReference } = await req.json();
+    const { files, reference: requestedReference, referenceProfile } = await req.json();
     let initialReference;
-    try { validateUploadManifest(files); initialReference = validateReferenceManifest(requestedReference); } catch (error) { throw new PublicRequestError(error.message); }
+    try {
+      validateUploadManifest(files);
+      initialReference = validateReferenceManifest(requestedReference);
+      assertCustomerReferenceVideoUploadAllowed(initialReference); if (initialReference && referenceProfile) throw new Error("Choose either an image reference or a local video profile"); initialReference ||= validateReferenceColourProfile(referenceProfile);
+      if (initialReference?.kind === "video_profile") {
+        // The client-side picker is not an authorization boundary.
+        customerMklRuntimeConfig({ founderAuthorized: authorization.founderUnlimited === true });
+      }
+    } catch (error) { throw new PublicRequestError(error.message); }
     console.info("upload-session: request validated", { sourceCount: files.length });
     const initialSources = files.map((file, index) => ({ index, name: file.name, type: file.type, size: file.size }));
     stage = "database job creation";
@@ -31,9 +40,11 @@ export async function POST(req) {
       started.push({ key, uploadId });
       sources.push({ ...file, key, uploadId, parts: [] });
     }
-    let reference = null;
-    if (initialReference) {
-      const key = referenceObjectKey(job.id);
+    // A browser-local profile is numerical job metadata, not uploadable media.
+    // Preserve it in the job record without creating a bucket object.
+    let reference = initialReference?.kind === "video_profile" ? initialReference : null;
+    if (referenceRequiresMultipartUpload(initialReference)) {
+      const key = referenceObjectKey(job.id, initialReference);
       stage = "reference bucket multipart creation";
       const uploadId = await beginMultipartUpload({ key, contentType: initialReference.type });
       started.push({ key, uploadId });

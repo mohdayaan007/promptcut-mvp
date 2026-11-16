@@ -356,10 +356,10 @@ async function uploadMultipartFile({ session, file, fileIndex, kind = "source", 
   return { key: upload.key, uploadId: upload.uploadId, parts };
 }
 
-export async function uploadAndQueueJob({ videos, referenceImage = null, prompt, exportQuality, signal, onProgress, onSession, fetchFn = fetch, sleepFn }) {
+export async function uploadAndQueueJob({ videos, referenceImage = null, referenceProfile = null, prompt, exportQuality, signal, onProgress, onSession, fetchFn = fetch, sleepFn }) {
   const session = await requestJson("/api/uploads", {
     method: "POST",
-    body: JSON.stringify({ files: videos.map((file) => ({ name: file.name, size: file.size, type: file.type || "video/mp4" })), reference: referenceImage ? { name: referenceImage.name, size: referenceImage.size, type: referenceImage.type } : null }),
+    body: JSON.stringify({ files: videos.map((file) => ({ name: file.name, size: file.size, type: file.type || "video/mp4" })), reference: referenceImage ? { name: referenceImage.name, size: referenceImage.size, type: referenceImage.type } : null, referenceProfile }),
     signal
   }, fetchFn);
   onSession?.({ id: session.id, accessToken: session.accessToken });
@@ -373,7 +373,7 @@ export async function uploadAndQueueJob({ videos, referenceImage = null, prompt,
     const completedReference = referenceImage ? await uploadMultipartFile({ session, file: referenceImage, kind: "reference", signal, fetchFn, sleepFn, onPartUploaded: (size) => { uploadedBytes += size; onProgress?.({ uploadedBytes, totalBytes }); } }) : null;
     return await requestJson(`/api/uploads/${session.id}/complete`, {
       method: "POST", headers: jobHeaders(session.accessToken),
-      body: JSON.stringify({ prompt, exportQuality, files: completedFiles, ...(completedReference ? { reference: completedReference } : {}) }), signal
+      body: JSON.stringify({ prompt, exportQuality, files: completedFiles, ...(completedReference ? { reference: completedReference } : {}), ...(referenceProfile ? { referenceProfile } : {}) }), signal
     }, fetchFn);
   } catch (error) {
     await fetchFn(`/api/uploads/${session.id}/abort`, { method: "POST", headers: jobHeaders(session.accessToken) }).catch(() => {});

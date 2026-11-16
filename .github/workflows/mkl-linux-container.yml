@@ -1,0 +1,76 @@
+name: MKL Linux container verification
+
+on:
+  push:
+    branches:
+      - release/mkl-customer-slice-20261116
+    paths:
+      - .github/workflows/mkl-linux-container.yml
+      - Dockerfile
+      - .dockerignore
+      - package.json
+      - package-lock.json
+      - python/**
+      - scripts/founder-mkl-local-evaluation.py
+      - scripts/cliponaut-worker.js
+      - tests/reference-profile-upload.test.js
+      - tests/prepared-mkl-runtime.test.js
+      - src/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mkl-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-container:
+    name: Build MKL Linux image and verify runtime (no deployment)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact release revision
+        uses: actions/checkout@v4
+
+      - name: Confirm Linux x86_64
+        run: |
+          set -eu
+          test "$(uname -m)" = "x86_64"
+          uname -a
+
+      - name: Build production Dockerfile
+        run: |
+          docker build --pull --tag cliponaut-mkl-ci:${{ github.sha }} --build-arg NEXT_PUBLIC_GOOGLE_OAUTH_CLIENT_ID=ci-placeholder .
+
+      - name: Verify Python MKL runtime, FFmpeg and Node inside image
+        run: |
+          docker run --rm --entrypoint /bin/sh cliponaut-mkl-ci:${{ github.sha }} -ec '
+            /opt/cliponaut-mkl-venv/bin/python /app/scripts/founder-mkl-local-evaluation.py --runtime-check
+            ffmpeg -version | head -n 1
+            ffprobe -version | head -n 1
+            node --version
+            test -f /app/scripts/cliponaut-worker.js
+            test -f /usr/share/licenses/color-matcher/LICENSE
+            test -f /usr/share/doc/cliponaut-mkl/GPL-COMPONENT.md
+          '
+
+      - name: Verify worker command and focused MKL tests inside image
+        run: |
+          docker run --rm --entrypoint /bin/sh cliponaut-mkl-ci:${{ github.sha }} -ec '
+            node -e "const p=require(\"/app/package.json\");if(!p.scripts.worker || !p.scripts.worker.includes(\"cliponaut-worker\"))process.exit(1)"
+            cd /app
+            CLIPONAUT_MKL_PYTHON=/opt/cliponaut-mkl-venv/bin/python npm run test:mkl-runtime
+            ./node_modules/.bin/tsx --test tests/prepared-mkl-runtime.test.js tests/founder-mkl-local.test.js tests/reference-profile-upload.test.js tests/reference-colour-intent.test.js
+          '
+
+      - name: Document unrelated Linux preset-test variance
+        run: |
+          {
+            echo "### Linux MKL container verification"
+            echo "This workflow checks the actual Docker build, Python/FFmpeg dependencies, worker command, and focused MKL tests."
+            echo "The initial broad test:jobs run on 2026-11-16 passed 185/188 tests, but failed 3 existing FFmpeg pixel-sensitive preset/style assertions (tests 160, 165, 166) on this Linux image."
+            echo "Those preset regressions remain **unresolved** and are not marked passing by this focused verification."
+            echo "A passing workflow is **not** an end-to-end MKL render, GPL clearance, or production release approval."
+          } >> "$GITHUB_STEP_SUMMARY"
