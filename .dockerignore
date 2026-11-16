@@ -45,6 +45,5 @@ tmp
 founder-reference-style-analysis
 founder-reference-style-staging
 
-# GPL-dependent founder-local MKL evaluation is never part of a production
-# image. Its Python package remains outside package.json and Docker.
-scripts/founder-mkl-local-evaluation.py
+# The MKL runner is intentionally copied into the prepared image, but remains
+# release-gated in the Node worker until legal and public-safety approval.

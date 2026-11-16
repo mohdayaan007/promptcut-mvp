@@ -1,0 +1,7 @@
+# Linux x86_64 / CPython 3.11 production-only runtime lock.
+# The approved runner imports only color-matcher and NumPy; optional upstream
+# package dependencies are deliberately not installed in the worker image.
+color-matcher==0.6.0 \
+    --hash=sha256:fd642f9414c33b7f3ebc96fe0888c1c6200836142664589ce2ccb52ebcda7734
+numpy==2.0.2 \
+    --hash=sha256:13e689d772146140a252c3a28501da66dfecd77490b498b168b501835041f951
