@@ -19,8 +19,9 @@ export function preparedMklRuntimeConfig({ env = process.env } = {}) {
   return Object.freeze({ version: PREPARED_RUNTIME_VERSION, python, runner });
 }
 
-export function customerMklRuntimeConfig({ env = process.env } = {}) {
-  if (env.CLIPONAUT_CUSTOMER_MKL_RELEASE_ENABLED !== "true") {
+export function customerMklRuntimeConfig({ env = process.env, founderAuthorized = false } = {}) {
+  const founderOnly = founderAuthorized === true && env.CLIPONAUT_MKL_FOUNDER_ONLY_TEST_ENABLED === "true";
+  if (env.CLIPONAUT_CUSTOMER_MKL_RELEASE_ENABLED !== "true" && !founderOnly) {
     throw new Error("Customer MKL release is disabled pending safety and legal approval");
   }
   return preparedMklRuntimeConfig({ env });
