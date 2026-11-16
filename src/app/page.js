@@ -425,7 +425,7 @@ export default function HomePage() {
     catch (error) { setReferenceProfile(null); setReferenceProfileStatus("error"); setError(error.message || "Reference video could not be analysed locally."); }
   };
 
-  useEffect(() => { fetch("/api/editing-capabilities").then((response) => response.ok ? response.json() : {}).then((value) => setLocalReferenceVideoMkl(value.localReferenceVideoMkl === true)).catch(() => setLocalReferenceVideoMkl(false)); }, []);
+  useEffect(() => { fetch("/api/editing-capabilities", { cache: "no-store" }).then((response) => response.ok ? response.json() : {}).then((value) => setLocalReferenceVideoMkl(value.localReferenceVideoMkl === true)).catch(() => setLocalReferenceVideoMkl(false)); }, [editorAccess.phase]);
 
   const handleRemoveVideo = (index) => {
     setVideos((currentVideos) => currentVideos.filter((_, videoIndex) => videoIndex !== index));
