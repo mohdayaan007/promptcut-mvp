@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, copyFile, writeFile, rm, stat } from "node:fs/promises"
 import path from "node:path";
 import os from "node:os";
 import { applyConversationTurn, validateConversationPlan } from "../src/lib/editor-core/conversation-state.js";
+import { createEditPlan } from "../src/lib/editor-core/edit-plan.js";
 import { executeEditPlan } from "../src/lib/editor-core/edit-executor.js";
 import { createSourceCatalog } from "../src/lib/editor-core/source-catalog.js";
 import { probeVideoFile } from "../src/lib/media/media-probe.js";
@@ -87,5 +88,39 @@ test("eight independently rendered turns preserve start cuts, replace styles, an
     assert.ok(audioAlignment.correlation > 0.95, JSON.stringify(audioAlignment));
     assert.ok(Math.abs(audioAlignment.lagSamples) / 16000 < 0.025, JSON.stringify(audioAlignment));
     if (evidence) await writeFile(path.join(evidence, "media-results.json"), JSON.stringify({ fixture: "synthetic explicit 10–25s selection; no semantic model", results, frameMSE: matches, audioAlignment }, null, 2));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("timestamp trim removes the requested middle interval and joins synchronized retained footage", { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-remove-interval-"));
+  try {
+    const input = path.join(root, "source.mp4");
+    await run("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-f", "lavfi", "-i", "aevalsrc=0.2*sin(2*PI*(200*t+12*t*t)):s=48000", "-t", "20", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", input]);
+    const media = await probeVideoFile(input);
+    const catalog = createSourceCatalog([{ index: 0, name: "source.mp4", type: "video/mp4", size: (await stat(input)).size }], [media]);
+    const plan = applyConversationTurn({ priorPlan: { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 20 }] }] }, prompt: "Trim from 0:08 to 0:12", sourceCatalog: catalog }).plan;
+    const scratch = path.join(root, "render"); await mkdir(scratch);
+    const output = await executeEditPlan({ inputPaths: [input], media: [media], plan: validateConversationPlan(plan, catalog), sourceCatalog: catalog, tempDirectory: scratch });
+    const rendered = await probeVideoFile(output);
+    assert.ok(Math.abs(rendered.duration - 16) < 0.15, `duration ${rendered.duration}`);
+    assert.ok(mse(await frame(output, 7.5), await frame(input, 7.5)) < 25);
+    assert.ok(mse(await frame(output, 8.5), await frame(input, 12.5)) < 25);
+    const sync = alignment(await audio(input, 12.5, 1), await audio(output, 8.5, 1));
+    assert.ok(sync.correlation > 0.95, JSON.stringify(sync));
+    // Initial requests use the same public wording contract. Render every
+    // variant so duration and retained footage cannot regress in parser-only
+    // tests while the follow-up path remains covered above.
+    for (const [index, prompt, expectedDuration, outputAt, expectedAt] of [
+      [1, "Keep only 0:08 to 0:12", 4, 0.5, 8.5],
+      [2, "Remove 0:08 to 0:12", 16, 8.5, 12.5],
+      [3, "Cut out 0:08 to 0:12", 16, 8.5, 12.5],
+      [4, "Trim from 0:08 to 0:12", 16, 8.5, 12.5]
+    ]) {
+      const renderDirectory = path.join(root, `initial-${index}`); await mkdir(renderDirectory);
+      const outputPath = await executeEditPlan({ inputPaths: [input], media: [media], plan: validateConversationPlan(createEditPlan({ prompt, sourceCatalog: catalog }), catalog), sourceCatalog: catalog, tempDirectory: renderDirectory });
+      const probe = await probeVideoFile(outputPath);
+      assert.ok(Math.abs(probe.duration - expectedDuration) < 0.15, `${prompt}: ${probe.duration}`);
+      assert.ok(mse(await frame(outputPath, outputAt), await frame(input, expectedAt)) < 25, prompt);
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });

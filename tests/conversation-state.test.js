@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyConversationTurn, trimOutputStart, validateConversationPlan } from "../src/lib/editor-core/conversation-state.js";
+import { applyConversationTurn, removeOutputInterval, trimOutputStart, validateConversationPlan } from "../src/lib/editor-core/conversation-state.js";
+import { createEditPlan } from "../src/lib/editor-core/edit-plan.js";
 
 const catalog = [{ sourceId: "source-1", index: 0, ordinal: 1, filename: "talking.mp4", duration: 60, width: 1280, height: 720, hasAudio: true }];
 const base = { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 20, end: 50 }] }] };
@@ -91,8 +92,28 @@ test("cinematic follow-up accepts the canonical my-video wording used by partial
 
 test("unsupported contextual removals and timeline ranges fail without changing the prior plan", () => {
   assert.throws(() => applyConversationTurn({ priorPlan: base, prompt: "Remove the subtitles.", sourceCatalog: catalog }), /unchanged/i);
-  assert.throws(() => applyConversationTurn({ priorPlan: base, prompt: "Trim 0:05 to 0:20.", sourceCatalog: catalog }), /fresh media understanding/i);
+  const trimmed = applyConversationTurn({ priorPlan: base, prompt: "Trim from 0:05 to 0:20.", sourceCatalog: catalog });
+  assert.deepEqual(trimmed.plan.operations[0].clips, [{ sourceId: "source-1", start: 20, end: 25 }, { sourceId: "source-1", start: 40, end: 50 }]);
   assert.deepEqual(base.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 20, end: 50 }] }]);
+});
+
+test("timestamp wording has explicit keep versus remove semantics for initial and follow-up plans", () => {
+  const initialCatalog = [{ ...catalog[0], duration: 120 }];
+  const cases = [
+    ["Keep only 0:08 to 1:10", [{ sourceId: "source-1", start: 8, end: 70 }]],
+    ["Remove 0:08 to 1:10", [{ sourceId: "source-1", start: 0, end: 8 }, { sourceId: "source-1", start: 70, end: 120 }]],
+    ["Cut out 0:08 to 1:10", [{ sourceId: "source-1", start: 0, end: 8 }, { sourceId: "source-1", start: 70, end: 120 }]],
+    ["Trim from 0:08 to 1:10", [{ sourceId: "source-1", start: 0, end: 8 }, { sourceId: "source-1", start: 70, end: 120 }]]
+  ];
+  for (const [prompt, clips] of cases) {
+    const plan = createEditPlan({ prompt, sourceCatalog: initialCatalog });
+    if (/keep only/i.test(prompt)) assert.deepEqual(plan.operations, [{ type: "trim", start: 8, end: 70 }]);
+    else assert.deepEqual(plan.operations, [{ type: "sequence", clips }]);
+    assert.doesNotThrow(() => validateConversationPlan(plan, initialCatalog));
+  }
+  const previous = { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 10, end: 110 }] }] };
+  assert.deepEqual(removeOutputInterval(previous, 8, 70, initialCatalog).operations[0].clips, [{ sourceId: "source-1", start: 10, end: 18 }, { sourceId: "source-1", start: 80, end: 110 }]);
+  assert.throws(() => removeOutputInterval(previous, 0, 100, initialCatalog), /entire video/i);
 });
 
 test("open-ended conversation retains cumulative timing and one active style across 25 turns", () => {

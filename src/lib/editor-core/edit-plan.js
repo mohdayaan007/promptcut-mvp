@@ -15,18 +15,32 @@ function detectColor(intents = [], prompt = "") {
 }
 
 function parseTrim(prompt = "", intents = []) {
-  if (!intents.includes("trim")) return null;
-
-  const match = prompt.match(
-    new RegExp(`(?:${getIntentPattern("trim")}).*?(\\d+):(\\d+)\\s*to\\s*(\\d+):(\\d+)`, "i")
-  );
+  const match = prompt.match(/\b(keep\s+only|remove|cut\s+out|trim)\s+(?:from\s+)?(\d+):(\d+)\s*(?:to|until|through)\s*(\d+):(\d+)\b/i);
 
   if (!match) return null;
-
+  const command = match[1].toLowerCase().replace(/\s+/g, " ");
   return {
-    start: parseInt(match[1], 10) * 60 + parseInt(match[2], 10),
-    end: parseInt(match[3], 10) * 60 + parseInt(match[4], 10)
+    // "trim from A to B" is established product language for removing the
+    // interval, not retaining it. Keep-only is the sole retaining form.
+    mode: command === "keep only" ? "keep" : "remove",
+    start: parseInt(match[2], 10) * 60 + parseInt(match[3], 10),
+    end: parseInt(match[4], 10) * 60 + parseInt(match[5], 10)
   };
+}
+
+function removeOutputRange(clips, start, end) {
+  let offset = 0;
+  return clips.flatMap((clip) => {
+    const duration = clip.end - clip.start;
+    const localStart = Math.max(0, Math.min(duration, start - offset));
+    const localEnd = Math.max(0, Math.min(duration, end - offset));
+    offset += duration;
+    if (localEnd <= 0 || localStart >= duration) return [clip];
+    const retained = [];
+    if (localStart > 0) retained.push({ ...clip, end: clip.start + localStart });
+    if (localEnd < duration) retained.push({ ...clip, start: clip.start + localEnd });
+    return retained;
+  });
 }
 
 function parseTimestampRange(prompt = "") {
@@ -646,7 +660,13 @@ export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipl
   if (colorStyle) operations.push({ type: "color_grade", style: colorStyle });
   if (title) operations.push({ type: "title", ...title });
   if (requestsCaptions(prompt)) operations.push(createCaptionOperation(prompt));
-  if (trim) operations.push({ type: "trim", ...trim });
+  if (trim?.mode === "keep") operations.push({ type: "trim", start: trim.start, end: trim.end });
+  if (trim?.mode === "remove") {
+    const clips = removeOutputRange(fullSourceClips(sourceCatalog), trim.start, trim.end);
+    // The validator supplies the final duration boundary; an empty sequence is
+    // deliberately rejected before FFmpeg instead of risking a corrupted job.
+    return { version: "2", operations: [{ type: "sequence", clips }, ...operations] };
+  }
   operations.push(...parseFallbackCapabilities(prompt));
 
   const basePlan = { version: "1", operations };

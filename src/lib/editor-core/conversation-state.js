@@ -21,16 +21,35 @@ function sliceSequence(clips, start, end = Infinity) {
   });
 }
 
+function removeOutputRange(clips, start, end) {
+  let offset = 0;
+  return clips.flatMap((clip) => {
+    const duration = clip.end - clip.start;
+    const from = Math.max(0, Math.min(duration, start - offset));
+    const to = Math.max(0, Math.min(duration, end - offset));
+    offset += duration;
+    if (to <= 0 || from >= duration) return [clip];
+    const retained = [];
+    if (from > 0) retained.push({ ...clip, end: clip.start + from });
+    if (to < duration) retained.push({ ...clip, start: clip.start + to });
+    return retained;
+  });
+}
+
+function visibleSequence(plan, sourceCatalog) {
+  const next = clone(plan || { version: sourceCatalog.length > 1 ? "2" : "1", operations: [] });
+  let sequence = next.operations.find((operation) => operation.type === "sequence");
+  if (!sequence) sequence = { type: "sequence", clips: fullSequence(sourceCatalog) };
+  const priorTrim = next.operations.find((operation) => operation.type === "trim");
+  return { next, clips: priorTrim ? sliceSequence(sequence.clips, priorTrim.start, priorTrim.end) : sequence.clips };
+}
+
 /** Removes a time interval from a source-relative sequence without ever using an export as input. */
 export function trimOutputStart(plan, seconds, sourceCatalog) {
   if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("The trim duration must be positive");
   const next = clone(plan || { version: sourceCatalog.length > 1 ? "2" : "1", operations: [] });
   let sequence = next.operations.find((operation) => operation.type === "sequence");
-  if (!sequence) {
-    sequence = { type: "sequence", clips: fullSequence(sourceCatalog) };
-    next.version = "2";
-    next.operations.unshift(sequence);
-  }
+  if (!sequence) { sequence = { type: "sequence", clips: fullSequence(sourceCatalog) }; next.version = "2"; next.operations.unshift(sequence); }
   // A legacy global trim acts on the assembled sequence. Canonicalize its
   // visible window before applying the new delta; keeping it would trim twice.
   const priorTrim = next.operations.find((operation) => operation.type === "trim");
@@ -39,6 +58,19 @@ export function trimOutputStart(plan, seconds, sourceCatalog) {
   if (!clips.length) throw new Error("That trim would remove the entire video");
   sequence.clips = clips;
   next.operations = next.operations.filter((operation) => !["trim", "merge"].includes(operation.type));
+  return next;
+}
+
+export function removeOutputInterval(plan, start, end, sourceCatalog) {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) throw new Error("The timestamp range is invalid");
+  const { next, clips } = visibleSequence(plan, sourceCatalog);
+  const total = clips.reduce((sum, clip) => sum + clip.end - clip.start, 0);
+  if (end > total + 0.01) throw new Error("That timestamp range exceeds the current edit duration");
+  const retained = removeOutputRange(clips, start, end);
+  if (!retained.length) throw new Error("That range would remove the entire video");
+  next.version = "2";
+  const sequence = { type: "sequence", clips: retained };
+  next.operations = [sequence, ...next.operations.filter((operation) => !["sequence", "trim", "merge"].includes(operation.type))];
   return next;
 }
 
@@ -71,6 +103,17 @@ export function applyConversationTurn({ priorPlan, prompt, sourceCatalog }) {
   // These fast paths accept a complete instruction, never a matching fragment
   // of a compound/negated/source-scoped request that would silently lose intent.
   const simple = normalized.replace(/[.!]+$/g, "").replace(/^(?:now|also|please)\s+/, "");
+  const rangedEdit = simple.match(/^(keep\s+only|remove|cut\s+out|trim)\s+(?:from\s+)?(\d+):(\d+)\s*(?:to|until|through)\s*(\d+):(\d+)$/);
+  if (rangedEdit) {
+    if (priorPlan.operations.some((operation) => operation.type === "speed")) throw new Error("Trimming after a speed change is not supported yet. Remove the speed change or make the trim first.");
+    const start = Number(rangedEdit[2]) * 60 + Number(rangedEdit[3]);
+    const end = Number(rangedEdit[4]) * 60 + Number(rangedEdit[5]);
+    const command = rangedEdit[1];
+    const plan = command === "keep only"
+      ? (() => { const { next, clips } = visibleSequence(priorPlan, sourceCatalog); const selected = sliceSequence(clips, start, end); if (!selected.length) throw new Error("That timestamp range does not contain footage"); next.version = "2"; next.operations = [{ type: "sequence", clips: selected }, ...next.operations.filter((operation) => !["sequence", "trim", "merge"].includes(operation.type))]; return next; })()
+      : removeOutputInterval(priorPlan, start, end, sourceCatalog);
+    return { plan, confirmation: command === "keep only" ? `Kept only ${rangedEdit[2]}:${rangedEdit[3]} to ${rangedEdit[4]}:${rangedEdit[5]} from the current edit.` : `Removed ${rangedEdit[2]}:${rangedEdit[3]} to ${rangedEdit[4]}:${rangedEdit[5]} from the current edit.` };
+  }
   if (/\b(?:bring|change|turn)\s+(?:it\s+)?back\s+to\s+normal\b|\bremove\s+(?:the\s+)?(?:style|filter)\b/.test(normalized)) {
     if (!/^(?:(?:bring|change|turn)\s+(?:it\s+)?back\s+to\s+normal|remove\s+(?:the\s+)?(?:style|filter))$/.test(simple)) throw new Error("Please request one supported change at a time. Your current edit is unchanged.");
     return { plan: resetStyle(priorPlan), confirmation: "Restored the original color treatment while keeping your earlier edits." };
