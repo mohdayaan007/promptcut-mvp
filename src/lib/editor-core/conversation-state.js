@@ -1,4 +1,4 @@
-import { createEditPlan } from "@/lib/editor-core/edit-plan";
+import { createEditPlan, validateOutputTimestampRange } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 
 const STYLE_TYPES = new Set(["color_grade", "style_profile", "visual_adjustment", "reference_style_treatment"]);
@@ -62,10 +62,10 @@ export function trimOutputStart(plan, seconds, sourceCatalog) {
 }
 
 export function removeOutputInterval(plan, start, end, sourceCatalog) {
-  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) throw new Error("The timestamp range is invalid");
   const { next, clips } = visibleSequence(plan, sourceCatalog);
   const total = clips.reduce((sum, clip) => sum + clip.end - clip.start, 0);
-  if (end > total + 0.01) throw new Error("That timestamp range exceeds the current edit duration");
+  try { validateOutputTimestampRange({ start, end, duration: total }); }
+  catch (error) { throw new Error(error.message.replace("uploaded video", "current edit")); }
   const retained = removeOutputRange(clips, start, end);
   if (!retained.length) throw new Error("That range would remove the entire video");
   next.version = "2";
@@ -109,6 +109,9 @@ export function applyConversationTurn({ priorPlan, prompt, sourceCatalog }) {
     const start = Number(rangedEdit[2]) * 60 + Number(rangedEdit[3]);
     const end = Number(rangedEdit[4]) * 60 + Number(rangedEdit[5]);
     const command = rangedEdit[1];
+    const currentDuration = visibleSequence(priorPlan, sourceCatalog).clips.reduce((total, clip) => total + clip.end - clip.start, 0);
+    try { validateOutputTimestampRange({ start, end, duration: currentDuration }); }
+    catch (error) { throw new Error(error.message.replace("uploaded video", "current edit")); }
     const plan = command === "keep only"
       ? (() => { const { next, clips } = visibleSequence(priorPlan, sourceCatalog); const selected = sliceSequence(clips, start, end); if (!selected.length) throw new Error("That timestamp range does not contain footage"); next.version = "2"; next.operations = [{ type: "sequence", clips: selected }, ...next.operations.filter((operation) => !["sequence", "trim", "merge"].includes(operation.type))]; return next; })()
       : removeOutputInterval(priorPlan, start, end, sourceCatalog);

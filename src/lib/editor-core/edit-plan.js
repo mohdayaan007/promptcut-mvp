@@ -18,6 +18,14 @@ export function isDeterministicTimestampRangeEdit(prompt = "") {
   return /\b(?:keep\s+only|remove|cut\s+out|trim)\s+(?:from\s+)?\d+:\d+\s*(?:to|until|through)\s*\d+:\d+\b/i.test(prompt);
 }
 
+/** Validates timestamp edits against their assembled output timeline. */
+export function validateOutputTimestampRange({ start, end, duration }) {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || !Number.isFinite(duration) || start < 0 || end <= start) {
+    throw new Error("Timestamp range must have finite nonnegative bounds with an end after its start");
+  }
+  if (end > duration + 0.01) throw new Error("Timestamp range exceeds the uploaded video duration");
+}
+
 function parseTrim(prompt = "", intents = []) {
   const match = prompt.match(/\b(keep\s+only|remove|cut\s+out|trim)\s+(?:from\s+)?(\d+):(\d+)\s*(?:to|until|through)\s*(\d+):(\d+)\b/i);
 
@@ -664,11 +672,12 @@ export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipl
   if (colorStyle) operations.push({ type: "color_grade", style: colorStyle });
   if (title) operations.push({ type: "title", ...title });
   if (requestsCaptions(prompt)) operations.push(createCaptionOperation(prompt));
+  const assembledDuration = trim ? fullSourceClips(sourceCatalog).reduce((total, clip) => total + clip.end - clip.start, 0) : null;
+  if (trim) validateOutputTimestampRange({ start: trim.start, end: trim.end, duration: assembledDuration });
   if (trim?.mode === "keep") operations.push({ type: "trim", start: trim.start, end: trim.end });
   if (trim?.mode === "remove") {
     const fullSequence = fullSourceClips(sourceCatalog);
     const duration = fullSequence.reduce((total, clip) => total + clip.end - clip.start, 0);
-    if (trim.end > duration + 0.01) throw new Error("Timestamp range exceeds the uploaded video duration");
     const clips = removeOutputRange(fullSequence, trim.start, trim.end);
     if (!clips.length) throw new Error("Timestamp range would remove the entire video");
     // A V2 sequence is itself the assembled timeline. Carrying V1's automatic

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { applyConversationTurn, removeOutputInterval, trimOutputStart, validateConversationPlan } from "../src/lib/editor-core/conversation-state.js";
-import { createEditPlan } from "../src/lib/editor-core/edit-plan.js";
+import { createEditPlan, validateOutputTimestampRange } from "../src/lib/editor-core/edit-plan.js";
 
 const catalog = [{ sourceId: "source-1", index: 0, ordinal: 1, filename: "talking.mp4", duration: 60, width: 1280, height: 720, hasAudio: true }];
 const base = { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 20, end: 50 }] }] };
@@ -128,6 +128,20 @@ test("multi-source removal replaces automatic merge and retains supported compou
   ]);
   assert.deepEqual(plan.operations.find((operation) => operation.type === "audio_volume"), { type: "audio_volume", factor: 0 });
   assert.doesNotThrow(() => validateConversationPlan(plan, sources));
+});
+
+test("all timestamp wordings reject equal, reversed, out-of-bounds, and whole-output ranges", () => {
+  const sources = [{ ...catalog[0], duration: 20 }, { ...catalog[0], sourceId: "source-2", index: 1, ordinal: 2, duration: 20 }];
+  for (const command of ["Keep only", "Remove", "Cut out", "Trim from"]) {
+    assert.throws(() => createEditPlan({ prompt: `${command} 0:12 to 0:08`, hasMultipleVideos: true, sourceCatalog: sources }), /end after/i, command);
+    assert.throws(() => createEditPlan({ prompt: `${command} 0:08 to 0:08`, hasMultipleVideos: true, sourceCatalog: sources }), /end after/i, command);
+    assert.throws(() => createEditPlan({ prompt: `${command} 0:08 to 0:50`, hasMultipleVideos: true, sourceCatalog: sources }), /exceeds/i, command);
+  }
+  assert.throws(() => createEditPlan({ prompt: "Remove 0:00 to 0:40", hasMultipleVideos: true, sourceCatalog: sources }), /entire video/i);
+  for (const prompt of ["Keep only 0:12 to 0:08", "Remove 0:08 to 0:08", "Cut out 0:08 to 0:50", "Trim from 0:00 to 0:20"]) {
+    assert.throws(() => applyConversationTurn({ priorPlan: { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 20 }] }] }, prompt, sourceCatalog: [sources[0]] }), /end after|exceeds|entire video/i, prompt);
+  }
+  assert.throws(() => validateOutputTimestampRange({ start: Number.NaN, end: 1, duration: 20 }), /finite/i);
 });
 
 test("open-ended conversation retains cumulative timing and one active style across 25 turns", () => {
