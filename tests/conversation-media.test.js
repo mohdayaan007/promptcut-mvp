@@ -124,3 +124,26 @@ test("timestamp trim removes the requested middle interval and joins synchronize
     }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("multi-source timestamp removal joins retained clips and applies requested mute", { timeout: 60_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-multi-remove-"));
+  try {
+    const first = path.join(root, "first.mp4"); const second = path.join(root, "second.mp4");
+    await run("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-f", "lavfi", "-i", "aevalsrc=0.2*sin(2*PI*220*t):s=48000", "-t", "10", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", first]);
+    await run("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "smptebars=size=320x180:rate=30", "-f", "lavfi", "-i", "aevalsrc=0.2*sin(2*PI*440*t):s=48000", "-t", "10", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", second]);
+    const media = [await probeVideoFile(first), await probeVideoFile(second)];
+    const catalog = createSourceCatalog([
+      { index: 0, name: "first.mp4", type: "video/mp4", size: (await stat(first)).size },
+      { index: 1, name: "second.mp4", type: "video/mp4", size: (await stat(second)).size }
+    ], media);
+    const plan = createEditPlan({ prompt: "Trim from 0:08 to 0:12 and mute the audio", hasMultipleVideos: true, sourceCatalog: catalog });
+    assert.doesNotThrow(() => validateConversationPlan(plan, catalog));
+    const scratch = path.join(root, "render"); await mkdir(scratch);
+    const output = await executeEditPlan({ inputPaths: [first, second], media, plan, sourceCatalog: catalog, tempDirectory: scratch });
+    assert.ok(Math.abs((await probeVideoFile(output)).duration - 16) < 0.15);
+    assert.ok(mse(await frame(output, 7.5), await frame(first, 7.5)) < 25);
+    assert.ok(mse(await frame(output, 8.5), await frame(second, 2.5)) < 25);
+    const samples = await audio(output, 1, 1);
+    assert.ok(samples.every((sample) => Math.abs(sample) < 0.00001), "mute must survive sequence rendering");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

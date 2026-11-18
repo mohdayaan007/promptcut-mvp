@@ -671,7 +671,16 @@ export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipl
     if (trim.end > duration + 0.01) throw new Error("Timestamp range exceeds the uploaded video duration");
     const clips = removeOutputRange(fullSequence, trim.start, trim.end);
     if (!clips.length) throw new Error("Timestamp range would remove the entire video");
-    return { version: "2", operations: [{ type: "sequence", clips }, ...operations] };
+    // A V2 sequence is itself the assembled timeline. Carrying V1's automatic
+    // merge alongside it is invalid and would also leave downstream operations
+    // ambiguous. Reconcile every remaining supported global operation against
+    // this authoritative retained timeline rather than silently dropping it.
+    operations.push(...parseFallbackCapabilities(prompt));
+    const removalPlan = { version: "2", operations: [{ type: "sequence", clips }, ...operations.filter((operation) => operation.type !== "merge")] };
+    const styledPlan = resolvedStyleIntent
+      ? reconcileResolvedStyleProfile(removalPlan, resolvedStyleIntent)
+      : reconcileStyleProfile(removalPlan, prompt, { sourceCatalog });
+    return reconcileAudioControls(reconcileVisualAdjustments(styledPlan, prompt, { sourceCatalog }), prompt);
   }
   operations.push(...parseFallbackCapabilities(prompt));
 

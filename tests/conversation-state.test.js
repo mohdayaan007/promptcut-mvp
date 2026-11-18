@@ -118,6 +118,18 @@ test("timestamp wording has explicit keep versus remove semantics for initial an
   assert.throws(() => createEditPlan({ prompt: "Remove 0:00 to 2:00", sourceCatalog: initialCatalog }), /entire video/i);
 });
 
+test("multi-source removal replaces automatic merge and retains supported compound operations", () => {
+  const sources = [{ ...catalog[0], duration: 10 }, { ...catalog[0], sourceId: "source-2", index: 1, ordinal: 2, duration: 10 }];
+  const plan = createEditPlan({ prompt: "Trim from 0:08 to 0:12 and mute the audio", hasMultipleVideos: true, sourceCatalog: sources });
+  assert.equal(plan.version, "2");
+  assert.equal(plan.operations.some((operation) => operation.type === "merge"), false);
+  assert.deepEqual(plan.operations.find((operation) => operation.type === "sequence").clips, [
+    { sourceId: "source-1", start: 0, end: 8 }, { sourceId: "source-2", start: 2, end: 10 }
+  ]);
+  assert.deepEqual(plan.operations.find((operation) => operation.type === "audio_volume"), { type: "audio_volume", factor: 0 });
+  assert.doesNotThrow(() => validateConversationPlan(plan, sources));
+});
+
 test("open-ended conversation retains cumulative timing and one active style across 25 turns", () => {
   let plan = { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 10, end: 60 }] }] };
   const turns = Array.from({ length: 25 }, (_, index) => {
