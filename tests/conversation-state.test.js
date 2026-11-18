@@ -114,6 +114,8 @@ test("timestamp wording has explicit keep versus remove semantics for initial an
   const previous = { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 10, end: 110 }] }] };
   assert.deepEqual(removeOutputInterval(previous, 8, 70, initialCatalog).operations[0].clips, [{ sourceId: "source-1", start: 10, end: 18 }, { sourceId: "source-1", start: 80, end: 110 }]);
   assert.throws(() => removeOutputInterval(previous, 0, 100, initialCatalog), /entire video/i);
+  assert.throws(() => createEditPlan({ prompt: "Trim from 0:08 to 2:10", sourceCatalog: initialCatalog }), /exceeds/i);
+  assert.throws(() => createEditPlan({ prompt: "Remove 0:00 to 2:00", sourceCatalog: initialCatalog }), /entire video/i);
 });
 
 test("open-ended conversation retains cumulative timing and one active style across 25 turns", () => {

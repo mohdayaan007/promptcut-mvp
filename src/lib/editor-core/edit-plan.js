@@ -666,9 +666,11 @@ export function createEditPlan({ prompt = "", hasSecondVideo = false, hasMultipl
   if (requestsCaptions(prompt)) operations.push(createCaptionOperation(prompt));
   if (trim?.mode === "keep") operations.push({ type: "trim", start: trim.start, end: trim.end });
   if (trim?.mode === "remove") {
-    const clips = removeOutputRange(fullSourceClips(sourceCatalog), trim.start, trim.end);
-    // The validator supplies the final duration boundary; an empty sequence is
-    // deliberately rejected before FFmpeg instead of risking a corrupted job.
+    const fullSequence = fullSourceClips(sourceCatalog);
+    const duration = fullSequence.reduce((total, clip) => total + clip.end - clip.start, 0);
+    if (trim.end > duration + 0.01) throw new Error("Timestamp range exceeds the uploaded video duration");
+    const clips = removeOutputRange(fullSequence, trim.start, trim.end);
+    if (!clips.length) throw new Error("Timestamp range would remove the entire video");
     return { version: "2", operations: [{ type: "sequence", clips }, ...operations] };
   }
   operations.push(...parseFallbackCapabilities(prompt));
