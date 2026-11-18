@@ -25,8 +25,9 @@ jobs:
             ./node_modules/.bin/eslint src/components/cliponaut/TypographyFontBrowser.js src/lib/typography/google-font-catalog.js src/lib/typography/font-recommendations.js src/lib/title-parser.js src/lib/editor-core/typography-v1a.js
             ./node_modules/.bin/tsx --test tests/typography-v1a.test.js tests/google-font-catalog.test.js tests/typography-founder-gate.test.js
             ./node_modules/.bin/tsx --test --test-name-pattern="title typography|ASS title rendering|rich ASS titles|typography reference" tests/jobs.test.js
+            ./node_modules/.bin/tsx --test tests/conversation-state.test.js tests/conversation-media.test.js
           '
       - name: Clarify scope
         run: |
-          echo "Validated the production Docker build and focused typography/title tests. This is not a hosted render or the full Google Fonts catalogue." >> "$GITHUB_STEP_SUMMARY"
+          echo "Validated the production Docker build, focused typography/title tests, and timestamp-removal FFmpeg regressions. This is not a hosted render or the full Google Fonts catalogue." >> "$GITHUB_STEP_SUMMARY"
           echo "The complete Linux tests/jobs.test.js suite still has three previously documented FFmpeg pixel-sensitive preset failures (160, 165, 166), reproduced unchanged in run 43866151384. Full suite is not green." >> "$GITHUB_STEP_SUMMARY"
