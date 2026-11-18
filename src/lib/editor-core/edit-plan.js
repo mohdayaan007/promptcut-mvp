@@ -14,6 +14,10 @@ function detectColor(intents = [], prompt = "") {
   return null;
 }
 
+export function isDeterministicTimestampRangeEdit(prompt = "") {
+  return /\b(?:keep\s+only|remove|cut\s+out|trim)\s+(?:from\s+)?\d+:\d+\s*(?:to|until|through)\s*\d+:\d+\b/i.test(prompt);
+}
+
 function parseTrim(prompt = "", intents = []) {
   const match = prompt.match(/\b(keep\s+only|remove|cut\s+out|trim)\s+(?:from\s+)?(\d+):(\d+)\s*(?:to|until|through)\s*(\d+):(\d+)\b/i);
 

@@ -1,5 +1,5 @@
 import { GoogleGenAI, createPartFromUri } from "@google/genai";
-import { analyzeEditRequestCapabilities, analyzeSpokenRequestCoverage, createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
+import { analyzeEditRequestCapabilities, analyzeSpokenRequestCoverage, createEditPlan, extractMomentCompositionRequests, extractSemanticSourceReferences, extractSpokenMomentRequest, extractVisualMomentRequest, isDeterministicTimestampRangeEdit, requiresMomentCompositionUnderstanding, requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding, requiresVisualSourceUnderstanding } from "@/lib/editor-core/edit-plan";
 import { createDelegatedStyleDecisionJsonSchema, createEditPlanJsonSchema, createSemanticSourceClassificationJsonSchema, createSemanticTranscriptMatchJsonSchema, createStyleIntentJsonSchema, createVisualMomentLocalizationJsonSchema } from "@/lib/editor-core/ai-editor/schema";
 import { buildAiEditorPrompt, buildDelegatedStyleDecisionPrompt, buildSemanticSourceClassificationPrompt, buildSemanticTranscriptMatchPrompt, buildStyleIntentPrompt, buildVisualMomentLocalizationPrompt } from "@/lib/editor-core/ai-editor/prompt";
 import { findPhraseOccurrences, pairPhraseOccurrences } from "@/lib/editor-core/spoken-transcript";
@@ -1045,6 +1045,7 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
     : inputPath ? [{ inputPath, inputMimeType, source: sourceCatalog[0] }] : [];
   const requiresVisualUnderstanding = requiresVisualSourceUnderstanding(prompt, sourceCatalog) || requiresMomentCompositionUnderstanding(prompt, sourceCatalog) || requiresVisualMomentUnderstanding(prompt, sourceCatalog) || requiresSpokenMomentUnderstanding(prompt, sourceCatalog);
   const deterministicStyleRequest = !referenceStyleActive && isDeterministicallySafeStyleRequest(prompt, { sourceCatalog });
+  const deterministicTimestampRangeEdit = isDeterministicTimestampRangeEdit(prompt);
   const capability = analyzeEditRequestCapabilities(prompt, sourceCatalog);
   if (capability.kind === "partial") throw new PartialEditRequestError(capability);
   if (capability.kind === "unsupported" || capability.kind === "ambiguous") throw new UnsupportedEditRequestError(capability.message);
@@ -1066,11 +1067,11 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
       styleDiagnostics: createStylePlanningDiagnostics({ planningPath: "invalid_explicit_style_source" })
     };
   }
-  if (deterministicStyleRequest && !requiresVisualUnderstanding) {
+  if ((deterministicStyleRequest || deterministicTimestampRangeEdit) && !requiresVisualUnderstanding) {
     return {
       plan: createEditPlan({ prompt, hasMultipleVideos, sourceCatalog }),
       source: "deterministic",
-      styleDiagnostics: createStylePlanningDiagnostics({ planningPath: "deterministic_style" })
+      styleDiagnostics: createStylePlanningDiagnostics({ planningPath: deterministicTimestampRangeEdit ? "deterministic_timestamp_range" : "deterministic_style" })
     };
   }
   if (!process.env.GEMINI_API_KEY || !prompt.trim()) {
