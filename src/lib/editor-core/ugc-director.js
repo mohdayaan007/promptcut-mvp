@@ -48,7 +48,7 @@ export function createUgcDirectorPlan({ priorPlan = null, sourceCatalog, evidenc
 }
 
 export function reviseUgcTitle({ plan, prompt, sourceCatalog }) {
-  const parsed = parseTitle(prompt);
+  const parsed = parseTitle(prompt, { stripQuotedText: true });
   if (!parsed) throw new Error("Include the replacement title text and supported styling.");
   const next = clone(plan);
   const existing = next.operations.findIndex((operation) => operation.type === "title");
@@ -58,6 +58,12 @@ export function reviseUgcTitle({ plan, prompt, sourceCatalog }) {
   const safeParsed = (parsed.fontIntent || parsed.font === "__unavailable__")
     ? { ...parsed, font: next.operations[existing].font, fontIntent: undefined }
     : parsed;
-  next.operations[existing] = { ...next.operations[existing], ...safeParsed };
+  const priorTitle = next.operations[existing];
+  // Runs are an exact rich-text representation of their title. A replacement
+  // title cannot retain the old character runs; a styling-only revision keeps
+  // them untouched so mixed-font title work remains intact.
+  const replacement = { ...priorTitle, ...safeParsed };
+  if (safeParsed.text !== priorTitle.text) delete replacement.runs;
+  next.operations[existing] = replacement;
   return validateEditPlan(next, { sourceCatalog });
 }
