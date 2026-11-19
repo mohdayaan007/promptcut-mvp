@@ -50,6 +50,7 @@ jobs:
       - name: Run persisted session, storage, worker and synthetic-media acceptance
         env:
           UGC_DIRECTOR_EVIDENCE_DIRECTORY: ${{ runner.temp }}/ugc-director-review
+          CLIPONAUT_WORKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/ugc-worker-diagnostics.json
         run: |
           set -o pipefail
           ./node_modules/.bin/tsx --test tests/session-postgres.integration.test.js tests/session-worker-storage.integration.test.js 2>&1 | tee "$RUNNER_TEMP/ugc-acceptance.log"
@@ -62,5 +63,6 @@ jobs:
           path: |
             ${{ runner.temp }}/ugc-director-review/
             ${{ runner.temp }}/ugc-acceptance.log
+            ${{ runner.temp }}/ugc-worker-diagnostics.json
           if-no-files-found: warn
           retention-days: 3

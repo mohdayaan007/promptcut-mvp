@@ -13,6 +13,32 @@ const execFileAsync = promisify(execFile);
 const bucket = "cliponaut-test";
 const storageAccessKey = process.env.S3_TEST_ACCESS_KEY || "S3RVER";
 const storageSecretKey = process.env.S3_TEST_SECRET_KEY || "S3RVER";
+const workerDiagnosticLimit = 24_000;
+
+function sanitizeWorkerDiagnostics(value) {
+  return String(value || "")
+    // Signed URLs and object locations are not useful for diagnosing a worker
+    // stage, and must not be retained in the short-lived CI artifact.
+    .replace(/https?:\/\/[^\s"'`]+/gi, "[redacted-url]")
+    .replace(/\b(?:s3|gs):\/\/[^\s"'`]+/gi, "[redacted-storage-url]")
+    .replace(/\b(?:access[_-]?key|secret(?:[_-]?access[_-]?key)?|credential|signature|token|authorization)=?[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b/gi, "[redacted-id]")
+    .slice(-workerDiagnosticLimit);
+}
+
+function captureWorkerOutput(worker) {
+  let stdout = "";
+  let stderr = "";
+  const append = (existing, chunk) => `${existing}${chunk}`.slice(-workerDiagnosticLimit);
+  worker.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
+  worker.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
+  return ({ stage, outcome }) => ({
+    stage,
+    outcome,
+    stdout: sanitizeWorkerDiagnostics(stdout),
+    stderr: sanitizeWorkerDiagnostics(stderr)
+  });
+}
 
 function jsonRequest(url, body, token, cookie) {
   return new Request(url, { method: "POST", headers: { "content-type": "application/json", ...(token ? { "x-cliponaut-job-token": token } : {}), ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
@@ -52,6 +78,9 @@ test("storage upload, worker rendering, signed download, history, rejection, and
   const scratchDirectory = path.join(root, "scratch");
   const sourcePath = path.join(root, "source.mp4");
   let worker;
+  let workerDiagnostics;
+  let workerStage = "initializing isolated acceptance";
+  let workerOutcome = "incomplete";
   try {
     Object.assign(process.env, {
       STORAGE_BUCKET: bucket, STORAGE_ENDPOINT: process.env.S3_TEST_ENDPOINT,
@@ -106,8 +135,12 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     const queued = await queuedResponse.json();
     assert.ok(queued.session?.accessToken, "upload completion creates a private editing session");
 
-    worker = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "scripts/cliponaut-worker.js"], { cwd: process.cwd(), env: process.env, stdio: "ignore" });
+    worker = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "scripts/cliponaut-worker.js"], {
+      cwd: process.cwd(), env: process.env, stdio: ["ignore", "pipe", "pipe"]
+    });
+    workerDiagnostics = captureWorkerOutput(worker);
     const getJob = async (session) => (await jobRoute.GET(new Request(`http://localhost/api/jobs/${session.id}`, { headers: { "x-cliponaut-job-token": session.accessToken } }), { params: Promise.resolve({ id: session.id }) })).json();
+    workerStage = "waiting for the initial worker-rendered job";
     const first = await waitForCompleted(() => getJob({ id: upload.id, accessToken: upload.accessToken }));
     assert.ok(first.outputUrl, "completed initial edit has a signed download URL");
     const firstDownload = await fetch(first.outputUrl);
@@ -133,6 +166,7 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     const testS3 = new S3Client({ endpoint: process.env.S3_TEST_ENDPOINT, region: "us-east-1", credentials: { accessKeyId: storageAccessKey, secretAccessKey: storageSecretKey }, forcePathStyle: true });
     await testS3.send(new DeleteObjectCommand({ Bucket: bucket, Key: upload.uploads[0].key }));
     worker.kill("SIGCONT");
+    workerStage = "waiting for intentional storage-loss failure recovery";
     const failed = await waitForTerminal(() => getJob(failedSession));
     assert.equal(failed.status, "failed", "a queued worker job can fail after acceptance");
     const retainedFirst = await fetch(first.outputUrl);
@@ -143,6 +177,7 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     const followup = await sessionRoute.POST(sessionRequest(`http://localhost/api/editing-sessions/${queued.session.id}`, { prompt: "Replace that with the cinematic style.", expectedVersion: failedSession.version }, queued.session.accessToken, founderCookie), { params: Promise.resolve({ id: queued.session.id }) });
     assert.equal(followup.status, 200);
     const secondSession = await followup.json();
+    workerStage = "waiting for recovered follow-up render";
     const second = await waitForCompleted(() => getJob({ id: secondSession.id, accessToken: secondSession.accessToken }));
     const secondDownload = await fetch(second.outputUrl);
     const secondOutput = Buffer.from(await secondDownload.arrayBuffer());
@@ -169,8 +204,16 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     const probe = JSON.parse(stdout);
     assert.match(probe.format.format_name, /mp4/);
     assert.ok(probe.streams.some((stream) => stream.codec_type === "video"), "downloaded follow-up is playable video media");
+    workerOutcome = "passed";
   } finally {
     worker?.kill("SIGTERM");
+    if (process.env.CLIPONAUT_WORKER_DIAGNOSTICS_PATH && workerDiagnostics) {
+      await writeFile(
+        process.env.CLIPONAUT_WORKER_DIAGNOSTICS_PATH,
+        `${JSON.stringify(workerDiagnostics({ stage: workerStage, outcome: workerOutcome }), null, 2)}\n`,
+        { mode: 0o600 }
+      );
+    }
     await rm(root, { recursive: true, force: true });
   }
 });
