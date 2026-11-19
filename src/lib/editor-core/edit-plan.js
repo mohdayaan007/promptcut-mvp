@@ -14,8 +14,26 @@ function detectColor(intents = [], prompt = "") {
   return null;
 }
 
+/**
+ * Shared grammar for explicit timeline instructions.  Keep this deliberately
+ * small and evidence-free: it is used by both the initial and follow-up
+ * routes, so accepting a phrase here means it has identical semantics in a
+ * durable first job and in a revision of an existing edit.
+ */
+export function parseDeterministicTimestampEdit(prompt = "") {
+  const match = String(prompt).match(/\b(keep\s+only|remove|cut\s+out|trim)\s+(?:(?:the\s+)?(?:part|section|bit|clip)\s+)?(?:from\s+)?(\d+):(\d+)\s*(?:to|until|through)\s*(\d+):(\d+)\b/i);
+  if (!match) return null;
+  const command = match[1].toLowerCase().replace(/\s+/g, " ");
+  return {
+    mode: command === "keep only" ? "keep" : "remove",
+    start: Number(match[2]) * 60 + Number(match[3]),
+    end: Number(match[4]) * 60 + Number(match[5]),
+    text: match[0]
+  };
+}
+
 export function isDeterministicTimestampRangeEdit(prompt = "") {
-  return /\b(?:keep\s+only|remove|cut\s+out|trim)\s+(?:from\s+)?\d+:\d+\s*(?:to|until|through)\s*\d+:\d+\b/i.test(prompt);
+  return Boolean(parseDeterministicTimestampEdit(prompt));
 }
 
 /** Validates timestamp edits against their assembled output timeline. */
@@ -27,16 +45,14 @@ export function validateOutputTimestampRange({ start, end, duration }) {
 }
 
 function parseTrim(prompt = "", intents = []) {
-  const match = prompt.match(/\b(keep\s+only|remove|cut\s+out|trim)\s+(?:from\s+)?(\d+):(\d+)\s*(?:to|until|through)\s*(\d+):(\d+)\b/i);
-
-  if (!match) return null;
-  const command = match[1].toLowerCase().replace(/\s+/g, " ");
+  const parsed = parseDeterministicTimestampEdit(prompt);
+  if (!parsed) return null;
   return {
     // "trim from A to B" is established product language for removing the
     // interval, not retaining it. Keep-only is the sole retaining form.
-    mode: command === "keep only" ? "keep" : "remove",
-    start: parseInt(match[2], 10) * 60 + parseInt(match[3], 10),
-    end: parseInt(match[4], 10) * 60 + parseInt(match[5], 10)
+    mode: parsed.mode,
+    start: parsed.start,
+    end: parsed.end
   };
 }
 

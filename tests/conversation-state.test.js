@@ -97,6 +97,21 @@ test("unsupported contextual removals and timeline ranges fail without changing 
   assert.deepEqual(base.operations, [{ type: "sequence", clips: [{ sourceId: "source-1", start: 20, end: 50 }] }]);
 });
 
+test("natural timestamp paraphrases retain the same explicit removal contract across initial and follow-up edits", () => {
+  const prior = { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 30 }] }] };
+  for (const prompt of ["Remove the part from 0:10 to 0:20", "Remove the section from 0:10 until 0:20", "Cut out the clip from 0:10 through 0:20", "Trim the bit from 0:10 to 0:20"]) {
+    const followUp = applyConversationTurn({ priorPlan: prior, prompt, sourceCatalog: catalog });
+    assert.deepEqual(followUp.plan.operations[0].clips, [{ sourceId: "source-1", start: 0, end: 10 }, { sourceId: "source-1", start: 20, end: 30 }], prompt);
+    const initial = createEditPlan({ prompt, sourceCatalog: [{ ...catalog[0], duration: 30 }] });
+    assert.deepEqual(initial.operations[0].clips, [{ sourceId: "source-1", start: 0, end: 10 }, { sourceId: "source-1", start: 20, end: 30 }], prompt);
+  }
+  const last = applyConversationTurn({ priorPlan: prior, prompt: "Trim the last 7 secs", sourceCatalog: catalog });
+  assert.deepEqual(last.plan.operations[0].clips, [{ sourceId: "source-1", start: 0, end: 23 }]);
+  const compound = applyConversationTurn({ priorPlan: prior, prompt: "Remove the part from 0:10 to 0:20 and mute the audio", sourceCatalog: catalog });
+  assert.deepEqual(compound.plan.operations.at(-1), { type: "audio_volume", factor: 0 });
+  assert.throws(() => applyConversationTurn({ priorPlan: prior, prompt: "Trim the last 30 seconds", sourceCatalog: catalog }), /entire video/i);
+});
+
 test("timestamp wording has explicit keep versus remove semantics for initial and follow-up plans", () => {
   const initialCatalog = [{ ...catalog[0], duration: 120 }];
   const cases = [

@@ -1,4 +1,4 @@
-import { createEditPlan, validateOutputTimestampRange } from "@/lib/editor-core/edit-plan";
+import { createEditPlan, parseDeterministicTimestampEdit, validateOutputTimestampRange } from "@/lib/editor-core/edit-plan";
 import { validateEditPlan } from "@/lib/editor-core/plan-validator";
 
 const STYLE_TYPES = new Set(["color_grade", "style_profile", "visual_adjustment", "reference_style_treatment"]);
@@ -78,6 +78,11 @@ function resetStyle(plan) {
   return { ...clone(plan), operations: plan.operations.filter((operation) => !STYLE_TYPES.has(operation.type)) };
 }
 
+function numberOfSeconds(value) {
+  const words = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+  return words[value] || Number(value);
+}
+
 function mergeSupportedFollowUp(priorPlan, operations) {
   const next = clone(priorPlan);
   for (const operation of operations) {
@@ -103,19 +108,34 @@ export function applyConversationTurn({ priorPlan, prompt, sourceCatalog }) {
   // These fast paths accept a complete instruction, never a matching fragment
   // of a compound/negated/source-scoped request that would silently lose intent.
   const simple = normalized.replace(/[.!]+$/g, "").replace(/^(?:now|also|please)\s+/, "");
-  const rangedEdit = simple.match(/^(keep\s+only|remove|cut\s+out|trim)\s+(?:from\s+)?(\d+):(\d+)\s*(?:to|until|through)\s*(\d+):(\d+)$/);
-  if (rangedEdit) {
+  const muteTail = /\s+(?:and|then|also)\s+mute(?:\s+(?:the\s+)?audio)?$/i;
+  const timelineText = simple.replace(muteTail, "");
+  const muteRequested = timelineText !== simple;
+  const ranged = parseDeterministicTimestampEdit(timelineText);
+  if (ranged && ranged.text.toLowerCase() === timelineText.toLowerCase()) {
     if (priorPlan.operations.some((operation) => operation.type === "speed")) throw new Error("Trimming after a speed change is not supported yet. Remove the speed change or make the trim first.");
-    const start = Number(rangedEdit[2]) * 60 + Number(rangedEdit[3]);
-    const end = Number(rangedEdit[4]) * 60 + Number(rangedEdit[5]);
-    const command = rangedEdit[1];
+    const { start, end } = ranged;
+    const command = ranged.mode === "keep" ? "keep only" : "remove";
     const currentDuration = visibleSequence(priorPlan, sourceCatalog).clips.reduce((total, clip) => total + clip.end - clip.start, 0);
     try { validateOutputTimestampRange({ start, end, duration: currentDuration }); }
     catch (error) { throw new Error(error.message.replace("uploaded video", "current edit")); }
     const plan = command === "keep only"
       ? (() => { const { next, clips } = visibleSequence(priorPlan, sourceCatalog); const selected = sliceSequence(clips, start, end); if (!selected.length) throw new Error("That timestamp range does not contain footage"); next.version = "2"; next.operations = [{ type: "sequence", clips: selected }, ...next.operations.filter((operation) => !["sequence", "trim", "merge"].includes(operation.type))]; return next; })()
       : removeOutputInterval(priorPlan, start, end, sourceCatalog);
-    return { plan, confirmation: command === "keep only" ? `Kept only ${rangedEdit[2]}:${rangedEdit[3]} to ${rangedEdit[4]}:${rangedEdit[5]} from the current edit.` : `Removed ${rangedEdit[2]}:${rangedEdit[3]} to ${rangedEdit[4]}:${rangedEdit[5]} from the current edit.` };
+    if (muteRequested) {
+      plan.operations = [...plan.operations.filter((operation) => operation.type !== "audio_volume"), { type: "audio_volume", factor: 0 }];
+    }
+    const action = command === "keep only" ? `Kept only ${start} to ${end}` : `Removed ${start} to ${end}`;
+    return { plan, confirmation: `${action} from the current edit${muteRequested ? " and muted the audio" : ""}.` };
+  }
+  const lastTrim = simple.match(/^(?:trim|remove|cut)\s+(?:the\s+)?last\s+(\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:seconds?|secs?)$/);
+  if (lastTrim) {
+    if (priorPlan.operations.some((operation) => operation.type === "speed")) throw new Error("Trimming after a speed change is not supported yet. Remove the speed change or make the trim first.");
+    const seconds = numberOfSeconds(lastTrim[1]);
+    const duration = visibleSequence(priorPlan, sourceCatalog).clips.reduce((total, clip) => total + clip.end - clip.start, 0);
+    if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("The trim duration must be positive");
+    const plan = removeOutputInterval(priorPlan, duration - seconds, duration, sourceCatalog);
+    return { plan, confirmation: `Removed the last ${seconds} seconds from the current edit.` };
   }
   if (/\b(?:bring|change|turn)\s+(?:it\s+)?back\s+to\s+normal\b|\bremove\s+(?:the\s+)?(?:style|filter)\b/.test(normalized)) {
     if (!/^(?:(?:bring|change|turn)\s+(?:it\s+)?back\s+to\s+normal|remove\s+(?:the\s+)?(?:style|filter))$/.test(simple)) throw new Error("Please request one supported change at a time. Your current edit is unchanged.");
@@ -127,8 +147,7 @@ export function applyConversationTurn({ priorPlan, prompt, sourceCatalog }) {
     if (priorPlan.operations.some((operation) => operation.type === "speed")) {
       throw new Error("Trimming after a speed change is not supported yet. Remove the speed change or make the trim first.");
     }
-    const spelled = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
-    const seconds = spelled[firstTrim[1]] || Number(firstTrim[1]);
+    const seconds = numberOfSeconds(firstTrim[1]);
     const plan = trimOutputStart(priorPlan, seconds, sourceCatalog);
     return { plan, confirmation: `Trimmed the first ${seconds} seconds from the current edit.` };
   }
