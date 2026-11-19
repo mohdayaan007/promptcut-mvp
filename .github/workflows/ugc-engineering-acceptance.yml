@@ -28,7 +28,7 @@ jobs:
       CLIPONAUT_SYNTHETIC_GEMINI_TEST_MODE: "true"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v22
+      - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - name: Start disposable PostgreSQL
         run: |
