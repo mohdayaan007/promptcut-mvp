@@ -5,6 +5,10 @@ function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function fullSequence(sourceCatalog) { return sourceCatalog.map((source) => ({ sourceId: source.sourceId, start: 0, end: source.duration })); }
 function currentSequence(plan, sourceCatalog) { return clone(plan?.operations?.find((operation) => operation.type === "sequence")?.clips || fullSequence(sourceCatalog)); }
 
+export function isUgcDirectorRequest(prompt = "") {
+  return /\b(?:premium|luxury|luxurious)\b.*\b(?:skincare|product|advertisement|ad)\b|\b(?:create|make)\b.*\b(?:skincare|product)\s+(?:advertisement|ad)\b/i.test(prompt);
+}
+
 /** Server policy, not a model aesthetic claim: evidence chooses footage; this composes only renderer-supported UGC treatments. */
 export function createUgcDirectorPlan({ priorPlan = null, sourceCatalog, evidence, prompt, locked = [] }) {
   const selected = evidence?.productClips;

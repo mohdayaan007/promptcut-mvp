@@ -29,6 +29,7 @@ import { renderCustomerMkl } from "@/lib/editor-core/founder-mkl-local";
 import { applyTypographyV1aToPlan, assertFounderTypographyV1a, validateTypographyV1a } from "@/lib/editor-core/typography-v1a";
 import { applyEvidenceSelection, isConversationAgentEnvelope } from "@/lib/editor-core/conversation-agent";
 import { runBoundedEditingAgent } from "@/lib/editor-core/bounded-editing-agent";
+import { createUgcDirectorPlan, isUgcDirectorRequest } from "@/lib/editor-core/ugc-director";
 
 const config = jobConfig();
 const workerId = `${os.hostname()}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
@@ -228,6 +229,18 @@ async function processJob(job) {
     let planning;
     if (mklReferencePath) {
       planning = { plan: createEditPlan({ prompt: "Apply approved MKL reference colour treatment.", hasMultipleVideos: false, sourceCatalog }), source: "customer_mkl" };
+    } else if (isUgcDirectorRequest(job.prompt)) {
+      // The existing planner/localizers remain the only evidence provider. A
+      // Director policy may compose only the server-validated selected clips.
+      const evidence = await createAiEditPlan({
+        inputPath: inputPaths[0], inputMimeType: sources[0].type,
+        sourceInputs: sources.map((source) => ({ inputPath: inputPaths[source.index], inputMimeType: source.type, source: sourceCatalog.find((entry) => entry.index === source.index) })),
+        prompt: job.prompt, hasMultipleVideos: inputPaths.length > 1, sourceCatalog, scratchDirectory: scratch, executionController,
+        referenceStyleActive: Boolean(referenceTreatment)
+      });
+      const sequence = evidence.plan.operations?.find((operation) => operation.type === "sequence");
+      if (!sequence?.clips?.length) throw new UnsupportedEditRequestError("I couldn’t verify product footage for an AI Director edit.");
+      planning = { plan: createUgcDirectorPlan({ sourceCatalog, evidence: { productClips: sequence.clips }, prompt: job.prompt }), source: "ugc_director", transcripts: evidence.transcripts };
     } else if (isConversationAgentEnvelope(job.editPlan)) {
       let evidence;
       const agent = await runBoundedEditingAgent({
