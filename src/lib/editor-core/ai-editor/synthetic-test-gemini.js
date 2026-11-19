@@ -1,4 +1,20 @@
 /** Test-only Gemini Files/plan stand-in for isolated worker integration. */
+function syntheticSequenceFromRequest(request) {
+  const prompt = Array.isArray(request?.contents)
+    ? [...request.contents].reverse().find((entry) => typeof entry === "string" && entry.includes("Authoritative source catalog:"))
+    : "";
+  const catalogMatch = prompt?.match(/Authoritative source catalog: (\[[^\n]+\])/);
+  let source;
+  try { [source] = catalogMatch ? JSON.parse(catalogMatch[1]) : []; } catch { source = null; }
+  if (!source?.sourceId || !Number.isFinite(source.duration) || source.duration <= 0) {
+    throw new Error("Synthetic Gemini fixture requires one finite authoritative source duration");
+  }
+  return {
+    version: "2",
+    operations: [{ type: "sequence", clips: [{ sourceId: source.sourceId, start: 0, end: source.duration }] }]
+  };
+}
+
 export function createSyntheticTestGemini() {
   const uploads = [];
   return {
@@ -10,6 +26,6 @@ export function createSyntheticTestGemini() {
       get: async ({ name }) => uploads.find((value) => value.name === name),
       delete: async () => {}
     },
-    models: { generateContent: async () => ({ text: JSON.stringify({ version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 2, end: 28 }] }] }) }) }
+    models: { generateContent: async (request) => ({ text: JSON.stringify(syntheticSequenceFromRequest(request)) }) }
   };
 }

@@ -53,7 +53,8 @@ jobs:
           CLIPONAUT_WORKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/ugc-worker-diagnostics.json
         run: |
           set -o pipefail
-          ./node_modules/.bin/tsx --test tests/session-postgres.integration.test.js tests/session-worker-storage.integration.test.js 2>&1 | tee "$RUNNER_TEMP/ugc-acceptance.log"
+          ./node_modules/.bin/tsx --test tests/session-postgres.integration.test.js 2>&1 | tee "$RUNNER_TEMP/ugc-acceptance.log"
+          ./node_modules/.bin/tsx --test tests/session-worker-storage.integration.test.js 2>&1 | tee -a "$RUNNER_TEMP/ugc-acceptance.log"
           ./node_modules/.bin/tsx --test tests/conversation-agent.test.js tests/bounded-editing-agent.test.js tests/ugc-director.test.js tests/ugc-director-media.test.js 2>&1 | tee -a "$RUNNER_TEMP/ugc-acceptance.log"
       - name: Retain synthetic MP4 evidence briefly
         uses: actions/upload-artifact@v4

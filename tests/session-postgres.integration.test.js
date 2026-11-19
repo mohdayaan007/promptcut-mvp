@@ -65,6 +65,10 @@ test("PostgreSQL session API atomically versions concurrent turns, recovers afte
     const undoVersion = await resumedUndo.json();
     const undoJob = await store.getAuthorizedJob(undoVersion.id, undoVersion.accessToken);
     assert.deepEqual(undoJob.editPlan.operations, plan.operations, "the post-Undo edit must not restore a removed later trim");
+    // This test exercises queue creation but never starts a worker. Do not
+    // leave its placeholder upload record claimable by another integration
+    // test sharing this disposable database.
+    await client.query("UPDATE edit_jobs SET status='cancelled' WHERE id=$1 AND status='queued'", [undoVersion.id]);
 
     let cleanup = await store.getJobsForCleanup({ sourceRetentionHours: 1, outputRetentionHours: 1 });
     assert.equal(cleanup.some((job) => job.id === created.job.id), false, "active session retains original media");
