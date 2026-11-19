@@ -195,15 +195,16 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     const outputPath = path.join(root, "second-signed.mp4");
     await writeFile(outputPath, secondOutput);
     assert.ok((await stat(outputPath)).size > 1_000);
+    const { stdout } = await execFileAsync("ffprobe", ["-v", "error", "-show_entries", "format=format_name:stream=codec_type", "-of", "json", outputPath]);
+    const probe = JSON.parse(stdout);
+    assert.match(probe.format.format_name, /mp4/, "signed customer download is playable MP4 media");
+    assert.ok(probe.streams.some((stream) => stream.codec_type === "video"), "signed customer download includes a video stream");
     const storage = await import("@/lib/jobs/storage");
     const directOutputPath = path.join(root, "second-direct.mp4");
     await storage.downloadObject(storage.outputObjectKey(secondSession.id), directOutputPath);
+    assert.deepEqual(await readFile(directOutputPath), secondOutput, "direct storage download matches the signed customer download");
     const directProbe = JSON.parse((await execFileAsync("ffprobe", ["-v", "error", "-show_entries", "format=format_name:stream=codec_type", "-of", "json", directOutputPath])).stdout);
     assert.match(directProbe.format.format_name, /mp4/, "worker uploaded a valid MP4 object");
-    const { stdout } = await execFileAsync("ffprobe", ["-v", "error", "-show_entries", "format=format_name:stream=codec_type", "-of", "json", outputPath]);
-    const probe = JSON.parse(stdout);
-    assert.match(probe.format.format_name, /mp4/);
-    assert.ok(probe.streams.some((stream) => stream.codec_type === "video"), "downloaded follow-up is playable video media");
     workerOutcome = "passed";
   } finally {
     worker?.kill("SIGTERM");
