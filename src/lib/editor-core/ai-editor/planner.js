@@ -9,12 +9,19 @@ import { reconcileCaptionOperation } from "@/lib/editor-core/caption-engine";
 import { reconcileAudioControls } from "@/lib/editor-core/audio-controls";
 import { findVisualAdjustmentClause, reconcileVisualAdjustments } from "@/lib/editor-core/visual-adjustments";
 import { DelegatedStyleDecisionValidationError, extractStyleProfileIntent, hasInvalidExplicitStyleSource, isDeterministicallySafeStyleRequest, isServerSafeTextStyleOnlyRequest, mayRequestTextStyleInterpretation, normalizeDelegatedStyleDecision, normalizeTextStyleIntent, reconcileResolvedStyleProfile, reconcileStyleProfile, requiresDelegatedStyleJudgment, resolveStyleSourceScope, StyleIntentValidationError } from "@/lib/editor-core/style-intent";
+import { createSyntheticTestGemini } from "@/lib/editor-core/ai-editor/synthetic-test-gemini";
 
 const DEFAULT_MODEL = "gemini-3.6-flash";
 const FILE_PROCESSING_TIMEOUT_MS = 60_000;
 const FILE_PROCESSING_POLL_MS = 2_000;
 const MAX_PLANNING_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 300;
+function defaultAiClient() {
+  // This is deliberately impossible in a normal deployment: it exists solely
+  // for CI's disposable PostgreSQL/MinIO worker acceptance.
+  if (process.env.NODE_ENV === "test" && process.env.CLIPONAUT_SYNTHETIC_GEMINI_TEST_MODE === "true") return createSyntheticTestGemini();
+  return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+}
 
 export class UnsupportedEditRequestError extends Error {}
 export class PartialEditRequestError extends UnsupportedEditRequestError {
@@ -840,7 +847,7 @@ function createTranscriptOwnedSpokenPlan({ prompt, hasMultipleVideos, sourceCata
 }
 
 async function createGeminiPlan({ sourceInputs, prompt, hasMultipleVideos, sourceCatalog, aiClient, retryOptions, scratchDirectory, executionController, transcriptionOptions, textStyleIntent = null, referenceStyleActive = false, spokenCoverage = null }) {
-  const ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const ai = aiClient || defaultAiClient();
   const uploadedFiles = [];
   const composition = extractMomentCompositionRequests(prompt, sourceCatalog);
   if (composition?.error) {
@@ -1087,7 +1094,7 @@ export async function createAiEditPlan({ inputPath, inputMimeType, sourceInputs,
     let textStyleIntent = null;
     let ai = aiClient;
     if (!referenceStyleActive && mayRequestTextStyleInterpretation(prompt)) {
-      ai = aiClient || new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      ai = aiClient || defaultAiClient();
       textStyleIntent = await interpretTextStyle({ ai, prompt, retryOptions });
       if (textStyleIntent.mode === "semantic_style" && isServerSafeTextStyleOnlyRequest(prompt, textStyleIntent, { sourceCatalog }) && !requiresVisualUnderstanding) {
         const resolvedStyleIntent = resolveTextStyleScope(textStyleIntent, prompt);

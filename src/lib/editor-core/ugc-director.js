@@ -12,7 +12,15 @@ export function isUgcDirectorRequest(prompt = "") {
 export function isUgcDirectorFollowUp(prompt = "", priorPlan = null) {
   const hasDirectorTreatment = priorPlan?.operations?.some((operation) => operation.type === "crop" && operation.aspect_ratio === "9:16")
     && priorPlan?.operations?.some((operation) => operation.type === "color_grade" && operation.style === "cinematic");
-  if (!hasDirectorTreatment) return false;
+  // A creator may make precise cuts/title decisions first, then ask the
+  // Director for the premium pass. A title plus a concrete sequence is enough
+  // context to keep that request in the same durable session; an arbitrary
+  // ordinary edit is not silently promoted to a Director request.
+  const hasDirectedContext = hasDirectorTreatment || (
+    priorPlan?.operations?.some((operation) => operation.type === "sequence") &&
+    priorPlan?.operations?.some((operation) => operation.type === "title")
+  );
+  if (!hasDirectedContext) return false;
   return /\b(?:premium|luxury|luxurious)\b|\bimprove\s+(?:the\s+)?(?:pacing|product\s+ad|advertisement)\b/i.test(prompt);
 }
 

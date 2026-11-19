@@ -11,6 +11,8 @@ if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required for thi
 if (!process.env.S3_TEST_ENDPOINT) throw new Error("S3_TEST_ENDPOINT is required for this integration test");
 const execFileAsync = promisify(execFile);
 const bucket = "cliponaut-test";
+const storageAccessKey = process.env.S3_TEST_ACCESS_KEY || "S3RVER";
+const storageSecretKey = process.env.S3_TEST_SECRET_KEY || "S3RVER";
 
 function jsonRequest(url, body, token, cookie) {
   return new Request(url, { method: "POST", headers: { "content-type": "application/json", ...(token ? { "x-cliponaut-job-token": token } : {}), ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
@@ -53,13 +55,13 @@ test("storage upload, worker rendering, signed download, history, rejection, and
   try {
     Object.assign(process.env, {
       STORAGE_BUCKET: bucket, STORAGE_ENDPOINT: process.env.S3_TEST_ENDPOINT,
-      STORAGE_REGION: "us-east-1", STORAGE_ACCESS_KEY_ID: "S3RVER", STORAGE_SECRET_ACCESS_KEY: "S3RVER",
+      STORAGE_REGION: "us-east-1", STORAGE_ACCESS_KEY_ID: storageAccessKey, STORAGE_SECRET_ACCESS_KEY: storageSecretKey,
       STORAGE_FORCE_PATH_STYLE: "true", JOB_SCRATCH_DIRECTORY: scratchDirectory, JOB_POLL_INTERVAL_MS: "100", JOB_WORKER_CONCURRENCY: "1",
       FOUNDER_CONVERSATIONAL_EDITING_ENABLED: "true", FOUNDER_TEST_ACCESS_SECRET: "founder-test-secret-that-is-long-enough-for-storage-worker-integration"
     });
     const founderCookie = grantFounderTestAccess(process.env.FOUNDER_TEST_ACCESS_SECRET).split(";", 1)[0];
     const { CreateBucketCommand, S3Client } = await import("@aws-sdk/client-s3");
-    await new S3Client({ endpoint: process.env.S3_TEST_ENDPOINT, region: "us-east-1", credentials: { accessKeyId: "S3RVER", secretAccessKey: "S3RVER" }, forcePathStyle: true }).send(new CreateBucketCommand({ Bucket: bucket }));
+    await new S3Client({ endpoint: process.env.S3_TEST_ENDPOINT, region: "us-east-1", credentials: { accessKeyId: storageAccessKey, secretAccessKey: storageSecretKey }, forcePathStyle: true }).send(new CreateBucketCommand({ Bucket: bucket }));
     await execFileAsync("ffmpeg", ["-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-t", "3", "-pix_fmt", "yuv420p", sourcePath]);
     const source = await readFile(sourcePath);
     const store = await import("@/lib/jobs/job-store");
@@ -128,7 +130,7 @@ test("storage upload, worker rendering, signed download, history, rejection, and
     assert.equal(failingFollowup.status, 200);
     const failedSession = await failingFollowup.json();
     const { DeleteObjectCommand, PutObjectCommand } = await import("@aws-sdk/client-s3");
-    const testS3 = new S3Client({ endpoint: process.env.S3_TEST_ENDPOINT, region: "us-east-1", credentials: { accessKeyId: "S3RVER", secretAccessKey: "S3RVER" }, forcePathStyle: true });
+    const testS3 = new S3Client({ endpoint: process.env.S3_TEST_ENDPOINT, region: "us-east-1", credentials: { accessKeyId: storageAccessKey, secretAccessKey: storageSecretKey }, forcePathStyle: true });
     await testS3.send(new DeleteObjectCommand({ Bucket: bucket, Key: upload.uploads[0].key }));
     worker.kill("SIGCONT");
     const failed = await waitForTerminal(() => getJob(failedSession));
