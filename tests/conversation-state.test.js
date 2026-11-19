@@ -112,6 +112,22 @@ test("natural timestamp paraphrases retain the same explicit removal contract ac
   assert.throws(() => applyConversationTurn({ priorPlan: prior, prompt: "Trim the last 30 seconds", sourceCatalog: catalog }), /entire video/i);
 });
 
+test("timestamp intent corpus accepts natural explicit forms and refuses unsafe variants without changing the edit", () => {
+  const prior = { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 0, end: 30 }] }] };
+  const removalForms = ["Remove 0:10 to 0:20", "Remove from 0:10 to 0:20", "Remove the part from 0:10 to 0:20", "Remove the section from 0:10 until 0:20", "Cut out 0:10 to 0:20", "Cut out the clip from 0:10 through 0:20", "Trim from 0:10 to 0:20", "Trim the bit from 0:10 through 0:20"];
+  const keepForms = ["Keep only 0:10 to 0:20", "Keep only the part from 0:10 to 0:20", "Keep only the section from 0:10 until 0:20", "Keep only the clip from 0:10 through 0:20"];
+  for (const prompt of removalForms) assert.equal(applyConversationTurn({ priorPlan: prior, prompt, sourceCatalog: catalog }).plan.operations[0].clips.length, 2, prompt);
+  for (const prompt of keepForms) assert.deepEqual(applyConversationTurn({ priorPlan: prior, prompt, sourceCatalog: catalog }).plan.operations[0].clips, [{ sourceId: "source-1", start: 10, end: 20 }], prompt);
+  for (const prompt of ["Trim the last 1 second", "Trim the last 2 seconds", "Trim the last 3 secs", "Remove the last four seconds", "Cut the last five seconds", "Trim the last 6 secs", "Trim the last seven seconds", "Trim the last 8 seconds", "Trim the last 9 secs", "Trim the last ten seconds"]) {
+    const result = applyConversationTurn({ priorPlan: prior, prompt, sourceCatalog: catalog });
+    assert.equal(result.plan.operations[0].clips.length, 1, prompt);
+  }
+  for (const prompt of ["Remove the part from 0:20 to 0:10", "Keep only 0:10 to 0:10", "Trim the section from 0:10 to 0:40", "Trim the last 31 seconds"]) {
+    assert.throws(() => applyConversationTurn({ priorPlan: prior, prompt, sourceCatalog: catalog }), /end after|exceeds|entire video/i, prompt);
+    assert.deepEqual(prior.operations[0].clips, [{ sourceId: "source-1", start: 0, end: 30 }]);
+  }
+});
+
 test("timestamp wording has explicit keep versus remove semantics for initial and follow-up plans", () => {
   const initialCatalog = [{ ...catalog[0], duration: 120 }];
   const cases = [
