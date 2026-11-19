@@ -44,6 +44,8 @@ jobs:
           for attempt in $(seq 1 20); do curl --fail --silent http://127.0.0.1:9000 >/dev/null && exit 0; sleep 1; done
           cat "$RUNNER_TEMP/s3rver.log"
           exit 1
+      - name: Install FFmpeg for synthetic media verification
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg
       - run: npm ci
       - name: Run persisted session, storage, worker and synthetic-media acceptance
         env:
