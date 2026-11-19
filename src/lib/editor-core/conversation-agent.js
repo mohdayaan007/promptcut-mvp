@@ -14,19 +14,23 @@ function visibleSequence(plan, sourceCatalog) {
 }
 
 /** A durable, server-owned follow-up envelope. It is replaced with a normal plan before rendering. */
-export function createConversationAgentEnvelope({ priorPlan, prompt, revisionHistory = [] }) {
+export function createConversationAgentEnvelope({ priorPlan, prompt, revisionHistory = [], kind = "evidence_follow_up", locked = [] }) {
   if (!priorPlan?.operations || typeof prompt !== "string" || !prompt.trim()) throw new Error("Conversation context is invalid");
+  if (!["evidence_follow_up", "ugc_director_follow_up"].includes(kind)) throw new Error("Conversation request is invalid");
   return {
     version: CONVERSATION_AGENT_VERSION,
-    kind: "evidence_follow_up",
+    kind,
     prompt: prompt.trim(),
     priorPlan: clone(priorPlan),
+    // Locks are declarative creator decisions.  The worker validates them and
+    // never accepts a browser-supplied plan as an authority to undo a cut.
+    locked: [...new Set(locked.filter((value) => ["sequence", "title"].includes(value)))],
     revisionHistory: revisionHistory.slice(-20).map(({ version, prompt: priorPrompt, status }) => ({ version, prompt: String(priorPrompt || "").slice(0, 1000), status }))
   };
 }
 
 export function isConversationAgentEnvelope(value) {
-  return Boolean(value && value.version === CONVERSATION_AGENT_VERSION && value.kind === "evidence_follow_up" && value.priorPlan?.operations && typeof value.prompt === "string");
+  return Boolean(value && value.version === CONVERSATION_AGENT_VERSION && ["evidence_follow_up", "ugc_director_follow_up"].includes(value.kind) && value.priorPlan?.operations && typeof value.prompt === "string" && (!value.locked || Array.isArray(value.locked)));
 }
 
 function intersectSelection(priorClips, selectedClips) {

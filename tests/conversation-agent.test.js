@@ -14,6 +14,16 @@ test("durable evidence envelope is bounded and retains only recent revision cont
   assert.equal(envelope.priorPlan.operations[0].clips[0].start, 4);
 });
 
+test("Director follow-up envelope preserves only explicit creator locks", () => {
+  const envelope = createConversationAgentEnvelope({
+    priorPlan: { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 4, end: 24 }] }] },
+    prompt: "Improve the pacing while preserving selected shots.", kind: "ugc_director_follow_up", locked: ["sequence", "title", "not-a-lock"]
+  });
+  assert.equal(envelope.kind, "ugc_director_follow_up");
+  assert.deepEqual(envelope.locked, ["sequence", "title"]);
+  assert.equal(isConversationAgentEnvelope(envelope), true);
+});
+
 test("evidence selection can narrow a visible edit but cannot revive removed footage", () => {
   const priorPlan = { version: "2", operations: [{ type: "sequence", clips: [{ sourceId: "source-1", start: 4, end: 12 }, { sourceId: "source-2", start: 5, end: 20 }] }, { type: "audio_volume", factor: 0.8 }] };
   const envelope = createConversationAgentEnvelope({ priorPlan, prompt: "Keep product shots" });

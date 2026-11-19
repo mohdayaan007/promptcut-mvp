@@ -2,6 +2,7 @@ import { applyConversationTurn, validateConversationPlan } from "@/lib/editor-co
 import { analyzeEditRequestCapabilities } from "@/lib/editor-core/edit-plan";
 import { requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding } from "@/lib/editor-core/edit-plan";
 import { createConversationAgentEnvelope } from "@/lib/editor-core/conversation-agent";
+import { isAmbiguousUgcTitleRevision, isUgcDirectorFollowUp, isUgcTitleRevisionRequest, reviseUgcTitle } from "@/lib/editor-core/ugc-director";
 import { ConfirmationConfigurationError, createConversationConfirmation, verifyConversationConfirmation, verifySubmittedConversationConfirmation } from "@/lib/editor-core/conversation-confirmation";
 import { createConversationJob, getAuthorizedSession, getSessionHistory, paidEditingEnforced, releaseUnattachedRenderReservation, reserveRenderCapacity } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
@@ -63,8 +64,16 @@ export async function POST(req, { params }) {
     const current = [...history].reverse().find((version) => (!executionBaseJobId || version.job_id === executionBaseJobId) && version.status === "completed" && version.plan && Array.isArray(version.source_catalog));
     if (!current) throw new PublicRequestError("Wait for a successful edit before making another change.", 409);
     const effectivePrompt = confirmed?.supportedPrompt || prompt.trim();
+    // Director refinements and literal title revisions have their own
+    // server-owned contract. Do not let the generic initial-edit capability
+    // classifier reject them before the durable envelope is created.
+    const directorFollowUp = isUgcDirectorFollowUp(effectivePrompt, current.plan);
+    const titleRevision = isUgcTitleRevisionRequest(effectivePrompt, current.plan);
+    if (isAmbiguousUgcTitleRevision(effectivePrompt, current.plan)) {
+      throw new PublicRequestError('Specify the new title literally, for example: Add the title "A NIGHT IN BANGALORE" using Instrument Serif.', 422);
+    }
     if (!confirmed) {
-      const capability = analyzeEditRequestCapabilities(effectivePrompt, current.source_catalog);
+      const capability = directorFollowUp || titleRevision ? { kind: "supported" } : analyzeEditRequestCapabilities(effectivePrompt, current.source_catalog);
       if (capability.kind === "partial") {
         // A partial selection may be valid for an initial AI plan but not for
         // an iterative delta. Never offer an action that this route cannot run.
@@ -81,7 +90,18 @@ export async function POST(req, { params }) {
     let confirmation;
     const evidenceDependent = requiresSpokenMomentUnderstanding(effectivePrompt, current.source_catalog) || requiresVisualMomentUnderstanding(effectivePrompt, current.source_catalog);
     try {
-      if (evidenceDependent) {
+      if (titleRevision) {
+        plan = reviseUgcTitle({ plan: current.plan, prompt: effectivePrompt, sourceCatalog: current.source_catalog });
+        confirmation = "Queued your title-only revision. Your selected footage and existing edit decisions will stay unchanged.";
+      } else if (directorFollowUp) {
+        const preserveSelectedShots = /\b(?:preserv(?:e|ing)|keep)\b.*\b(?:selected\s+)?shots?\b/i.test(effectivePrompt);
+        const preserveTitle = /\b(?:preserv(?:e|ing)|keep)\b.*\btitle\b/i.test(effectivePrompt);
+        plan = createConversationAgentEnvelope({
+          priorPlan: current.plan, prompt: effectivePrompt, revisionHistory: history,
+          kind: "ugc_director_follow_up", locked: [preserveSelectedShots ? "sequence" : null, preserveTitle ? "title" : null]
+        });
+        confirmation = "Queued an AI Director follow-up. Cliponaut will use server-owned evidence and preserve your current edit boundaries.";
+      } else if (evidenceDependent) {
         plan = createConversationAgentEnvelope({ priorPlan: current.plan, prompt: effectivePrompt, revisionHistory: history });
         confirmation = "Queued an evidence-based follow-up. Cliponaut will preserve your current edit and use server-owned media evidence before rendering.";
       } else {

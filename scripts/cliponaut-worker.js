@@ -227,49 +227,59 @@ async function processJob(job) {
       });
     }
     let planning;
-    if (mklReferencePath) {
-      planning = { plan: createEditPlan({ prompt: "Apply approved MKL reference colour treatment.", hasMultipleVideos: false, sourceCatalog }), source: "customer_mkl" };
-    } else if (isUgcDirectorRequest(job.prompt)) {
-      // The existing planner/localizers remain the only evidence provider. A
-      // Director policy may compose only the server-validated selected clips.
-      const evidence = await createAiEditPlan({
-        inputPath: inputPaths[0], inputMimeType: sources[0].type,
-        sourceInputs: sources.map((source) => ({ inputPath: inputPaths[source.index], inputMimeType: source.type, source: sourceCatalog.find((entry) => entry.index === source.index) })),
-        prompt: job.prompt, hasMultipleVideos: inputPaths.length > 1, sourceCatalog, scratchDirectory: scratch, executionController,
-        referenceStyleActive: Boolean(referenceTreatment)
-      });
-      const sequence = evidence.plan.operations?.find((operation) => operation.type === "sequence");
-      if (!sequence?.clips?.length) throw new UnsupportedEditRequestError("I couldn’t verify product footage for an AI Director edit.");
-      planning = { plan: createUgcDirectorPlan({ sourceCatalog, evidence: { productClips: sequence.clips }, prompt: job.prompt }), source: "ugc_director", transcripts: evidence.transcripts };
-    } else if (isConversationAgentEnvelope(job.editPlan)) {
+    const runEvidenceAgent = async ({ request, envelope = null, director = false }) => {
       let evidence;
       const agent = await runBoundedEditingAgent({
-        context: { request: job.editPlan.prompt, revisionCount: job.editPlan.revisionHistory.length, sourceCount: sourceCatalog.length },
+        context: { request, revisionCount: envelope?.revisionHistory?.length || 0, sourceCount: sourceCatalog.length, director },
         executionController,
         adapter: async ({ observations }) => observations.length === 0
           ? { tool: "inspect_project", input: {} }
           : observations.length === 1
-            ? { tool: "inspect_media_evidence", input: { request: job.editPlan.prompt } }
+            ? { tool: "inspect_media_evidence", input: { request } }
             : { tool: "submit_plan", input: {} },
         tools: {
-          inspect_project: async () => ({ sourceCatalog: sourceCatalog.map(({ sourceId, duration, width, height, hasAudio }) => ({ sourceId, duration, width, height, hasAudio })), visiblePlan: job.editPlan.priorPlan }),
-          inspect_media_evidence: async ({ request }) => {
-            if (request !== job.editPlan.prompt) throw new Error("Conversation evidence request mismatch");
+          inspect_project: async () => ({
+            sourceCatalog: sourceCatalog.map(({ sourceId, duration, width, height, hasAudio }) => ({ sourceId, duration, width, height, hasAudio })),
+            visiblePlan: envelope?.priorPlan || null
+          }),
+          inspect_media_evidence: async ({ request: requested }) => {
+            if (requested !== request) throw new Error("Conversation evidence request mismatch");
             evidence = await createAiEditPlan({
               inputPath: inputPaths[0], inputMimeType: sources[0].type,
               sourceInputs: sources.map((source) => ({ inputPath: inputPaths[source.index], inputMimeType: source.type, source: sourceCatalog.find((entry) => entry.index === source.index) })),
-              prompt: request, hasMultipleVideos: inputPaths.length > 1, sourceCatalog, scratchDirectory: scratch, executionController,
+              prompt: requested, hasMultipleVideos: inputPaths.length > 1, sourceCatalog, scratchDirectory: scratch, executionController,
               referenceStyleActive: Boolean(referenceTreatment)
             });
             return { evidenceAvailable: Boolean(evidence?.plan?.operations?.length) };
           },
           submit_plan: async () => {
             if (!evidence?.plan) throw new Error("Conversation evidence was unavailable");
-            return applyEvidenceSelection({ envelope: job.editPlan, evidencePlan: evidence.plan, sourceCatalog });
+            if (director) {
+              const sequence = evidence.plan.operations?.find((operation) => operation.type === "sequence");
+              if (!sequence?.clips?.length) throw new UnsupportedEditRequestError("I couldn’t verify product footage for an AI Director edit.");
+              return createUgcDirectorPlan({
+                priorPlan: envelope?.priorPlan || null, sourceCatalog,
+                evidence: { productClips: sequence.clips }, prompt: request, locked: envelope?.locked || []
+              });
+            }
+            return applyEvidenceSelection({ envelope, evidencePlan: evidence.plan, sourceCatalog });
           }
         }
       });
-      planning = { plan: agent.plan, source: "conversation_evidence_agent", transcripts: evidence?.transcripts };
+      return { plan: agent.plan, transcripts: evidence?.transcripts };
+    };
+    if (mklReferencePath) {
+      planning = { plan: createEditPlan({ prompt: "Apply approved MKL reference colour treatment.", hasMultipleVideos: false, sourceCatalog }), source: "customer_mkl" };
+    } else if (isUgcDirectorRequest(job.prompt)) {
+      // The bounded worker-owned loop is deliberately used for every Director
+      // request, including an initial job. The policy never receives browser
+      // media or model-authored operations: only validated evidence clips.
+      const result = await runEvidenceAgent({ request: job.prompt, director: true });
+      planning = { ...result, source: "ugc_director_agent" };
+    } else if (isConversationAgentEnvelope(job.editPlan)) {
+      const director = job.editPlan.kind === "ugc_director_follow_up";
+      const result = await runEvidenceAgent({ request: job.editPlan.prompt, envelope: job.editPlan, director });
+      planning = { ...result, source: director ? "ugc_director_follow_up_agent" : "conversation_evidence_agent" };
     } else if (job.editPlan) {
       planning = { plan: job.editPlan, source: "conversation" };
     } else try {
