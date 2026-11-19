@@ -11,7 +11,9 @@ import { probeVideoFile } from "../src/lib/media/media-probe.js";
 import { removeOutputInterval } from "../src/lib/editor-core/conversation-state.js";
 
 const run = promisify(execFile);
-test("deterministic UGC Director fixture renders playable titled vertical MP4 revisions", { timeout: 90_000 }, async () => {
+// Five full-height FFmpeg renders are intentionally retained as durable media
+// evidence. GitHub-hosted runners can take longer than the former 90 seconds.
+test("deterministic UGC Director fixture renders playable titled vertical MP4 revisions", { timeout: 180_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "cliponaut-ugc-director-"));
   try {
     const input = path.join(root, "ugc-fixture.mp4");
