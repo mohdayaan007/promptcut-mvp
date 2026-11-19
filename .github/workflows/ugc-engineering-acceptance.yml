@@ -24,6 +24,11 @@ jobs:
       S3_TEST_ENDPOINT: http://127.0.0.1:9000
       S3_TEST_ACCESS_KEY: S3RVER
       S3_TEST_SECRET_KEY: S3RVER
+      # s3rver validates standard S3 requests but does not implement the AWS
+      # SDK's optional aws-chunked checksum stream. Production keeps its
+      # normal SDK defaults; this setting exists only for this disposable test
+      # emulator.
+      AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
       GEMINI_API_KEY: synthetic-test-key
       CLIPONAUT_SYNTHETIC_GEMINI_TEST_MODE: "true"
     steps:
