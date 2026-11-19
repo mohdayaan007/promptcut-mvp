@@ -23,7 +23,7 @@ jobs:
       DATABASE_URL: postgresql://cliponaut:cliponaut@127.0.0.1:5432/cliponaut_acceptance
       S3_TEST_ENDPOINT: http://127.0.0.1:9000
       S3_TEST_ACCESS_KEY: S3RVER
-      S3_TEST_SECRET_KEY: S3RVER123456789
+      S3_TEST_SECRET_KEY: S3RVER
       GEMINI_API_KEY: synthetic-test-key
       CLIPONAUT_SYNTHETIC_GEMINI_TEST_MODE: "true"
     steps:
@@ -38,13 +38,11 @@ jobs:
           for attempt in $(seq 1 20); do docker exec cliponaut-acceptance-postgres pg_isready -U cliponaut -d cliponaut_acceptance && exit 0; sleep 1; done
           docker logs cliponaut-acceptance-postgres
           exit 1
-      - name: Start disposable MinIO
+      - name: Start disposable S3-compatible storage
         run: |
-          docker run --detach --rm --name cliponaut-acceptance-minio --publish 9000:9000 \
-            --env MINIO_ROOT_USER=S3RVER --env MINIO_ROOT_PASSWORD=S3RVER123456789 \
-            minio/minio:latest server /data
-          for attempt in $(seq 1 20); do curl --fail --silent http://127.0.0.1:9000/minio/health/live && exit 0; sleep 1; done
-          docker logs cliponaut-acceptance-minio
+          npm exec --yes --package=s3rver@3.7.1 -- s3rver --address 127.0.0.1 --port 9000 --directory "$RUNNER_TEMP/s3rver" >"$RUNNER_TEMP/s3rver.log" 2>&1 &
+          for attempt in $(seq 1 20); do curl --fail --silent http://127.0.0.1:9000 >/dev/null && exit 0; sleep 1; done
+          cat "$RUNNER_TEMP/s3rver.log"
           exit 1
       - run: npm ci
       - name: Run persisted session, storage, worker and synthetic-media acceptance
