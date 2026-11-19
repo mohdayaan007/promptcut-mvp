@@ -49,11 +49,16 @@ jobs:
           for attempt in $(seq 1 20); do curl --fail --silent http://127.0.0.1:9000 >/dev/null && exit 0; sleep 1; done
           cat "$RUNNER_TEMP/s3rver.log"
           exit 1
-      # GitHub's ubuntu-24.04 runner includes FFmpeg. Verify that required
-      # tool explicitly instead of depending on an external apt mirror during
-      # this isolated acceptance run.
-      - name: Verify FFmpeg for synthetic media verification
-        run: ffmpeg -version
+      - name: Install FFmpeg for synthetic media verification
+        run: |
+          # Bound mirror retries so an Actions infrastructure outage fails
+          # clearly instead of exhausting the whole acceptance-job timeout.
+          sudo timeout 300 apt-get update \
+            -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends ffmpeg
+          ffmpeg -version
       - run: npm ci
       - name: Run persisted session, storage, worker and synthetic-media acceptance
         env:
