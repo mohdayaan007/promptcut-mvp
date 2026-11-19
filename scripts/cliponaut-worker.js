@@ -27,6 +27,8 @@ import { abortMultipartUpload, deleteObjects, downloadObject, outputObjectKey, u
 import { customerMklRuntimeConfig } from "@/lib/editor-core/prepared-mkl-runtime";
 import { renderCustomerMkl } from "@/lib/editor-core/founder-mkl-local";
 import { applyTypographyV1aToPlan, assertFounderTypographyV1a, validateTypographyV1a } from "@/lib/editor-core/typography-v1a";
+import { applyEvidenceSelection, isConversationAgentEnvelope } from "@/lib/editor-core/conversation-agent";
+import { runBoundedEditingAgent } from "@/lib/editor-core/bounded-editing-agent";
 
 const config = jobConfig();
 const workerId = `${os.hostname()}-${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
@@ -226,6 +228,35 @@ async function processJob(job) {
     let planning;
     if (mklReferencePath) {
       planning = { plan: createEditPlan({ prompt: "Apply approved MKL reference colour treatment.", hasMultipleVideos: false, sourceCatalog }), source: "customer_mkl" };
+    } else if (isConversationAgentEnvelope(job.editPlan)) {
+      let evidence;
+      const agent = await runBoundedEditingAgent({
+        context: { request: job.editPlan.prompt, revisionCount: job.editPlan.revisionHistory.length, sourceCount: sourceCatalog.length },
+        executionController,
+        adapter: async ({ observations }) => observations.length === 0
+          ? { tool: "inspect_project", input: {} }
+          : observations.length === 1
+            ? { tool: "inspect_media_evidence", input: { request: job.editPlan.prompt } }
+            : { tool: "submit_plan", input: {} },
+        tools: {
+          inspect_project: async () => ({ sourceCatalog: sourceCatalog.map(({ sourceId, duration, width, height, hasAudio }) => ({ sourceId, duration, width, height, hasAudio })), visiblePlan: job.editPlan.priorPlan }),
+          inspect_media_evidence: async ({ request }) => {
+            if (request !== job.editPlan.prompt) throw new Error("Conversation evidence request mismatch");
+            evidence = await createAiEditPlan({
+              inputPath: inputPaths[0], inputMimeType: sources[0].type,
+              sourceInputs: sources.map((source) => ({ inputPath: inputPaths[source.index], inputMimeType: source.type, source: sourceCatalog.find((entry) => entry.index === source.index) })),
+              prompt: request, hasMultipleVideos: inputPaths.length > 1, sourceCatalog, scratchDirectory: scratch, executionController,
+              referenceStyleActive: Boolean(referenceTreatment)
+            });
+            return { evidenceAvailable: Boolean(evidence?.plan?.operations?.length) };
+          },
+          submit_plan: async () => {
+            if (!evidence?.plan) throw new Error("Conversation evidence was unavailable");
+            return applyEvidenceSelection({ envelope: job.editPlan, evidencePlan: evidence.plan, sourceCatalog });
+          }
+        }
+      });
+      planning = { plan: agent.plan, source: "conversation_evidence_agent", transcripts: evidence?.transcripts };
     } else if (job.editPlan) {
       planning = { plan: job.editPlan, source: "conversation" };
     } else try {

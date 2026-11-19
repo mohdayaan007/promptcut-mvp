@@ -1,5 +1,7 @@
 import { applyConversationTurn, validateConversationPlan } from "@/lib/editor-core/conversation-state";
 import { analyzeEditRequestCapabilities } from "@/lib/editor-core/edit-plan";
+import { requiresSpokenMomentUnderstanding, requiresVisualMomentUnderstanding } from "@/lib/editor-core/edit-plan";
+import { createConversationAgentEnvelope } from "@/lib/editor-core/conversation-agent";
 import { ConfirmationConfigurationError, createConversationConfirmation, verifyConversationConfirmation, verifySubmittedConversationConfirmation } from "@/lib/editor-core/conversation-confirmation";
 import { createConversationJob, getAuthorizedSession, getSessionHistory, paidEditingEnforced, releaseUnattachedRenderReservation, reserveRenderCapacity } from "@/lib/jobs/job-store";
 import { jsonError, PublicRequestError } from "@/lib/jobs/http";
@@ -77,9 +79,15 @@ export async function POST(req, { params }) {
     }
     let plan;
     let confirmation;
+    const evidenceDependent = requiresSpokenMomentUnderstanding(effectivePrompt, current.source_catalog) || requiresVisualMomentUnderstanding(effectivePrompt, current.source_catalog);
     try {
+      if (evidenceDependent) {
+        plan = createConversationAgentEnvelope({ priorPlan: current.plan, prompt: effectivePrompt, revisionHistory: history });
+        confirmation = "Queued an evidence-based follow-up. Cliponaut will preserve your current edit and use server-owned media evidence before rendering.";
+      } else {
       ({ plan, confirmation } = applyConversationTurn({ priorPlan: current.plan, prompt: effectivePrompt, sourceCatalog: current.source_catalog }));
       validateConversationPlan(plan, current.source_catalog);
+      }
     } catch (error) {
       // Conversation parsing and plan validation operate only on user input and
       // persisted plans. They are actionable request errors, not server faults.
