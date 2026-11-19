@@ -42,7 +42,7 @@ jobs:
         run: |
           docker run --detach --rm --name cliponaut-acceptance-minio --publish 9000:9000 \
             --env MINIO_ROOT_USER=S3RVER --env MINIO_ROOT_PASSWORD=S3RVER123456789 \
-            minio/minio:RELEASE.2024-10-13T13-34-11Z server /data
+            minio/minio:latest server /data
           for attempt in $(seq 1 20); do curl --fail --silent http://127.0.0.1:9000/minio/health/live && exit 0; sleep 1; done
           docker logs cliponaut-acceptance-minio
           exit 1
